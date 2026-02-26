@@ -7,15 +7,17 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip release]')
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -23,45 +25,66 @@ jobs:
           php-version: "8.2"
           tools: composer
 
-      - name: Install dependencies
-        run: composer install --no-interaction --prefer-dist
-
-      - name: PHP lint
+      - name: Bump patch + garantir migration
+        id: bump
         run: |
-          find . -name "*.php" -not -path "./vendor/*" -print0 | xargs -0 -n1 php -l
+          OUT=$(php scripts/bump-patch.php)
+          echo "$OUT"
+          VERSION=$(echo "$OUT" | sed -n 's/^new_version=//p' | head -n1)
+          if [ -z "$VERSION" ]; then
+            echo "Falha ao capturar versão nova"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: PHPUnit
-        run: vendor/bin/phpunit
+      - name: Validar padrão Perfex (versão + migrations)
+        run: ./.github/scripts/check_perfex_module.sh
 
-      - name: Verificar padrões proibidos
+      - name: Commit versão/migration
         run: |
-          if find . -type f \
-            -not -path "./vendor/*" \
-            -not -path "./.git/*" \
-            -print0 | xargs -0 grep -nE "(/v2|codephix|sandbox\\.asaas\\.com/api|https://www\\.asaas\\.com)"; then
-              echo "Encontrado padrão proibido no código."
-              exit 1
+          if git diff --quiet -- asaas.php migrations .release-please-manifest.json; then
+            echo "Sem alterações para commit."
+            exit 0
           fi
 
-      - name: Release Please
-        id: release-please
-        uses: googleapis/release-please-action@v4
-        with:
-          release-type: simple
-          package-name: asaas-module-perfex
-          default-branch: main
+          git config user.name "Wallace Kleiton"
+          git config user.email "wkarts@gmail.com"
+          git add asaas.php migrations .release-please-manifest.json
+          git commit -m "chore(release): bump patch para v${{ steps.bump.outputs.version }} [skip release]"
+          git push origin main
+
+      - name: Criar tag
+        run: |
+          TAG="v${{ steps.bump.outputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG já existe."
+            exit 0
+          fi
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Install dependencies (release artifact)
+        run: composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+
+      - name: Assert vendor/autoload.php
+        run: test -f vendor/autoload.php
 
       - name: Build ZIP
         id: build-zip
-        if: steps.release-please.outputs.release_created == 'true'
         run: |
-          ZIP_NAME="asaas-module-${{ steps.release-please.outputs.tag_name }}.zip"
-          zip -r "$ZIP_NAME" . -x ".git/*" -x ".github/*" -x "tests/*" -x "phpunit.xml"
-          echo "zip_name=$ZIP_NAME" >> $GITHUB_OUTPUT
+          TAG="v${{ steps.bump.outputs.version }}"
+          ZIP_NAME="asaas-module-${TAG}.zip"
+          zip -r "$ZIP_NAME" . \
+            -x ".git/*" \
+            -x ".github/*" \
+            -x "tests/*" \
+            -x "phpunit.xml" \
+            -x ".phpunit.result.cache"
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Upload release asset
-        if: steps.release-please.outputs.release_created == 'true'
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release-please.outputs.tag_name }}
+          tag_name: v${{ steps.bump.outputs.version }}
+          generate_release_notes: true
           files: ${{ steps.build-zip.outputs.zip_name }}
