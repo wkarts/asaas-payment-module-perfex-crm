@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          tools: composer
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: PHP lint
+        run: |
+          find . -name "*.php" -not -path "./vendor/*" -print0 | xargs -0 -n1 php -l
+
+      - name: PHPUnit
+        run: vendor/bin/phpunit
+
+      - name: Verificar padrões proibidos
+        run: |
+          if find . -type f \
+            -not -path "./vendor/*" \
+            -not -path "./.git/*" \
+            -print0 | xargs -0 grep -nE "(/v2|codephix|sandbox\\.asaas\\.com/api|https://www\\.asaas\\.com)"; then
+              echo "Encontrado padrão proibido no código."
+              exit 1
+          fi
+
+      - name: Release Please
+        id: release-please
+        uses: googleapis/release-please-action@v4
+        with:
+          release-type: simple
+          package-name: asaas-module-perfex
+          default-branch: main
+
+      - name: Build ZIP
+        id: build-zip
+        if: steps.release-please.outputs.release_created == 'true'
+        run: |
+          ZIP_NAME="asaas-module-${{ steps.release-please.outputs.tag_name }}.zip"
+          zip -r "$ZIP_NAME" . -x ".git/*" -x ".github/*" -x "tests/*" -x "phpunit.xml"
+          echo "zip_name=$ZIP_NAME" >> $GITHUB_OUTPUT
+
+      - name: Upload release asset
+        if: steps.release-please.outputs.release_created == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release-please.outputs.tag_name }}
+          files: ${{ steps.build-zip.outputs.zip_name }}

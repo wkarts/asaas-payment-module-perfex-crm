@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.1", "8.2"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: composer
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: PHP lint
+        run: |
+          find . -name "*.php" -not -path "./vendor/*" -print0 | xargs -0 -n1 php -l
+
+      - name: PHPUnit
+        run: vendor/bin/phpunit
+
+      - name: Verificar padrões proibidos
+        run: |
+          if find . -type f \
+            -not -path "./vendor/*" \
+            -not -path "./.git/*" \
+            -print0 | xargs -0 grep -nE "(/v2|codephix|sandbox\\.asaas\\.com/api|https://www\\.asaas\\.com)"; then
+              echo "Encontrado padrão proibido no código."
+              exit 1
+          fi
