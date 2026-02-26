@@ -16,13 +16,19 @@ if (!preg_match('/^Version:\s*([0-9]+\.[0-9]+\.[0-9]+)/m', $contents, $matches))
 }
 
 $moduleVersion = $matches[1];
-$tag = $argv[1] ?? '';
+$tag = trim((string) ($argv[1] ?? ''));
 if ($tag === '') {
     fwrite(STDERR, "Uso: php scripts/assert-module-version.php <tag>\n");
     exit(1);
 }
 
-$normalizedTag = ltrim(trim($tag), 'v');
+$normalizedTag = $tag;
+if (preg_match('/v([0-9]+\.[0-9]+\.[0-9]+)$/', $tag, $tagMatches)) {
+    $normalizedTag = $tagMatches[1];
+} else {
+    $normalizedTag = ltrim($tag, 'v');
+}
+
 if ($normalizedTag !== $moduleVersion) {
     fwrite(STDERR, sprintf(
         "Versão divergente: tag '%s' != versão do módulo '%s'.\n",

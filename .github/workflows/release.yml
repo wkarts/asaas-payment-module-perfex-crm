@@ -45,7 +45,7 @@ jobs:
       - name: Commit migration no PR release-please
         if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--')
         run: |
-          if git diff --quiet -- migrations; then
+          if git diff --quiet -- asaas.php migrations; then
             echo "Sem alterações de migration."
             exit 0
           fi
