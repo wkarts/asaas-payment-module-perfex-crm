@@ -38,12 +38,21 @@ jobs:
 
       - name: Verificar padrões proibidos
         run: |
-          if find . -type f \
-            -not -path "./vendor/*" \
-            -not -path "./.git/*" \
-            -print0 | xargs -0 grep -nE "(/v2|codephix|sandbox\\.asaas\\.com/api|https://www\\.asaas\\.com)"; then
-              echo "Encontrado padrão proibido no código."
-              exit 1
+          set -euo pipefail
+
+          PATTERN='(/v2|codephix|sandbox\.asaas\.com/api|https://www\.asaas\.com)'
+
+          if grep -RInE \
+            --exclude-dir=vendor \
+            --exclude-dir=.git \
+            --exclude-dir=.github \
+            --exclude-dir=tests \
+            --exclude-dir=docs \
+            --exclude=readme.md \
+            --exclude=phpunit.xml \
+            "$PATTERN" .; then
+            echo "Encontrado padrão proibido no código."
+            exit 1
           fi
 
       - name: Release Please
