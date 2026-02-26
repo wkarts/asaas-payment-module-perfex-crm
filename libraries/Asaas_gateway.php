@@ -185,6 +185,34 @@ class Asaas_gateway extends App_gateway
         return $this->provider->environmentLabel();
     }
 
+
+    public function apiKey(?int $companyId = null): string
+    {
+        return $this->provider->apiKey($companyId);
+    }
+
+    public function isSandbox(?int $companyId = null): bool
+    {
+        return $this->provider->env($companyId) === 'sandbox';
+    }
+
+    public function client(?int $companyId = null): \Asaas\Sdk\Http\Client
+    {
+        return $this->provider->client($companyId);
+    }
+
+    public function request(
+        string $method,
+        string $path,
+        array $query = [],
+        array $headers = [],
+        ?array $payload = null,
+        bool $expectsBinary = false,
+        ?int $companyId = null
+    ): array {
+        return $this->adapter->request($method, $path, $query, $headers, $payload, $expectsBinary, $companyId);
+    }
+
     public function process_payment($data)
     {
         if (empty($data)) {

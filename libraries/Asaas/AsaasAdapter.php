@@ -52,6 +52,7 @@ final class AsaasAdapter
             $this->log('error', 'Erro na API Asaas.', [
                 'method' => $method,
                 'path' => $path,
+                'query' => $query,
                 'status' => $exception->getStatusCode(),
                 'message' => $exception->getMessage(),
                 'correlation_id' => $headers['X-Correlation-Id'] ?? null,
@@ -62,6 +63,7 @@ final class AsaasAdapter
             $this->log('error', 'Erro de transporte na API Asaas.', [
                 'method' => $method,
                 'path' => $path,
+                'query' => $query,
                 'message' => $exception->getMessage(),
                 'correlation_id' => $headers['X-Correlation-Id'] ?? null,
             ]);
@@ -481,6 +483,11 @@ final class AsaasAdapter
 
     private function log(string $level, string $message, array $context = []): void
     {
+        $sanitized = $this->sanitizeContext($context);
+        $sanitizedContext = json_encode($sanitized, JSON_UNESCAPED_UNICODE);
+
+        log_message($level === 'error' ? 'error' : 'info', '[Asaas] ' . $message . ' | context=' . $sanitizedContext);
+
         $table = db_prefix() . 'asaas_logs';
         if (!$this->ci->db->table_exists($table)) {
             return;
@@ -493,7 +500,6 @@ final class AsaasAdapter
         ];
 
         $columns = $this->getLogColumns($table);
-        $sanitizedContext = json_encode($this->sanitizeContext($context), JSON_UNESCAPED_UNICODE);
 
         if (in_array('context_json', $columns, true)) {
             $payload['context_json'] = $sanitizedContext;
@@ -502,15 +508,34 @@ final class AsaasAdapter
         }
 
         if (in_array('correlation_id', $columns, true)) {
-            $payload['correlation_id'] = $context['correlation_id'] ?? null;
+            $payload['correlation_id'] = $sanitized['correlation_id'] ?? null;
         }
 
-        $this->ci->db->insert($table, $payload);
+        $inserted = $this->ci->db->insert($table, $payload);
+        if ($inserted === false) {
+            $error = $this->ci->db->error();
+            log_message('error', '[Asaas] Falha ao persistir log em banco: ' . json_encode($error, JSON_UNESCAPED_UNICODE));
+        }
     }
 
     private function sanitizeContext(array $context): array
     {
-        unset($context['apiKey'], $context['access_token']);
+        $sensitiveKeys = ['apiKey', 'api_key', 'access_token', 'authorization', 'token'];
+
+        foreach ($context as $key => $value) {
+            if (is_array($value)) {
+                $context[$key] = $this->sanitizeContext($value);
+                continue;
+            }
+
+            $normalizedKey = strtolower((string) $key);
+            foreach ($sensitiveKeys as $sensitiveKey) {
+                if ($normalizedKey === strtolower($sensitiveKey)) {
+                    $context[$key] = '[REDACTED]';
+                    break;
+                }
+            }
+        }
 
         return $context;
     }
