@@ -21,4 +21,34 @@ if (!class_exists('App_gateway')) {
     }
 }
 
+if (!function_exists('get_instance')) {
+    function &get_instance(): object
+    {
+        static $instance = null;
+
+        if ($instance === null) {
+            $instance = new class {
+                public object $db;
+
+                public function __construct()
+                {
+                    $this->db = new class {
+                        public function table_exists(string $table): bool
+                        {
+                            return false;
+                        }
+
+                        public function field_exists(string $field, string $table): bool
+                        {
+                            return false;
+                        }
+                    };
+                }
+            };
+        }
+
+        return $instance;
+    }
+}
+
 require_once dirname(__DIR__) . '/libraries/AsaasSdkProvider.php';
