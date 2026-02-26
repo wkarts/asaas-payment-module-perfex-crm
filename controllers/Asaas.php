@@ -5,14 +5,12 @@ if (!defined('BASEPATH')) exit('No direct script access allowed');
 class Asaas extends AdminController
 {
     protected $apiKey;
-    protected $apiUrl;
 
     public function __construct()
     {
         parent::__construct();
         $this->load->library('asaas/asaas_gateway');
         $this->apiKey  = $this->asaas_gateway->getApiKey();
-        $this->apiUrl  = $this->asaas_gateway->getUrlBase();
     }
 
     public function index()
@@ -60,7 +58,7 @@ class Asaas extends AdminController
 
     public function charges()
     {
-        $response = $this->asaas_gateway->charges($this->apiKey, $this->apiUrl);
+        $response = $this->asaas_gateway->charges($this->apiKey, null);
 
         $response = json_decode($response, TRUE);
 
@@ -75,7 +73,7 @@ class Asaas extends AdminController
 
     public function customers()
     {
-        $response = $this->asaas_gateway->get_customers($this->apiKey, $this->apiUrl);
+        $response = $this->asaas_gateway->get_customers($this->apiKey, null);
 
         natsort($response["data"]);
 
@@ -97,13 +95,13 @@ class Asaas extends AdminController
     public function merge()
     {
 
-        $charges = $this->asaas_gateway->charges($this->apiKey, $this->apiUrl);
+        $charges = $this->asaas_gateway->charges($this->apiKey, null);
 
         $charges = json_decode($charges, TRUE);
 
         natsort($charges["data"]);
 
-        $response = $this->asaas_gateway->get_customers($this->apiKey, $this->apiUrl);
+        $response = $this->asaas_gateway->get_customers($this->apiKey, null);
 
         natsort($response["data"]);
 
@@ -147,7 +145,7 @@ class Asaas extends AdminController
 
     public function services()
     {
-        $response = $this->invoice->services($this->apiKey, $this->apiUrl);
+        $response = $this->invoice->services($this->apiKey, null);
     }
 
     public function setup_webhook()
@@ -155,16 +153,16 @@ class Asaas extends AdminController
 
         $email = "suporte@wwsoftwares.com.br";
 
-        $webhook = $this->asaas_gateway->get_webhook($this->apiKey, $this->apiUrl);
+        $webhook = $this->asaas_gateway->get_webhook($this->apiKey, null);
 
         var_dump($webhook);
         echo "<hr>";
-        $set_webhook = $this->set_webhook($this->apiKey, $this->apiUrl, $email);
+        $set_webhook = $this->set_webhook($this->apiKey, null, $email);
 
         var_dump($set_webhook);
         echo "<hr>";
 
-        $set_webhook_invoice = $this->set_webhook_invoice($this->apiKey, $this->apiUrl, $email);
+        $set_webhook_invoice = $this->set_webhook_invoice($this->apiKey, null, $email);
 
         var_dump($set_webhook_invoice);
 
@@ -211,7 +209,7 @@ class Asaas extends AdminController
 
     public function set_webhook_transfer($email)
     {
-        $webhook = $this->asaas_gateway->get_webhook_transfer($this->apiKey, $this->apiUrl);
+        $webhook = $this->asaas_gateway->get_webhook_transfer($this->apiKey, null);
         if ($webhook["url"] !== site_url('asaas/gateways/callback/invoices')) {
             $post_data = json_encode([
                 "url" => site_url('asaas/gateways/callback'),
@@ -221,46 +219,22 @@ class Asaas extends AdminController
                 "apiVersion" => 3
 
             ]);
-            $create_webhook = $this->asaas_gateway->create_webhook_transfer($this->apiKey, $this->apiUrl, $post_data);
+            $create_webhook = $this->asaas_gateway->create_webhook_transfer($this->apiKey, null, $post_data);
             return $create_webhook;
         }
     }
 
     public function retorna_cobranca($id = 178458832)
     {
+        $response = $this->asaas_gateway->request('GET', '/payments/' . $id);
 
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $this->apiUrl . "/payments/{$id}");
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
-        curl_setopt($ch, CURLOPT_HEADER, FALSE);
-
-        curl_setopt($ch, CURLOPT_HTTPHEADER, array(
-            "Content-Type: application/json",
-            "access_token: " . $this->apiKey
-        ));
-
-        $response = curl_exec($ch);
-        curl_close($ch);
-
-        echo $response;
+        echo json_encode(is_array($response) ? $response : []);
     }
 
     public function retorna_cobrancas($hash = '')
     {
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $this->apiUrl . "/v3/payments?externalReference={$hash}");
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
-        curl_setopt($ch, CURLOPT_HEADER, FALSE);
+        $response = $this->asaas_gateway->request('GET', '/payments', ['externalReference' => $hash]);
 
-        curl_setopt($ch, CURLOPT_HTTPHEADER, array(
-            "Content-Type: application/json",
-            "access_token: " . $this->apiKey
-        ));
-
-        $response = curl_exec($ch);
-
-        curl_close($ch);
-
-        echo $response;
+        echo json_encode(is_array($response) ? $response : []);
     }
 }

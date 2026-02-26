@@ -4,20 +4,20 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "f4470a47f5bc3bcfcb1fe212d8dc99aa",
+    "content-hash": "76b9ad746cc7e1075dc3ca38d59e5274",
     "packages": [
         {
             "name": "argws/asaas-sdk-php",
-            "version": "v0.1.3",
+            "version": "v0.2.61",
             "source": {
                 "type": "git",
                 "url": "https://github.com/wkarts/asaas-sdk-argws.git",
-                "reference": "e7100152636f6a0d9f09a17ec14437fb035ad4b8"
+                "reference": "b45ec5cabbe5b918fc590781a10ddbd7406d564b"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/wkarts/asaas-sdk-argws/zipball/e7100152636f6a0d9f09a17ec14437fb035ad4b8",
-                "reference": "e7100152636f6a0d9f09a17ec14437fb035ad4b8",
+                "url": "https://api.github.com/repos/wkarts/asaas-sdk-argws/zipball/b45ec5cabbe5b918fc590781a10ddbd7406d564b",
+                "reference": "b45ec5cabbe5b918fc590781a10ddbd7406d564b",
                 "shasum": ""
             },
             "require": {
@@ -44,9 +44,9 @@
             "description": "SDK PHP NÃO OFICIAL para a API do Asaas. Baseada na SDK Java e gerada a partir da documentação/OpenAPI.",
             "support": {
                 "issues": "https://github.com/wkarts/asaas-sdk-argws/issues",
-                "source": "https://github.com/wkarts/asaas-sdk-argws/tree/v0.1.3"
+                "source": "https://github.com/wkarts/asaas-sdk-argws/tree/v0.2.61"
             },
-            "time": "2026-02-01T04:28:53+00:00"
+            "time": "2026-02-08T06:07:58+00:00"
         },
         {
             "name": "bacon/bacon-qr-code",
