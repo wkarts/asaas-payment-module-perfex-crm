@@ -11,6 +11,8 @@ use AsaasSdkProvider;
 
 final class AsaasAdapter
 {
+    private const PREFACES_RESOURCE_PATH = '/prefaces';
+
     private AsaasSdkProvider $provider;
     private ?App_gateway $gateway;
     private $ci;
@@ -50,6 +52,7 @@ final class AsaasAdapter
             $this->log('error', 'Erro na API Asaas.', [
                 'method' => $method,
                 'path' => $path,
+                'query' => $query,
                 'status' => $exception->getStatusCode(),
                 'message' => $exception->getMessage(),
                 'correlation_id' => $headers['X-Correlation-Id'] ?? null,
@@ -60,12 +63,159 @@ final class AsaasAdapter
             $this->log('error', 'Erro de transporte na API Asaas.', [
                 'method' => $method,
                 'path' => $path,
+                'query' => $query,
                 'message' => $exception->getMessage(),
                 'correlation_id' => $headers['X-Correlation-Id'] ?? null,
             ]);
 
             return [];
         }
+    }
+
+    /**
+     * Executa requisição com envelope padronizado para novos módulos sem quebrar legado.
+     *
+     * @return array{success: bool, data: array|null, error: array|null, meta: array}
+     */
+    public function requestStructured(
+        string $method,
+        string $path,
+        array $query = [],
+        array $headers = [],
+        ?array $payload = null,
+        bool $expectsBinary = false,
+        ?int $companyId = null
+    ): array {
+        $client = $this->provider->client($companyId);
+        $correlationId = $headers['X-Correlation-Id'] ?? null;
+        $headers = $this->provider->headers($headers, $correlationId);
+
+        try {
+            $response = $client->request($method, $path, $query, $headers, $payload, false, $expectsBinary);
+
+            return [
+                'success' => true,
+                'data' => is_array($response) ? $response : [],
+                'error' => null,
+                'meta' => [
+                    'method' => $method,
+                    'path' => $path,
+                    'correlation_id' => $headers['X-Correlation-Id'] ?? null,
+                ],
+            ];
+        } catch (ApiException $exception) {
+            return [
+                'success' => false,
+                'data' => null,
+                'error' => [
+                    'type' => 'api_error',
+                    'status' => $exception->getStatusCode(),
+                    'message' => $exception->getMessage(),
+                ],
+                'meta' => [
+                    'method' => $method,
+                    'path' => $path,
+                    'correlation_id' => $headers['X-Correlation-Id'] ?? null,
+                ],
+            ];
+        } catch (TransportException $exception) {
+            return [
+                'success' => false,
+                'data' => null,
+                'error' => [
+                    'type' => 'transport_error',
+                    'status' => null,
+                    'message' => $exception->getMessage(),
+                ],
+                'meta' => [
+                    'method' => $method,
+                    'path' => $path,
+                    'correlation_id' => $headers['X-Correlation-Id'] ?? null,
+                ],
+            ];
+        }
+    }
+
+    /**
+     * @return array{success: bool, data: array|null, error: array|null, meta: array}
+     */
+    public function createPreface(array $payload, array $headers = [], ?int $companyId = null): array
+    {
+        if ($payload === []) {
+            return $this->validationError('Payload do Prefaces é obrigatório.');
+        }
+
+        return $this->requestStructured('POST', self::PREFACES_RESOURCE_PATH, [], $headers, $payload, false, $companyId);
+    }
+
+    /**
+     * @return array{success: bool, data: array|null, error: array|null, meta: array}
+     */
+    public function getPreface(string $prefaceId, array $headers = [], ?int $companyId = null): array
+    {
+        if (trim($prefaceId) === '') {
+            return $this->validationError('prefaceId é obrigatório.');
+        }
+
+        return $this->requestStructured('GET', self::PREFACES_RESOURCE_PATH . '/' . $prefaceId, [], $headers, null, false, $companyId);
+    }
+
+    /**
+     * @return array{success: bool, data: array|null, error: array|null, meta: array}
+     */
+    public function listPrefaces(array $query = [], array $headers = [], ?int $companyId = null): array
+    {
+        return $this->requestStructured('GET', self::PREFACES_RESOURCE_PATH, $query, $headers, null, false, $companyId);
+    }
+
+    /**
+     * @return array{success: bool, data: array|null, error: array|null, meta: array}
+     */
+    public function updatePreface(string $prefaceId, array $payload, string $method = 'PUT', array $headers = [], ?int $companyId = null): array
+    {
+        $method = strtoupper($method);
+        if (!in_array($method, ['PUT', 'PATCH'], true)) {
+            return $this->validationError('Método de atualização inválido. Use PUT ou PATCH.');
+        }
+
+        if (trim($prefaceId) === '') {
+            return $this->validationError('prefaceId é obrigatório.');
+        }
+
+        if ($payload === []) {
+            return $this->validationError('Payload do Prefaces é obrigatório.');
+        }
+
+        return $this->requestStructured($method, self::PREFACES_RESOURCE_PATH . '/' . $prefaceId, [], $headers, $payload, false, $companyId);
+    }
+
+    /**
+     * @return array{success: bool, data: array|null, error: array|null, meta: array}
+     */
+    public function deletePreface(string $prefaceId, array $headers = [], ?int $companyId = null): array
+    {
+        if (trim($prefaceId) === '') {
+            return $this->validationError('prefaceId é obrigatório.');
+        }
+
+        return $this->requestStructured('DELETE', self::PREFACES_RESOURCE_PATH . '/' . $prefaceId, [], $headers, null, false, $companyId);
+    }
+
+    /**
+     * @return array{success: bool, data: array|null, error: array{type: string, status: int|null, message: string}, meta: array}
+     */
+    private function validationError(string $message): array
+    {
+        return [
+            'success' => false,
+            'data' => null,
+            'error' => [
+                'type' => 'validation_error',
+                'status' => null,
+                'message' => $message,
+            ],
+            'meta' => [],
+        ];
     }
 
     /**
@@ -333,6 +483,11 @@ final class AsaasAdapter
 
     private function log(string $level, string $message, array $context = []): void
     {
+        $sanitized = $this->sanitizeContext($context);
+        $sanitizedContext = json_encode($sanitized, JSON_UNESCAPED_UNICODE);
+
+        log_message($level === 'error' ? 'error' : 'info', '[Asaas] ' . $message . ' | context=' . $sanitizedContext);
+
         $table = db_prefix() . 'asaas_logs';
         if (!$this->ci->db->table_exists($table)) {
             return;
@@ -345,7 +500,6 @@ final class AsaasAdapter
         ];
 
         $columns = $this->getLogColumns($table);
-        $sanitizedContext = json_encode($this->sanitizeContext($context), JSON_UNESCAPED_UNICODE);
 
         if (in_array('context_json', $columns, true)) {
             $payload['context_json'] = $sanitizedContext;
@@ -354,15 +508,34 @@ final class AsaasAdapter
         }
 
         if (in_array('correlation_id', $columns, true)) {
-            $payload['correlation_id'] = $context['correlation_id'] ?? null;
+            $payload['correlation_id'] = $sanitized['correlation_id'] ?? null;
         }
 
-        $this->ci->db->insert($table, $payload);
+        $inserted = $this->ci->db->insert($table, $payload);
+        if ($inserted === false) {
+            $error = $this->ci->db->error();
+            log_message('error', '[Asaas] Falha ao persistir log em banco: ' . json_encode($error, JSON_UNESCAPED_UNICODE));
+        }
     }
 
     private function sanitizeContext(array $context): array
     {
-        unset($context['apiKey'], $context['access_token']);
+        $sensitiveKeys = ['apiKey', 'api_key', 'access_token', 'authorization', 'token'];
+
+        foreach ($context as $key => $value) {
+            if (is_array($value)) {
+                $context[$key] = $this->sanitizeContext($value);
+                continue;
+            }
+
+            $normalizedKey = strtolower((string) $key);
+            foreach ($sensitiveKeys as $sensitiveKey) {
+                if ($normalizedKey === strtolower($sensitiveKey)) {
+                    $context[$key] = '[REDACTED]';
+                    break;
+                }
+            }
+        }
 
         return $context;
     }
