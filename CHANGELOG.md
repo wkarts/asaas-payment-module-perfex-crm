@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/wkarts/asaas-payment-module-perfex-crm/compare/v1.4.0...v1.5.0) (2026-02-26)
+
+
+### Features
+
+* adicionar log opcional em arquivo para debug do envio Asaas ([9860602](https://github.com/wkarts/asaas-payment-module-perfex-crm/commit/986060287941ad9d8e620903d7804986597853ad))
+
 ## [1.4.0](https://github.com/wkarts/asaas-payment-module-perfex-crm/compare/v1.3.5...v1.4.0) (2026-02-26)
 
 
