@@ -6,6 +6,6 @@ namespace Asaas\Sdk\Http;
 
 enum Environment: string
 {
-    case Production = 'https://api.asaas.com/v3';
-    case Sandbox = 'https://api-sandbox.asaas.com/v3';
+    case Production = 'https://api.asaas.com';
+    case Sandbox = 'https://api-sandbox.asaas.com';
 }

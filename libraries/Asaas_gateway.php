@@ -1263,7 +1263,7 @@ class Asaas_gateway extends App_gateway
 
     public function search_customer($api_url, $api_key, $cpfCnpj)
     {
-        return $this->adapter->request('GET', '/customers', ['cpfCnpj' => $cpfCnpj]);
+        return $this->adapter->listCustomers(['cpfCnpj' => $cpfCnpj]);
     }
 
     public function update_charge($charge_id, $post_data)
@@ -1275,13 +1275,13 @@ class Asaas_gateway extends App_gateway
     // https://api.asaas.com/v3/payments/id
     public function delete_charge($charge_id)
     {
-        return $this->adapter->request('DELETE', '/payments/' . $charge_id);
+        return $this->adapter->deletePayment($charge_id);
     }
 
     public function create_customer($api_url, $api_key, $post_data)
     {
         $payload = $this->safe_json_decode_array($post_data);
-        return $this->adapter->request('POST', '/customers', [], [], is_array($payload) ? $payload : []);
+        return $this->adapter->createCustomer(is_array($payload) ? $payload : []);
     }
 
     public function get_webhook($api_key, $api_url)
