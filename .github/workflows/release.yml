@@ -81,6 +81,16 @@ jobs:
             exit 1
           fi
 
+      - name: Ler versão do módulo
+        id: module-version
+        run: |
+          VERSION=$(sed -n 's/^Version:[[:space:]]*//p' asaas.php | head -n1)
+          if [ -z "$VERSION" ]; then
+            echo "Não foi possível ler Version: de asaas.php"
+            exit 1
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - name: Release Please
         if: github.event_name != 'pull_request'
         id: release-please
@@ -89,6 +99,19 @@ jobs:
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
           default-branch: main
+          release-as: ${{ steps.module-version.outputs.version }}
+
+      - name: Validar tag x versão do módulo
+        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
+        run: php scripts/assert-module-version.php "${{ steps.release-please.outputs.tag_name }}"
+
+      - name: Install dependencies (release artifact)
+        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
+        run: composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+
+      - name: Assert vendor/autoload.php
+        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
+        run: test -f vendor/autoload.php
 
       - name: Validar tag x versão do módulo
         if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
