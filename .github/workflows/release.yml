@@ -3,6 +3,9 @@ name: Release
 on:
   push:
     branches: ["main"]
+  pull_request:
+    branches: ["main"]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
@@ -16,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -23,8 +28,33 @@ jobs:
           php-version: "8.2"
           tools: composer
 
-      - name: Install dependencies
+      - name: Install dependencies (dev)
         run: composer install --no-interaction --prefer-dist
+
+      - name: Garantir migration da versão do módulo (check)
+        run: php scripts/ensure-version-migration.php
+
+      - name: Sincronizar versão do módulo no PR release-please
+        if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--')
+        run: php scripts/sync-module-version.php
+
+      - name: Gerar migration no PR release-please
+        if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--')
+        run: php scripts/ensure-version-migration.php --write
+
+      - name: Commit migration no PR release-please
+        if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--')
+        run: |
+          if git diff --quiet -- migrations; then
+            echo "Sem alterações de migration."
+            exit 0
+          fi
+
+          git config user.name "Wallace Kleiton"
+          git config user.email "wkarts@gmail.com"
+          git add asaas.php migrations
+          git commit -m "chore: sincronizar migration com versão do módulo"
+          git push
 
       - name: PHP lint
         run: |
@@ -33,34 +63,60 @@ jobs:
       - name: PHPUnit
         run: vendor/bin/phpunit
 
+      - name: Validar padrão Perfex (versão + migrations)
+        run: ./.github/scripts/check_perfex_module.sh
+
       - name: Verificar padrões proibidos
         run: |
-          if find . -type f \
-            -not -path "./vendor/*" \
-            -not -path "./.git/*" \
-            -print0 | xargs -0 grep -nE "(/v2|codephix|sandbox\\.asaas\\.com/api|https://www\\.asaas\\.com)"; then
-              echo "Encontrado padrão proibido no código."
-              exit 1
+          set -euo pipefail
+          PATTERN='(/v2|codephix|sandbox\.asaas\.com/api|https://www\.asaas\.com)'
+          if grep -RInE \
+            --exclude-dir=vendor \
+            --exclude-dir=.git \
+            --exclude-dir=.github \
+            --exclude-dir=tests \
+            --exclude-dir=docs \
+            "$PATTERN" .; then
+            echo "Encontrado padrão proibido no código."
+            exit 1
           fi
 
       - name: Release Please
+        if: github.event_name != 'pull_request'
         id: release-please
         uses: googleapis/release-please-action@v4
         with:
-          release-type: simple
-          package-name: asaas-module-perfex
+          config-file: .release-please-config.json
+          manifest-file: .release-please-manifest.json
           default-branch: main
+
+      - name: Validar tag x versão do módulo
+        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
+        run: php scripts/assert-module-version.php "${{ steps.release-please.outputs.tag_name }}"
+
+      - name: Install dependencies (release artifact)
+        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
+        run: composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+
+      - name: Assert vendor/autoload.php
+        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
+        run: test -f vendor/autoload.php
 
       - name: Build ZIP
         id: build-zip
-        if: steps.release-please.outputs.release_created == 'true'
+        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
         run: |
           ZIP_NAME="asaas-module-${{ steps.release-please.outputs.tag_name }}.zip"
-          zip -r "$ZIP_NAME" . -x ".git/*" -x ".github/*" -x "tests/*" -x "phpunit.xml"
+          zip -r "$ZIP_NAME" . \
+            -x ".git/*" \
+            -x ".github/*" \
+            -x "tests/*" \
+            -x "phpunit.xml" \
+            -x ".phpunit.result.cache"
           echo "zip_name=$ZIP_NAME" >> $GITHUB_OUTPUT
 
       - name: Upload release asset
-        if: steps.release-please.outputs.release_created == 'true'
+        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release-please.outputs.tag_name }}
