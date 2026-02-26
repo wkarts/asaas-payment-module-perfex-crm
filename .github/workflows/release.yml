@@ -34,9 +34,9 @@ jobs:
       - name: Garantir migration da versão do módulo (check)
         run: php scripts/ensure-version-migration.php
 
-      - name: Sincronizar versão do módulo no PR release-please
+      - name: Forçar próxima versão patch no PR release-please
         if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--')
-        run: php scripts/sync-module-version.php
+        run: php scripts/enforce-next-patch-version.php
 
       - name: Gerar migration no PR release-please
         if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--')
@@ -45,14 +45,14 @@ jobs:
       - name: Commit migration no PR release-please
         if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--')
         run: |
-          if git diff --quiet -- asaas.php migrations; then
+          if git diff --quiet -- asaas.php migrations .release-please-manifest.json; then
             echo "Sem alterações de migration."
             exit 0
           fi
 
           git config user.name "Wallace Kleiton"
           git config user.email "wkarts@gmail.com"
-          git add asaas.php migrations
+          git add asaas.php migrations .release-please-manifest.json
           git commit -m "chore: sincronizar migration com versão do módulo"
           git push
 
