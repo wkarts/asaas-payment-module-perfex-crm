@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/wkarts/asaas-payment-module-perfex-crm/compare/v1.0.0...v1.0.1) (2026-02-26)
+
+
+### Bug Fixes
+
+* alinhar release com versão do módulo e migration Perfex ([64b6d25](https://github.com/wkarts/asaas-payment-module-perfex-crm/commit/64b6d25f95dbc3fa8b4b12a2c33ffe9e32fb534a))
+
 ## 1.0.0 (2026-02-26)
 
 
