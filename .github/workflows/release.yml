@@ -113,6 +113,18 @@ jobs:
         if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
         run: test -f vendor/autoload.php
 
+      - name: Validar tag x versão do módulo
+        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
+        run: php scripts/assert-module-version.php "${{ steps.release-please.outputs.tag_name }}"
+
+      - name: Install dependencies (release artifact)
+        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
+        run: composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+
+      - name: Assert vendor/autoload.php
+        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
+        run: test -f vendor/autoload.php
+
       - name: Build ZIP
         id: build-zip
         if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
