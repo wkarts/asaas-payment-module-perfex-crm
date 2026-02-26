@@ -486,8 +486,10 @@ final class AsaasAdapter
         $sanitized = $this->sanitizeContext($context);
         $sanitizedContext = json_encode($sanitized, JSON_UNESCAPED_UNICODE);
 
-        if ($this->shouldWriteFileLog()) {
-            log_message($level === 'error' ? 'error' : 'info', '[Asaas] ' . $message . ' | context=' . $sanitizedContext);
+        if ($level === 'error') {
+            log_message('error', '[Asaas] ' . $message . ' | context=' . $sanitizedContext);
+        } elseif ($this->shouldWriteFileLog()) {
+            log_message('info', '[Asaas] ' . $message . ' | context=' . $sanitizedContext);
         }
 
         $table = db_prefix() . 'asaas_logs';

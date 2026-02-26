@@ -543,7 +543,10 @@ class Asaas_gateway extends App_gateway
 
     public function search_charge2($api_url, $api_key, $hash)
     {
-        $payments = $this->adapter->listPayments([]);
+        $payments = $this->adapter->listPayments([
+            'externalReference' => $hash,
+            'limit' => 100,
+        ]);
         $charges = $payments['data'] ?? [];
 
         $response = [];

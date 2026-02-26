@@ -10,10 +10,10 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip release]')
     runs-on: ubuntu-latest
 
     steps:
@@ -28,119 +28,66 @@ jobs:
           php-version: "8.2"
           tools: composer
 
-      - name: Install dependencies (dev)
-        run: composer install --no-interaction --prefer-dist
+      - name: Bump patch + garantir migration
+        id: bump
+        run: |
+          OUT=$(php scripts/bump-patch.php)
+          echo "$OUT"
+          VERSION=$(echo "$OUT" | sed -n 's/^new_version=//p' | head -n1)
+          if [ -z "$VERSION" ]; then
+            echo "Falha ao capturar versão nova"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Garantir migration da versão do módulo (check)
-        run: php scripts/ensure-version-migration.php
+      - name: Validar padrão Perfex (versão + migrations)
+        run: ./.github/scripts/check_perfex_module.sh
 
-      - name: Forçar próxima versão patch no PR release-please
-        if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--')
-        run: php scripts/enforce-next-patch-version.php
-
-      - name: Gerar migration no PR release-please
-        if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--')
-        run: php scripts/ensure-version-migration.php --write
-
-      - name: Commit migration no PR release-please
-        if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--')
+      - name: Commit versão/migration
         run: |
           if git diff --quiet -- asaas.php migrations .release-please-manifest.json; then
-            echo "Sem alterações de migration."
+            echo "Sem alterações para commit."
             exit 0
           fi
 
           git config user.name "Wallace Kleiton"
           git config user.email "wkarts@gmail.com"
           git add asaas.php migrations .release-please-manifest.json
-          git commit -m "chore: sincronizar migration com versão do módulo"
-          git push
+          git commit -m "chore(release): bump patch para v${{ steps.bump.outputs.version }} [skip release]"
+          git push origin main
 
-      - name: PHP lint
+      - name: Criar tag
         run: |
-          find . -name "*.php" -not -path "./vendor/*" -print0 | xargs -0 -n1 php -l
-
-      - name: PHPUnit
-        run: vendor/bin/phpunit
-
-      - name: Validar padrão Perfex (versão + migrations)
-        run: ./.github/scripts/check_perfex_module.sh
-
-      - name: Verificar padrões proibidos
-        run: |
-          set -euo pipefail
-          PATTERN='(/v2|codephix|sandbox\.asaas\.com/api|https://www\.asaas\.com)'
-          if grep -RInE \
-            --exclude-dir=vendor \
-            --exclude-dir=.git \
-            --exclude-dir=.github \
-            --exclude-dir=tests \
-            --exclude-dir=docs \
-            "$PATTERN" .; then
-            echo "Encontrado padrão proibido no código."
-            exit 1
+          TAG="v${{ steps.bump.outputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG já existe."
+            exit 0
           fi
-
-      - name: Ler versão do módulo
-        id: module-version
-        run: |
-          VERSION=$(sed -n 's/^Version:[[:space:]]*//p' asaas.php | head -n1)
-          if [ -z "$VERSION" ]; then
-            echo "Não foi possível ler Version: de asaas.php"
-            exit 1
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Release Please
-        if: github.event_name != 'pull_request'
-        id: release-please
-        uses: googleapis/release-please-action@v4
-        with:
-          config-file: .release-please-config.json
-          manifest-file: .release-please-manifest.json
-          default-branch: main
-          release-as: ${{ steps.module-version.outputs.version }}
-
-      - name: Validar tag x versão do módulo
-        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
-        run: php scripts/assert-module-version.php "${{ steps.release-please.outputs.tag_name }}"
+          git tag "$TAG"
+          git push origin "$TAG"
 
       - name: Install dependencies (release artifact)
-        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
         run: composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
 
       - name: Assert vendor/autoload.php
-        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
-        run: test -f vendor/autoload.php
-
-      - name: Validar tag x versão do módulo
-        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
-        run: php scripts/assert-module-version.php "${{ steps.release-please.outputs.tag_name }}"
-
-      - name: Install dependencies (release artifact)
-        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
-        run: composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
-
-      - name: Assert vendor/autoload.php
-        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
         run: test -f vendor/autoload.php
 
       - name: Build ZIP
         id: build-zip
-        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
         run: |
-          ZIP_NAME="asaas-module-${{ steps.release-please.outputs.tag_name }}.zip"
+          TAG="v${{ steps.bump.outputs.version }}"
+          ZIP_NAME="asaas-module-${TAG}.zip"
           zip -r "$ZIP_NAME" . \
             -x ".git/*" \
             -x ".github/*" \
             -x "tests/*" \
             -x "phpunit.xml" \
             -x ".phpunit.result.cache"
-          echo "zip_name=$ZIP_NAME" >> $GITHUB_OUTPUT
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Upload release asset
-        if: github.event_name != 'pull_request' && steps.release-please.outputs.release_created == 'true'
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release-please.outputs.tag_name }}
+          tag_name: v${{ steps.bump.outputs.version }}
+          generate_release_notes: true
           files: ${{ steps.build-zip.outputs.zip_name }}
