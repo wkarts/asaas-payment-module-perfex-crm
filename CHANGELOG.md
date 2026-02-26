@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.1](https://github.com/wkarts/asaas-payment-module-perfex-crm/compare/v1.5.0...v1.5.1) (2026-02-26)
+
+
+### Bug Fixes
+
+* impedir salto de versão no release-please usando release-as ([c4a6a10](https://github.com/wkarts/asaas-payment-module-perfex-crm/commit/c4a6a1057f096caefcdc8fd421d17dad695a10ba))
+* travar próximo release em patch sequencial (1.4.1) ([ea605c2](https://github.com/wkarts/asaas-payment-module-perfex-crm/commit/ea605c2d77598ecab1fb0029033770d514d91bbd))
+
 ## [1.5.0](https://github.com/wkarts/asaas-payment-module-perfex-crm/compare/v1.4.1...v1.5.0) (2026-02-26)
 
 
