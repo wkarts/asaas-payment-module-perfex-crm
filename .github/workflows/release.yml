@@ -7,15 +7,18 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip release]')
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -23,45 +26,92 @@ jobs:
           php-version: "8.2"
           tools: composer
 
-      - name: Install dependencies
-        run: composer install --no-interaction --prefer-dist
-
-      - name: PHP lint
+      - name: Definir versão alvo (publicar atual se tag não existir; senão bump patch)
+        id: version
         run: |
-          find . -name "*.php" -not -path "./vendor/*" -print0 | xargs -0 -n1 php -l
+          set -euo pipefail
 
-      - name: PHPUnit
-        run: vendor/bin/phpunit
-
-      - name: Verificar padrões proibidos
-        run: |
-          if find . -type f \
-            -not -path "./vendor/*" \
-            -not -path "./.git/*" \
-            -print0 | xargs -0 grep -nE "(/v2|codephix|sandbox\\.asaas\\.com/api|https://www\\.asaas\\.com)"; then
-              echo "Encontrado padrão proibido no código."
-              exit 1
+          CURRENT_VERSION=$(sed -n 's/^Version:[[:space:]]*//p' asaas.php | head -n1)
+          if [ -z "$CURRENT_VERSION" ]; then
+            echo "Não foi possível ler Version de asaas.php"
+            exit 1
           fi
 
-      - name: Release Please
-        id: release-please
-        uses: googleapis/release-please-action@v4
-        with:
-          release-type: simple
-          package-name: asaas-module-perfex
-          default-branch: main
+          CURRENT_TAG="v${CURRENT_VERSION}"
+
+          git fetch --tags --force
+          if git rev-parse "$CURRENT_TAG" >/dev/null 2>&1; then
+            echo "Tag ${CURRENT_TAG} já existe: será feito bump de patch."
+            OUT=$(php scripts/bump-patch.php)
+            echo "$OUT"
+            TARGET_VERSION=$(echo "$OUT" | sed -n 's/^new_version=//p' | head -n1)
+            if [ -z "$TARGET_VERSION" ]; then
+              echo "Falha ao capturar versão nova"
+              exit 1
+            fi
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag ${CURRENT_TAG} não existe: publicando versão atual sem bump."
+            TARGET_VERSION="$CURRENT_VERSION"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "version=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Validar padrão Perfex (versão + migrations)
+        run: ./.github/scripts/check_perfex_module.sh
+
+      - name: Commit versão/migration (quando houver bump)
+        if: steps.version.outputs.bumped == 'true'
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- asaas.php migrations .release-please-manifest.json; then
+            echo "Sem alterações para commit."
+            exit 0
+          fi
+
+          git config user.name "Wallace Kleiton"
+          git config user.email "wkarts@gmail.com"
+          git add asaas.php migrations .release-please-manifest.json
+          git commit -m "chore(release): bump patch para v${{ steps.version.outputs.version }} [skip release]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Criar tag
+        run: |
+          set -euo pipefail
+
+          TAG="v${{ steps.version.outputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG já existe."
+            exit 0
+          fi
+
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Install dependencies (release artifact)
+        run: composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+
+      - name: Assert vendor/autoload.php
+        run: test -f vendor/autoload.php
 
       - name: Build ZIP
         id: build-zip
-        if: steps.release-please.outputs.release_created == 'true'
         run: |
-          ZIP_NAME="asaas-module-${{ steps.release-please.outputs.tag_name }}.zip"
-          zip -r "$ZIP_NAME" . -x ".git/*" -x ".github/*" -x "tests/*" -x "phpunit.xml"
-          echo "zip_name=$ZIP_NAME" >> $GITHUB_OUTPUT
+          TAG="v${{ steps.version.outputs.version }}"
+          ZIP_NAME="asaas-module-${TAG}.zip"
+          zip -r "$ZIP_NAME" . \
+            -x ".git/*" \
+            -x ".github/*" \
+            -x "tests/*" \
+            -x "phpunit.xml" \
+            -x ".phpunit.result.cache"
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Upload release asset
-        if: steps.release-please.outputs.release_created == 'true'
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release-please.outputs.tag_name }}
+          tag_name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
           files: ${{ steps.build-zip.outputs.zip_name }}
