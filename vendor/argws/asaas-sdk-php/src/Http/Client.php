@@ -13,6 +13,7 @@ use Psr\Log\LoggerInterface;
 
 final class Client
 {
+    private const API_PREFIX = '/v3';
     private GuzzleClient $client;
     private string $apiKey;
     private string $appName;
@@ -103,8 +104,10 @@ final class Client
             }
         }
 
+        $resolvedPath = $this->resolvePath($path);
+
         try {
-            $response = $this->client->request($method, $path, $options);
+            $response = $this->client->request($method, $resolvedPath, $options);
         } catch (\Throwable $exception) {
             throw new TransportException('Erro de transporte ao chamar API Asaas.', 0, $exception);
         }
@@ -133,6 +136,18 @@ final class Client
      * @param array<string, mixed> $payload
      * @return array<int, array<string, mixed>>
      */
+
+    private function resolvePath(string $path): string
+    {
+        $normalizedPath = '/' . ltrim($path, '/');
+
+        if (strpos($normalizedPath, self::API_PREFIX . '/') === 0 || $normalizedPath === self::API_PREFIX) {
+            return $normalizedPath;
+        }
+
+        return self::API_PREFIX . $normalizedPath;
+    }
+
     private function formatMultipart(array $payload): array
     {
         $parts = [];

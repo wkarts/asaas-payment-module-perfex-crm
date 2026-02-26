@@ -544,21 +544,17 @@ class Asaas_gateway extends App_gateway
     public function search_charge2($api_url, $api_key, $hash)
     {
         $payments = $this->adapter->listPayments([
-            'externalReference' => $hash,
-            'limit' => 100,
+            'externalReference' => (string) $hash,
         ]);
+
         $charges = $payments['data'] ?? [];
-
-        $response = [];
-
-        if ($charges) {
-            foreach ($charges as $charge) {
-                if (($charge['externalReference'] ?? null) === $hash) {
-                    $response[] = json_decode(json_encode($charge));
-                }
-            }
+        if (!is_array($charges) || $charges === []) {
+            return [];
         }
-        return $response;
+
+        return array_map(static function ($charge) {
+            return is_array($charge) ? json_decode(json_encode($charge)) : $charge;
+        }, $charges);
     }
 
     public function debug_enable()
@@ -1267,7 +1263,7 @@ class Asaas_gateway extends App_gateway
 
     public function search_customer($api_url, $api_key, $cpfCnpj)
     {
-        return $this->adapter->request('GET', '/customers', ['cpfCnpj' => $cpfCnpj]);
+        return $this->adapter->listCustomers(['cpfCnpj' => $cpfCnpj]);
     }
 
     public function update_charge($charge_id, $post_data)
@@ -1279,13 +1275,13 @@ class Asaas_gateway extends App_gateway
     // https://api.asaas.com/v3/payments/id
     public function delete_charge($charge_id)
     {
-        return $this->adapter->request('DELETE', '/payments/' . $charge_id);
+        return $this->adapter->deletePayment($charge_id);
     }
 
     public function create_customer($api_url, $api_key, $post_data)
     {
         $payload = $this->safe_json_decode_array($post_data);
-        return $this->adapter->request('POST', '/customers', [], [], is_array($payload) ? $payload : []);
+        return $this->adapter->createCustomer(is_array($payload) ? $payload : []);
     }
 
     public function get_webhook($api_key, $api_url)
@@ -1344,6 +1340,46 @@ class Asaas_gateway extends App_gateway
     public function ensure_customer_from_client($client): array
     {
         return $this->adapter->ensureCustomerFromClient($client);
+    }
+
+    public function upsert_payment_map(int $invoiceId, $charge): bool
+    {
+        $table = db_prefix() . 'asaas_payments_map';
+        $ci = &get_instance();
+
+        if (!$ci->db->table_exists($table)) {
+            log_message('error', '[Asaas] upsert_payment_map: tabela não encontrada: ' . $table);
+            return false;
+        }
+
+        $chargeData = is_object($charge) ? get_object_vars($charge) : (is_array($charge) ? $charge : []);
+        if ($chargeData === []) {
+            log_message('error', '[Asaas] upsert_payment_map: payload de cobrança inválido para invoice_id=' . $invoiceId);
+            return false;
+        }
+
+        $now = date('Y-m-d H:i:s');
+        $existing = $ci->db->get_where($table, ['invoice_id' => $invoiceId])->row_array();
+
+        $payload = [
+            'invoice_id' => $invoiceId,
+            'asaas_payment_id' => (string) ($chargeData['id'] ?? ''),
+            'billing_type' => $chargeData['billingType'] ?? null,
+            'status' => $chargeData['status'] ?? null,
+            'value' => $chargeData['value'] ?? null,
+            'due_date' => $chargeData['dueDate'] ?? null,
+            'last_sync_at' => $now,
+            'payload_cache' => json_encode($chargeData, JSON_UNESCAPED_UNICODE),
+            'updated_at' => $now,
+        ];
+
+        if (!$existing) {
+            $payload['created_at'] = $now;
+            return (bool) $ci->db->insert($table, $payload);
+        }
+
+        $ci->db->where('invoice_id', $invoiceId);
+        return (bool) $ci->db->update($table, $payload);
     }
 
     function get_state_abbr()
