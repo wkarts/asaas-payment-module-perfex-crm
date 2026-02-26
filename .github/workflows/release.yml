@@ -33,6 +33,9 @@ jobs:
       - name: PHPUnit
         run: vendor/bin/phpunit
 
+      - name: Validar padrão Perfex (versão + migrations)
+        run: ./.github/scripts/check_perfex_module.sh
+
       - name: Verificar padrões proibidos
         run: |
           if find . -type f \
@@ -56,7 +59,13 @@ jobs:
         if: steps.release-please.outputs.release_created == 'true'
         run: |
           ZIP_NAME="asaas-module-${{ steps.release-please.outputs.tag_name }}.zip"
-          zip -r "$ZIP_NAME" . -x ".git/*" -x ".github/*" -x "tests/*" -x "phpunit.xml"
+          zip -r "$ZIP_NAME" . \
+            -x ".git/*" \
+            -x ".github/*" \
+            -x "tests/*" \
+            -x "phpunit.xml" \
+            -x "vendor/*" \
+            -x ".phpunit.result.cache"
           echo "zip_name=$ZIP_NAME" >> $GITHUB_OUTPUT
 
       - name: Upload release asset
