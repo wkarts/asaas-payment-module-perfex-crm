@@ -185,6 +185,34 @@ class Asaas_gateway extends App_gateway
         return $this->provider->environmentLabel();
     }
 
+
+    public function apiKey(?int $companyId = null): string
+    {
+        return $this->provider->apiKey($companyId);
+    }
+
+    public function isSandbox(?int $companyId = null): bool
+    {
+        return $this->provider->env($companyId) === 'sandbox';
+    }
+
+    public function client(?int $companyId = null): \Asaas\Sdk\Http\Client
+    {
+        return $this->provider->client($companyId);
+    }
+
+    public function request(
+        string $method,
+        string $path,
+        array $query = [],
+        array $headers = [],
+        ?array $payload = null,
+        bool $expectsBinary = false,
+        ?int $companyId = null
+    ): array {
+        return $this->adapter->request($method, $path, $query, $headers, $payload, $expectsBinary, $companyId);
+    }
+
     public function process_payment($data)
     {
         if (empty($data)) {
@@ -661,7 +689,7 @@ class Asaas_gateway extends App_gateway
 
         $charge = $this->create_charge($this->getUrlBase(), $this->getApiKey(), $post_data);
 
-        $charge = json_decode($charge, TRUE);
+        $charge = $this->safe_json_decode_array($charge);
 
         log_activity('Cobrança Boleto Criada no Asaas [Fatura ID: ' . $invoice->id . ']');
 
@@ -1196,7 +1224,7 @@ class Asaas_gateway extends App_gateway
         ]);
 
         $charge = $this->create_charge($api_url, $api_key, $post_data);
-        $charge = json_decode($charge, TRUE);
+        $charge = $this->safe_json_decode_array($charge);
 
         log_activity('Cobran�a PIX Asaas [Fatura ID: ' . $invoice . ']');
 
@@ -1205,7 +1233,7 @@ class Asaas_gateway extends App_gateway
 
     public function create_charge($api_url, $api_key, $post_data)
     {
-        $payload = json_decode($post_data, true);
+        $payload = $this->safe_json_decode_array($post_data);
         $response = $this->adapter->createPayment(is_array($payload) ? $payload : []);
         return json_encode($response);
     }
@@ -1229,7 +1257,7 @@ class Asaas_gateway extends App_gateway
 
     public function update_charge($charge_id, $post_data)
     {
-        $payload = json_decode($post_data, true);
+        $payload = $this->safe_json_decode_array($post_data);
         return $this->adapter->updatePayment($charge_id, is_array($payload) ? $payload : []);
     }
 
@@ -1241,7 +1269,7 @@ class Asaas_gateway extends App_gateway
 
     public function create_customer($api_url, $api_key, $post_data)
     {
-        $payload = json_decode($post_data, true);
+        $payload = $this->safe_json_decode_array($post_data);
         return $this->adapter->request('POST', '/customers', [], [], is_array($payload) ? $payload : []);
     }
 
@@ -1252,7 +1280,7 @@ class Asaas_gateway extends App_gateway
 
     public function create_webhook($api_key, $api_url, $post_data)
     {
-        $payload = json_decode($post_data, true);
+        $payload = $this->safe_json_decode_array($post_data);
         return $this->adapter->request('POST', '/webhook', [], [], is_array($payload) ? $payload : []);
     }
 
@@ -1263,7 +1291,7 @@ class Asaas_gateway extends App_gateway
 
     public function create_webhook_invoice($api_key, $api_url, $post_data)
     {
-        $payload = json_decode($post_data, true);
+        $payload = $this->safe_json_decode_array($post_data);
         return $this->adapter->request('POST', '/webhook/invoice', [], [], is_array($payload) ? $payload : []);
     }
 
@@ -1274,7 +1302,7 @@ class Asaas_gateway extends App_gateway
 
     public function create_webhook_transfer($api_key, $api_url, $post_data)
     {
-        $payload = json_decode($post_data, true);
+        $payload = $this->safe_json_decode_array($post_data);
         return $this->adapter->request('POST', '/webhook/transfer', [], [], is_array($payload) ? $payload : []);
     }
 
@@ -1355,4 +1383,15 @@ class Asaas_gateway extends App_gateway
             return NULL;
         }
     }
+    private function safe_json_decode_array($json): array
+    {
+        if (!is_string($json) || trim($json) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($json, true);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
 }
