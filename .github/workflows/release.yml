@@ -23,8 +23,11 @@ jobs:
           php-version: "8.2"
           tools: composer
 
-      - name: Install dependencies
+      - name: Install dependencies (dev)
         run: composer install --no-interaction --prefer-dist
+
+      - name: Garantir migration da versão do módulo
+        run: php scripts/ensure-version-migration.php
 
       - name: PHP lint
         run: |
@@ -39,17 +42,13 @@ jobs:
       - name: Verificar padrões proibidos
         run: |
           set -euo pipefail
-
           PATTERN='(/v2|codephix|sandbox\.asaas\.com/api|https://www\.asaas\.com)'
-
           if grep -RInE \
             --exclude-dir=vendor \
             --exclude-dir=.git \
             --exclude-dir=.github \
             --exclude-dir=tests \
             --exclude-dir=docs \
-            --exclude=readme.md \
-            --exclude=phpunit.xml \
             "$PATTERN" .; then
             echo "Encontrado padrão proibido no código."
             exit 1
@@ -63,6 +62,18 @@ jobs:
           package-name: asaas-module-perfex
           default-branch: main
 
+      - name: Validar tag x versão do módulo
+        if: steps.release-please.outputs.release_created == 'true'
+        run: php scripts/assert-module-version.php "${{ steps.release-please.outputs.tag_name }}"
+
+      - name: Install dependencies (release artifact)
+        if: steps.release-please.outputs.release_created == 'true'
+        run: composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+
+      - name: Assert vendor/autoload.php
+        if: steps.release-please.outputs.release_created == 'true'
+        run: test -f vendor/autoload.php
+
       - name: Build ZIP
         id: build-zip
         if: steps.release-please.outputs.release_created == 'true'
@@ -73,7 +84,6 @@ jobs:
             -x ".github/*" \
             -x "tests/*" \
             -x "phpunit.xml" \
-            -x "vendor/*" \
             -x ".phpunit.result.cache"
           echo "zip_name=$ZIP_NAME" >> $GITHUB_OUTPUT
 

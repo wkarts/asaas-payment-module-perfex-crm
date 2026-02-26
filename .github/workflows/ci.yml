@@ -25,6 +25,9 @@ jobs:
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist
 
+      - name: Garantir migration da versão do módulo
+        run: php scripts/ensure-version-migration.php
+
       - name: PHP lint
         run: |
           find . -name "*.php" -not -path "./vendor/*" -print0 | xargs -0 -n1 php -l
@@ -38,17 +41,13 @@ jobs:
       - name: Verificar padrões proibidos
         run: |
           set -euo pipefail
-
           PATTERN='(/v2|codephix|sandbox\.asaas\.com/api|https://www\.asaas\.com)'
-
           if grep -RInE \
             --exclude-dir=vendor \
             --exclude-dir=.git \
             --exclude-dir=.github \
             --exclude-dir=tests \
             --exclude-dir=docs \
-            --exclude=readme.md \
-            --exclude=phpunit.xml \
             "$PATTERN" .; then
             echo "Encontrado padrão proibido no código."
             exit 1
