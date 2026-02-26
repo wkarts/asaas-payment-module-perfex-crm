@@ -32,6 +32,9 @@ jobs:
       - name: PHPUnit
         run: vendor/bin/phpunit
 
+      - name: Validar padrão Perfex (versão + migrations)
+        run: ./.github/scripts/check_perfex_module.sh
+
       - name: Verificar padrões proibidos
         run: |
           if find . -type f \
