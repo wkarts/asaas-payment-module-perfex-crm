@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/wkarts/asaas-payment-module-perfex-crm/compare/v1.0.1...v1.0.2) (2026-02-26)
+
+
+### Bug Fixes
+
+* reforçar sdk-first, wrappers do gateway e logging resiliente ([ef2137a](https://github.com/wkarts/asaas-payment-module-perfex-crm/commit/ef2137aac9ade265ce78ddd4498e78fdaa606b54))
+
 ## [1.0.1](https://github.com/wkarts/asaas-payment-module-perfex-crm/compare/v1.0.0...v1.0.1) (2026-02-26)
 
 
