@@ -8,6 +8,7 @@ use App_gateway;
 use Asaas\Sdk\Exception\ApiException;
 use Asaas\Sdk\Exception\TransportException;
 use AsaasSdkProvider;
+use RuntimeException;
 
 final class AsaasAdapter
 {
@@ -58,7 +59,11 @@ final class AsaasAdapter
                 'correlation_id' => $headers['X-Correlation-Id'] ?? null,
             ]);
 
-            return [];
+            throw new RuntimeException(
+                sprintf('Erro HTTP Asaas [%s %s]: %s', $method, $path, $exception->getMessage()),
+                (int) $exception->getStatusCode(),
+                $exception
+            );
         } catch (TransportException $exception) {
             $this->log('error', 'Erro de transporte na API Asaas.', [
                 'method' => $method,
@@ -68,7 +73,11 @@ final class AsaasAdapter
                 'correlation_id' => $headers['X-Correlation-Id'] ?? null,
             ]);
 
-            return [];
+            throw new RuntimeException(
+                sprintf('Erro de transporte Asaas [%s %s]: %s', $method, $path, $exception->getMessage()),
+                0,
+                $exception
+            );
         }
     }
 
@@ -486,11 +495,7 @@ final class AsaasAdapter
         $sanitized = $this->sanitizeContext($context);
         $sanitizedContext = json_encode($sanitized, JSON_UNESCAPED_UNICODE);
 
-        if ($level === 'error') {
-            log_message('error', '[Asaas] ' . $message . ' | context=' . $sanitizedContext);
-        } elseif ($this->shouldWriteFileLog()) {
-            log_message('info', '[Asaas] ' . $message . ' | context=' . $sanitizedContext);
-        }
+        log_message('error', '[Asaas][' . strtoupper($level) . '] ' . $message . ' | context=' . $sanitizedContext);
 
         $table = db_prefix() . 'asaas_logs';
         if (!$this->ci->db->table_exists($table)) {

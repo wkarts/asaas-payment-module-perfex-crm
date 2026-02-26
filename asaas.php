@@ -197,121 +197,131 @@ function asaas_after_invoice_updated($hookData = null)
     $CI->load->library('asaas_gateway');
     $CI->load->model('invoices_model');
 
-    $description = (string) $CI->asaas_gateway->getSetting('description');
-    $discount_value = (float) $CI->asaas_gateway->getSetting('discount_value');
-    $dueDateLimitDays = (int) $CI->asaas_gateway->getSetting('discount_days');
-    $discount_type = (int) $CI->asaas_gateway->getSetting('discount_type');
-    $update_charge = (int) $CI->asaas_gateway->getSetting('update_charge');
+    try {
+        $description = (string) $CI->asaas_gateway->getSetting('description');
+        $discount_value = (float) $CI->asaas_gateway->getSetting('discount_value');
+        $dueDateLimitDays = (int) $CI->asaas_gateway->getSetting('discount_days');
+        $discount_type = (int) $CI->asaas_gateway->getSetting('discount_type');
+        $update_charge = (int) $CI->asaas_gateway->getSetting('update_charge');
 
-    if ($update_charge !== 1) {
-        log_message('info', '[Asaas] invoice_updated: update_charge desabilitado para invoice_id=' . $id);
-        return $id;
-    }
-
-    $invoice = $CI->invoices_model->get($id);
-    if (!$invoice) {
-        log_message('error', '[Asaas] invoice_updated: invoice não encontrada para invoice_id=' . $id);
-        return $id;
-    }
-
-    if (empty($invoice->duedate)) {
-        log_message('info', '[Asaas] invoice_updated: sem dueDate para invoice_id=' . $id);
-        return $id;
-    }
-
-    $allowed_payment_modes = isset($invoice->allowed_payment_modes) ? unserialize($invoice->allowed_payment_modes) : array();
-    if (!is_array($allowed_payment_modes) || !in_array('asaas', $allowed_payment_modes, true)) {
-        log_message('info', '[Asaas] invoice_updated: forma de pagamento asaas não permitida para invoice_id=' . $id);
-        return $id;
-    }
-
-    $adminnote = isset($invoice->adminnote) && is_string($invoice->adminnote) ? $invoice->adminnote : '';
-    $sem_desconto = strpos($adminnote, '{sem_desconto}', 0);
-
-    $discount = [
-        'type' => 'PERCENTAGE',
-        'value' => $discount_value,
-        'dueDateLimitDays' => $dueDateLimitDays,
-    ];
-
-    if ($discount_type === 1) {
-        $discount['type'] = 'FIXED';
-    }
-
-    if (is_bool($sem_desconto)) {
-        $discount['type'] = 'PERCENTAGE';
-    }
-
-    $invoice_number = $invoice->prefix . str_pad((string) $invoice->number, 6, '0', STR_PAD_LEFT);
-    $description = mb_convert_encoding(str_replace('{invoice_number}', $invoice_number, $description), 'UTF-8');
-
-    $CI->db->select('c.*, cc.email');
-    $CI->db->from(db_prefix() . 'clients c');
-    $CI->db->join(db_prefix() . 'contacts cc', 'cc.userid = c.userid AND cc.is_primary = 1', 'LEFT');
-    $CI->db->where('c.userid', $invoice->clientid);
-    $client = $CI->db->get()->row();
-
-    if (!$client) {
-        log_message('error', '[Asaas] invoice_updated: cliente não encontrado para invoice_id=' . $id);
-        return $id;
-    }
-
-    $customerSync = $CI->asaas_gateway->ensure_customer_from_client($client);
-    log_message('info', '[Asaas] invoice_updated: ensure_customer_from_client response=' . json_encode($customerSync, JSON_UNESCAPED_UNICODE));
-
-    $cliente_id = isset($customerSync['customerId']) ? (string) $customerSync['customerId'] : '';
-    if ($cliente_id === '') {
-        log_message('error', '[Asaas] invoice_updated: cliente Asaas não identificado para invoice_id=' . $id . ' response=' . json_encode($customerSync, JSON_UNESCAPED_UNICODE));
-        return $id;
-    }
-
-    $chargePayloadArray = [
-        'customer' => $cliente_id,
-        'billingType' => 'UNDEFINED',
-        'dueDate' => $invoice->duedate,
-        'value' => $invoice->total,
-        'description' => $description,
-        'externalReference' => (string) $invoice->hash,
-        'postalService' => false,
-        'discount' => $discount,
-    ];
-    $chargePayload = json_encode($chargePayloadArray);
-
-    $charges = $CI->asaas_gateway->get_charge2($invoice->hash);
-
-    if ($charges && is_array($charges)) {
-        foreach ($charges as $charge) {
-            $billingType = isset($charge->billingType) ? $charge->billingType : 'UNDEFINED';
-            $payloadArray = [
-                'customer' => $cliente_id,
-                'billingType' => $billingType,
-                'dueDate' => $invoice->duedate,
-                'value' => $invoice->total,
-                'description' => $description,
-                'externalReference' => (string) $invoice->hash,
-                'postalService' => false,
-                'discount' => $discount,
-            ];
-            $payload = json_encode($payloadArray);
-            log_message('info', '[Asaas] invoice_updated: update_charge payload=' . json_encode($payloadArray, JSON_UNESCAPED_UNICODE));
-            $updateResponse = $CI->asaas_gateway->update_charge($charge->id, $payload);
-            log_message('info', '[Asaas] invoice_updated: update_charge response=' . json_encode($updateResponse, JSON_UNESCAPED_UNICODE));
-
-            if (!is_array($updateResponse) || isset($updateResponse['errors']) || isset($updateResponse['error'])) {
-                log_message('error', '[Asaas] invoice_updated: erro ao atualizar cobrança charge_id=' . $charge->id . ' response=' . json_encode($updateResponse, JSON_UNESCAPED_UNICODE));
-            }
+        if ($update_charge !== 1) {
+            log_message('error', '[Asaas] invoice_updated: update_charge desabilitado; seguirá para criação quando não houver cobrança. invoice_id=' . $id);
         }
 
-        return $id;
-    }
+        $invoice = $CI->invoices_model->get($id);
+        if (!$invoice) {
+            log_message('error', '[Asaas] invoice_updated: invoice não encontrada para invoice_id=' . $id);
+            return $id;
+        }
 
-    log_message('info', '[Asaas] invoice_updated: create_charge payload=' . json_encode($chargePayloadArray, JSON_UNESCAPED_UNICODE));
-    $createResponseRaw = $CI->asaas_gateway->create_charge($CI->asaas_gateway->getUrlBase(), $CI->asaas_gateway->getApiKey(), $chargePayload);
-    $createResponse = is_string($createResponseRaw) ? json_decode($createResponseRaw, true) : $createResponseRaw;
-    log_message('info', '[Asaas] invoice_updated: create_charge response=' . json_encode($createResponse, JSON_UNESCAPED_UNICODE));
+        if (empty($invoice->duedate)) {
+            log_message('error', '[Asaas] invoice_updated: sem dueDate para invoice_id=' . $id);
+            return $id;
+        }
 
-    if (!is_array($createResponse) || isset($createResponse['errors']) || isset($createResponse['error'])) {
-        log_message('error', '[Asaas] invoice_updated: erro ao criar cobrança para invoice_id=' . $id . ' response=' . json_encode($createResponse, JSON_UNESCAPED_UNICODE));
+        $allowed_payment_modes = isset($invoice->allowed_payment_modes) ? unserialize($invoice->allowed_payment_modes) : array();
+        if (!is_array($allowed_payment_modes) || !in_array('asaas', $allowed_payment_modes, true)) {
+            log_message('error', '[Asaas] invoice_updated: forma de pagamento asaas não permitida para invoice_id=' . $id);
+            return $id;
+        }
+
+        $adminnote = isset($invoice->adminnote) && is_string($invoice->adminnote) ? $invoice->adminnote : '';
+        $sem_desconto = strpos($adminnote, '{sem_desconto}', 0);
+
+        $discount = [
+            'type' => 'PERCENTAGE',
+            'value' => $discount_value,
+            'dueDateLimitDays' => $dueDateLimitDays,
+        ];
+
+        if ($discount_type === 1) {
+            $discount['type'] = 'FIXED';
+        }
+
+        if (is_bool($sem_desconto)) {
+            $discount['type'] = 'PERCENTAGE';
+        }
+
+        $invoice_number = $invoice->prefix . str_pad((string) $invoice->number, 6, '0', STR_PAD_LEFT);
+        $description = mb_convert_encoding(str_replace('{invoice_number}', $invoice_number, $description), 'UTF-8');
+
+        $CI->db->select('c.*, cc.email');
+        $CI->db->from(db_prefix() . 'clients c');
+        $CI->db->join(db_prefix() . 'contacts cc', 'cc.userid = c.userid AND cc.is_primary = 1', 'LEFT');
+        $CI->db->where('c.userid', $invoice->clientid);
+        $client = $CI->db->get()->row();
+
+        if (!$client) {
+            log_message('error', '[Asaas] invoice_updated: cliente não encontrado para invoice_id=' . $id);
+            return $id;
+        }
+
+        $customerSync = $CI->asaas_gateway->ensure_customer_from_client($client);
+        log_message('error', '[Asaas] invoice_updated: ensure_customer_from_client response=' . json_encode($customerSync, JSON_UNESCAPED_UNICODE));
+
+        $cliente_id = isset($customerSync['customerId']) ? (string) $customerSync['customerId'] : '';
+        if ($cliente_id === '') {
+            log_message('error', '[Asaas] invoice_updated: cliente Asaas não identificado para invoice_id=' . $id . ' response=' . json_encode($customerSync, JSON_UNESCAPED_UNICODE));
+            return $id;
+        }
+
+        $basePayloadArray = [
+            'customer' => $cliente_id,
+            'billingType' => 'UNDEFINED',
+            'dueDate' => $invoice->duedate,
+            'value' => $invoice->total,
+            'description' => $description,
+            'externalReference' => (string) $invoice->hash,
+            'postalService' => false,
+            'discount' => $discount,
+        ];
+
+        $charges = $CI->asaas_gateway->get_charge2($invoice->hash);
+        $charges = is_array($charges) ? $charges : [];
+
+        if ($charges !== []) {
+            if ($update_charge === 1) {
+                foreach ($charges as $charge) {
+                    $billingType = isset($charge->billingType) ? $charge->billingType : 'UNDEFINED';
+                    $payloadArray = $basePayloadArray;
+                    $payloadArray['billingType'] = $billingType;
+                    $payload = json_encode($payloadArray);
+
+                    log_message('error', '[Asaas] invoice_updated: update_charge payload=' . json_encode($payloadArray, JSON_UNESCAPED_UNICODE));
+                    $updateResponse = $CI->asaas_gateway->update_charge($charge->id, $payload);
+                    log_message('error', '[Asaas] invoice_updated: update_charge response=' . json_encode($updateResponse, JSON_UNESCAPED_UNICODE));
+
+                    if (!is_array($updateResponse) || isset($updateResponse['errors']) || isset($updateResponse['error'])) {
+                        log_message('error', '[Asaas] invoice_updated: erro ao atualizar cobrança charge_id=' . $charge->id . ' response=' . json_encode($updateResponse, JSON_UNESCAPED_UNICODE));
+                        continue;
+                    }
+
+                    $CI->asaas_gateway->upsert_payment_map((int) $id, $updateResponse);
+                }
+            } else {
+                log_message('error', '[Asaas] invoice_updated: cobrança existente, update_charge desabilitado. Não atualizou. invoice_id=' . $id . ' charges=' . count($charges));
+                foreach ($charges as $charge) {
+                    $CI->asaas_gateway->upsert_payment_map((int) $id, $charge);
+                }
+            }
+
+            return $id;
+        }
+
+        $createPayload = json_encode($basePayloadArray);
+        log_message('error', '[Asaas] invoice_updated: create_charge payload=' . json_encode($basePayloadArray, JSON_UNESCAPED_UNICODE));
+        $createResponseRaw = $CI->asaas_gateway->create_charge($CI->asaas_gateway->getUrlBase(), $CI->asaas_gateway->getApiKey(), $createPayload);
+        $createResponse = is_string($createResponseRaw) ? json_decode($createResponseRaw, true) : $createResponseRaw;
+        log_message('error', '[Asaas] invoice_updated: create_charge response=' . json_encode($createResponse, JSON_UNESCAPED_UNICODE));
+
+        if (!is_array($createResponse) || isset($createResponse['errors']) || isset($createResponse['error'])) {
+            log_message('error', '[Asaas] invoice_updated: erro ao criar cobrança para invoice_id=' . $id . ' response=' . json_encode($createResponse, JSON_UNESCAPED_UNICODE));
+            return $id;
+        }
+
+        $CI->asaas_gateway->upsert_payment_map((int) $id, $createResponse);
+    } catch (Throwable $e) {
+        log_message('error', '[Asaas] invoice_updated: falha inesperada invoice_id=' . $id . ' error=' . $e->getMessage() . ' file=' . $e->getFile() . ':' . $e->getLine());
     }
 
     return $id;
