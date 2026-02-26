@@ -44,6 +44,12 @@ class Asaas_gateway extends App_gateway
                 'default_value' => 0,
             ),
             array(
+                'name' => 'file_log_enabled',
+                'label' => 'Habilitar log em arquivo (debug integração Asaas)',
+                'type' => 'yes_no',
+                'default_value' => 0,
+            ),
+            array(
                 'name' => 'webhook_secret',
                 'label' => 'Webhook secret/token interno',
                 'type' => 'input',
@@ -185,6 +191,12 @@ class Asaas_gateway extends App_gateway
         return $this->provider->environmentLabel();
     }
 
+    public function isFileLogEnabled(): bool
+    {
+        $value = $this->getSetting('file_log_enabled');
+
+        return $value === '1' || $value === 1 || $value === true;
+    }
 
     public function apiKey(?int $companyId = null): string
     {

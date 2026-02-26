@@ -486,7 +486,9 @@ final class AsaasAdapter
         $sanitized = $this->sanitizeContext($context);
         $sanitizedContext = json_encode($sanitized, JSON_UNESCAPED_UNICODE);
 
-        log_message($level === 'error' ? 'error' : 'info', '[Asaas] ' . $message . ' | context=' . $sanitizedContext);
+        if ($this->shouldWriteFileLog()) {
+            log_message($level === 'error' ? 'error' : 'info', '[Asaas] ' . $message . ' | context=' . $sanitizedContext);
+        }
 
         $table = db_prefix() . 'asaas_logs';
         if (!$this->ci->db->table_exists($table)) {
@@ -516,6 +518,16 @@ final class AsaasAdapter
             $error = $this->ci->db->error();
             log_message('error', '[Asaas] Falha ao persistir log em banco: ' . json_encode($error, JSON_UNESCAPED_UNICODE));
         }
+    }
+
+
+    private function shouldWriteFileLog(): bool
+    {
+        if ($this->gateway === null || !method_exists($this->gateway, 'isFileLogEnabled')) {
+            return false;
+        }
+
+        return (bool) $this->gateway->isFileLogEnabled();
     }
 
     private function sanitizeContext(array $context): array
