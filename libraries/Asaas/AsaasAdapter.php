@@ -259,7 +259,7 @@ final class AsaasAdapter
         }
 
         $document = $this->normalizeDocument($client['vat'] ?? '');
-        $response = $this->sdk()->customer->listCustomers(['cpfCnpj' => $document]);
+        $response = $this->request('GET', '/customers', ['cpfCnpj' => $document]);
         $customerId = null;
         $created = false;
         $updated = false;
@@ -279,7 +279,7 @@ final class AsaasAdapter
                 'mobilePhone' => $client['phonenumber'] ?? '',
             ];
 
-            $createdResponse = $this->sdk()->customer->createCustomer($payload);
+            $createdResponse = $this->request('POST', '/customers', [], [], $payload);
             $customerId = $createdResponse['id'] ?? null;
             $created = $customerId !== null;
         }
@@ -310,52 +310,37 @@ final class AsaasAdapter
 
     public function getCustomer(string $asaasCustomerId): array
     {
-        return $this->sdk()->customer->getCustomer($asaasCustomerId);
+        return $this->request('GET', '/customers/' . $asaasCustomerId);
     }
 
     public function updateCustomer(string $asaasCustomerId, array $payload): array
     {
-        return $this->sdk()->customer->updateCustomer($asaasCustomerId, $payload);
-    }
-
-    public function listCustomers(array $query): array
-    {
-        return $this->sdk()->customer->listCustomers($query);
-    }
-
-    public function createCustomer(array $payload): array
-    {
-        return $this->sdk()->customer->createCustomer($payload);
+        return $this->request('POST', '/customers/' . $asaasCustomerId, [], [], $payload);
     }
 
     public function createPayment(array $payload): array
     {
-        return $this->sdk()->payment->createPayment($payload);
+        return $this->request('POST', '/payments', [], [], $payload);
     }
 
     public function getPayment(string $paymentId): array
     {
-        return $this->sdk()->payment->getPayment($paymentId);
+        return $this->request('GET', '/payments/' . $paymentId);
     }
 
     public function listPayments(array $query): array
     {
-        return $this->sdk()->payment->listPayments($query);
+        return $this->request('GET', '/payments', $query);
     }
 
     public function updatePayment(string $paymentId, array $payload): array
     {
-        return $this->sdk()->payment->updatePayment($paymentId, $payload);
+        return $this->request('POST', '/payments/' . $paymentId, [], [], $payload);
     }
 
     public function cancelPayment(string $paymentId): array
     {
-        return $this->sdk()->payment->cancelPayment($paymentId);
-    }
-
-    public function deletePayment(string $paymentId): array
-    {
-        return $this->sdk()->payment->deletePayment($paymentId);
+        return $this->request('POST', '/payments/' . $paymentId . '/cancel');
     }
 
     public function refundPayment(string $paymentId, array $payload = []): array
@@ -370,7 +355,7 @@ final class AsaasAdapter
 
     public function getPixInfo(string $paymentId): array
     {
-        return $this->sdk()->payment->getPaymentPixQrCode($paymentId);
+        return $this->request('GET', '/payments/' . $paymentId . '/pixQrCode');
     }
 
     public function getBoletoInfo(string $paymentId): array
@@ -480,12 +465,6 @@ final class AsaasAdapter
     public function healthStatus(): array
     {
         return $this->provider->healthCheck();
-    }
-
-
-    private function sdk(?int $companyId = null): \Asaas\Sdk\AsaasSdk
-    {
-        return $this->provider->sdk($companyId);
     }
 
     private function normalizeClient($perfexClient): array
