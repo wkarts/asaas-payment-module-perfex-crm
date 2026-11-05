@@ -2,6 +2,10 @@
 
 As configurações do meio de pagamento Asaas exibem a URL do webhook e permitem informar, gerar, exibir e copiar o token. O recebedor reconhece o header oficial `asaas-access-token`, preservando a configuração e os contratos legados. Consulte o [guia de configuração e atualização](docs/WEBHOOK.md).
 
+## Diagnóstico de envio de faturas
+
+Em **Configurações → Meios de pagamento → Asaas**, o botão **Ver logs da integração** permite ao administrador consultar os resultados e localizar os arquivos de log. O módulo preserva `/v3` nas chamadas de clientes/cobranças e usa as dependências locais como fallback quando a raiz do Perfex não fornece a SDK. Consulte o [guia de diagnóstico](docs/DIAGNOSTICO.md).
+
 Refatorações:
 
 # Arquivo: modules/asaas/asaas.php

@@ -24,6 +24,7 @@ Author URI: https://t.me/wkartspro
 define('ASAAS_MODULE_NAME', 'asaas');
 
 require_once __DIR__ . '/helpers/asaas_webhook_helper.php';
+require_once __DIR__ . '/helpers/asaas_diagnostics_helper.php';
 
 hooks()->add_action('before_render_payment_gateway_settings', 'asaas_before_render_payment_gateway_settings');
 hooks()->add_action('app_admin_footer', 'asaas_settings_tab_footer');
@@ -142,36 +143,91 @@ function asaas_settings_tab_footer()
 
 function asaas_after_invoice_added($invoice_id)
 {
-    if (get_option('paymentmethod_asaas_billet_only')) {
+    $id = is_numeric($invoice_id) ? (int) $invoice_id : 0;
+
+    try {
+        if (!get_option('paymentmethod_asaas_billet_only')) {
+            asaas_diagnostic_log('info', 'invoice_added: envio automático não executado; boleto desabilitado.', ['invoice_id' => $id]);
+            return $invoice_id;
+        }
+
         $CI = &get_instance();
         $CI->load->library('asaas_gateway');
         $CI->load->model('invoices_model');
         $invoice = $CI->invoices_model->get($invoice_id);
 
-        if ($invoice) {
-            if ($invoice->duedate) {
-
-                $allowed_payment_modes = isset($invoice->allowed_payment_modes) ? unserialize($invoice->allowed_payment_modes) : array();
-
-                if (in_array(ASAAS_MODULE_NAME, $allowed_payment_modes)) {
-                    $billet = $CI->asaas_gateway->charge_billet($invoice);
-                }
-            }
+        if (!$invoice) {
+            asaas_diagnostic_log('warning', 'invoice_added: fatura não encontrada.', ['invoice_id' => $id]);
+            return $invoice_id;
         }
-        return $invoice_id;
+
+        if (empty($invoice->duedate)) {
+            asaas_diagnostic_log('info', 'invoice_added: envio não executado; fatura sem vencimento.', ['invoice_id' => $id]);
+            return $invoice_id;
+        }
+
+        $allowed_payment_modes = asaas_invoice_payment_modes($invoice->allowed_payment_modes ?? null);
+        if (!in_array(ASAAS_MODULE_NAME, $allowed_payment_modes, true)) {
+            asaas_diagnostic_log('info', 'invoice_added: envio não executado; forma de pagamento Asaas não permitida.', ['invoice_id' => $id]);
+            return $invoice_id;
+        }
+
+        asaas_diagnostic_log('info', 'invoice_added: iniciando envio da cobrança.', ['invoice_id' => $id]);
+        $billet = $CI->asaas_gateway->charge_billet($invoice);
+        if (!is_array($billet) || empty($billet['id']) || isset($billet['errors']) || isset($billet['error'])) {
+            asaas_diagnostic_log('error', 'invoice_added: Asaas não confirmou a criação da cobrança.', [
+                'invoice_id' => $id,
+                'errors' => is_array($billet) ? ($billet['errors'] ?? $billet['error'] ?? null) : null,
+            ]);
+            asaas_invoice_dispatch_alert($id);
+            return $invoice_id;
+        }
+
+        asaas_diagnostic_log('info', 'invoice_added: cobrança criada.', ['invoice_id' => $id, 'payment_id' => $billet['id']]);
+    } catch (Throwable $e) {
+        asaas_diagnostic_log('error', 'invoice_added: falha ao enviar cobrança.', [
+            'invoice_id' => $id,
+            'exception' => get_class($e),
+            'message' => $e->getMessage(),
+            'status' => $e->getCode(),
+        ]);
+        asaas_invoice_dispatch_alert($id);
+    }
+
+    return $invoice_id;
+}
+
+/** Perfex stores serialized modes, while integrations may already provide the array. */
+function asaas_invoice_payment_modes($value): array
+{
+    if (is_array($value)) {
+        return $value;
+    }
+    if (!is_string($value) || $value === '') {
+        return [];
+    }
+
+    $modes = @unserialize($value, ['allowed_classes' => false]);
+    return is_array($modes) ? $modes : [];
+}
+
+/** An outgoing API failure must not undo the invoice saved by Perfex. */
+function asaas_invoice_dispatch_alert(int $invoiceId): void
+{
+    if (!defined('CRON') && function_exists('is_staff_logged_in') && is_staff_logged_in()
+        && function_exists('set_alert')) {
+        set_alert('danger', 'A fatura #' . $invoiceId . ' foi salva no CRM, mas não foi possível sincronizar a cobrança no Asaas. Consulte Asaas > Ver logs da integração.');
     }
 }
 
 function asaas_after_invoice_updated($hookData = null)
 {
-    $CI = &get_instance();
-
     $args = func_get_args();
     $id = 0;
 
-    if (isset($hookData['invoice_id'])) {
+    if (is_array($hookData) && isset($hookData['invoice_id'])) {
         $id = (int) $hookData['invoice_id'];
-    } elseif (isset($hookData['id'])) {
+    } elseif (is_array($hookData) && isset($hookData['id'])) {
         $id = (int) $hookData['id'];
     } elseif (is_numeric($hookData)) {
         $id = (int) $hookData;
@@ -184,14 +240,15 @@ function asaas_after_invoice_updated($hookData = null)
     }
 
     if ($id <= 0) {
-        log_message('error', '[Asaas] invoice_updated: invoice_id inválido.');
+        asaas_diagnostic_log('warning', 'invoice_updated: invoice_id inválido.');
         return $id;
     }
 
-    $CI->load->library('asaas_gateway');
-    $CI->load->model('invoices_model');
-
     try {
+        $CI = &get_instance();
+        $CI->load->library('asaas_gateway');
+        $CI->load->model('invoices_model');
+
         $description = (string) $CI->asaas_gateway->getSetting('description');
         $discount_value = (float) $CI->asaas_gateway->getSetting('discount_value');
         $dueDateLimitDays = (int) $CI->asaas_gateway->getSetting('discount_days');
@@ -199,23 +256,23 @@ function asaas_after_invoice_updated($hookData = null)
         $update_charge = (int) $CI->asaas_gateway->getSetting('update_charge');
 
         if ($update_charge !== 1) {
-            log_message('error', '[Asaas] invoice_updated: update_charge desabilitado; seguirá para criação quando não houver cobrança. invoice_id=' . $id);
+            asaas_diagnostic_log('info', 'invoice_updated: atualização desabilitada; criação continua permitida quando não houver cobrança.', ['invoice_id' => $id]);
         }
 
         $invoice = $CI->invoices_model->get($id);
         if (!$invoice) {
-            log_message('error', '[Asaas] invoice_updated: invoice não encontrada para invoice_id=' . $id);
+            asaas_diagnostic_log('warning', 'invoice_updated: fatura não encontrada.', ['invoice_id' => $id]);
             return $id;
         }
 
         if (empty($invoice->duedate)) {
-            log_message('error', '[Asaas] invoice_updated: sem dueDate para invoice_id=' . $id);
+            asaas_diagnostic_log('info', 'invoice_updated: envio não executado; fatura sem vencimento.', ['invoice_id' => $id]);
             return $id;
         }
 
-        $allowed_payment_modes = isset($invoice->allowed_payment_modes) ? unserialize($invoice->allowed_payment_modes) : array();
-        if (!is_array($allowed_payment_modes) || !in_array('asaas', $allowed_payment_modes, true)) {
-            log_message('error', '[Asaas] invoice_updated: forma de pagamento asaas não permitida para invoice_id=' . $id);
+        $allowed_payment_modes = asaas_invoice_payment_modes($invoice->allowed_payment_modes ?? null);
+        if (!in_array('asaas', $allowed_payment_modes, true)) {
+            asaas_diagnostic_log('info', 'invoice_updated: envio não executado; forma de pagamento Asaas não permitida.', ['invoice_id' => $id]);
             return $id;
         }
 
@@ -246,18 +303,21 @@ function asaas_after_invoice_updated($hookData = null)
         $client = $CI->db->get()->row();
 
         if (!$client) {
-            log_message('error', '[Asaas] invoice_updated: cliente não encontrado para invoice_id=' . $id);
+            asaas_diagnostic_log('error', 'invoice_updated: cliente não encontrado.', ['invoice_id' => $id]);
+            asaas_invoice_dispatch_alert($id);
             return $id;
         }
 
         $customerSync = $CI->asaas_gateway->ensure_customer_from_client($client);
-        log_message('error', '[Asaas] invoice_updated: ensure_customer_from_client response=' . json_encode($customerSync, JSON_UNESCAPED_UNICODE));
 
         $cliente_id = isset($customerSync['customerId']) ? (string) $customerSync['customerId'] : '';
         if ($cliente_id === '') {
-            log_message('error', '[Asaas] invoice_updated: cliente Asaas não identificado para invoice_id=' . $id . ' response=' . json_encode($customerSync, JSON_UNESCAPED_UNICODE));
+            asaas_diagnostic_log('error', 'invoice_updated: cliente Asaas não identificado.', ['invoice_id' => $id]);
+            asaas_invoice_dispatch_alert($id);
             return $id;
         }
+
+        asaas_diagnostic_log('info', 'invoice_updated: cliente Asaas identificado.', ['invoice_id' => $id, 'customer_id' => $cliente_id]);
 
         $basePayloadArray = [
             'customer' => $cliente_id,
@@ -281,19 +341,24 @@ function asaas_after_invoice_updated($hookData = null)
                     $payloadArray['billingType'] = $billingType;
                     $payload = json_encode($payloadArray);
 
-                    log_message('error', '[Asaas] invoice_updated: update_charge payload=' . json_encode($payloadArray, JSON_UNESCAPED_UNICODE));
+                    asaas_diagnostic_log('info', 'invoice_updated: enviando atualização da cobrança.', ['invoice_id' => $id, 'payment_id' => $charge->id]);
                     $updateResponse = $CI->asaas_gateway->update_charge($charge->id, $payload);
-                    log_message('error', '[Asaas] invoice_updated: update_charge response=' . json_encode($updateResponse, JSON_UNESCAPED_UNICODE));
 
-                    if (!is_array($updateResponse) || isset($updateResponse['errors']) || isset($updateResponse['error'])) {
-                        log_message('error', '[Asaas] invoice_updated: erro ao atualizar cobrança charge_id=' . $charge->id . ' response=' . json_encode($updateResponse, JSON_UNESCAPED_UNICODE));
+                    if (!is_array($updateResponse) || empty($updateResponse['id']) || isset($updateResponse['errors']) || isset($updateResponse['error'])) {
+                        asaas_diagnostic_log('error', 'invoice_updated: Asaas não confirmou a atualização da cobrança.', [
+                            'invoice_id' => $id,
+                            'payment_id' => $charge->id,
+                            'errors' => is_array($updateResponse) ? ($updateResponse['errors'] ?? $updateResponse['error'] ?? null) : null,
+                        ]);
+                        asaas_invoice_dispatch_alert($id);
                         continue;
                     }
 
                     $CI->asaas_gateway->upsert_payment_map((int) $id, $updateResponse);
+                    asaas_diagnostic_log('info', 'invoice_updated: cobrança atualizada.', ['invoice_id' => $id, 'payment_id' => $updateResponse['id']]);
                 }
             } else {
-                log_message('error', '[Asaas] invoice_updated: cobrança existente, update_charge desabilitado. Não atualizou. invoice_id=' . $id . ' charges=' . count($charges));
+                asaas_diagnostic_log('info', 'invoice_updated: cobrança existente preservada; atualização desabilitada.', ['invoice_id' => $id, 'charges' => count($charges)]);
                 foreach ($charges as $charge) {
                     $CI->asaas_gateway->upsert_payment_map((int) $id, $charge);
                 }
@@ -303,19 +368,29 @@ function asaas_after_invoice_updated($hookData = null)
         }
 
         $createPayload = json_encode($basePayloadArray);
-        log_message('error', '[Asaas] invoice_updated: create_charge payload=' . json_encode($basePayloadArray, JSON_UNESCAPED_UNICODE));
+        asaas_diagnostic_log('info', 'invoice_updated: enviando criação da cobrança.', ['invoice_id' => $id]);
         $createResponseRaw = $CI->asaas_gateway->create_charge($CI->asaas_gateway->getUrlBase(), $CI->asaas_gateway->getApiKey(), $createPayload);
         $createResponse = is_string($createResponseRaw) ? json_decode($createResponseRaw, true) : $createResponseRaw;
-        log_message('error', '[Asaas] invoice_updated: create_charge response=' . json_encode($createResponse, JSON_UNESCAPED_UNICODE));
 
-        if (!is_array($createResponse) || isset($createResponse['errors']) || isset($createResponse['error'])) {
-            log_message('error', '[Asaas] invoice_updated: erro ao criar cobrança para invoice_id=' . $id . ' response=' . json_encode($createResponse, JSON_UNESCAPED_UNICODE));
+        if (!is_array($createResponse) || empty($createResponse['id']) || isset($createResponse['errors']) || isset($createResponse['error'])) {
+            asaas_diagnostic_log('error', 'invoice_updated: Asaas não confirmou a criação da cobrança.', [
+                'invoice_id' => $id,
+                'errors' => is_array($createResponse) ? ($createResponse['errors'] ?? $createResponse['error'] ?? null) : null,
+            ]);
+            asaas_invoice_dispatch_alert($id);
             return $id;
         }
 
         $CI->asaas_gateway->upsert_payment_map((int) $id, $createResponse);
+        asaas_diagnostic_log('info', 'invoice_updated: cobrança criada.', ['invoice_id' => $id, 'payment_id' => $createResponse['id']]);
     } catch (Throwable $e) {
-        log_message('error', '[Asaas] invoice_updated: falha inesperada invoice_id=' . $id . ' error=' . $e->getMessage() . ' file=' . $e->getFile() . ':' . $e->getLine());
+        asaas_diagnostic_log('error', 'invoice_updated: falha ao sincronizar cobrança.', [
+            'invoice_id' => $id,
+            'exception' => get_class($e),
+            'message' => $e->getMessage(),
+            'status' => $e->getCode(),
+        ]);
+        asaas_invoice_dispatch_alert($id);
     }
 
     return $id;
