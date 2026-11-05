@@ -17,7 +17,7 @@ init_head();
                         <hr class="hr-panel-heading">
                         <p>Últimos 100 registros da integração, do mais recente para o mais antigo. Chaves, tokens e dados pessoais são ocultados.</p>
                         <p>
-                            <a class="btn btn-default" href="<?php echo html_escape(admin_url('settings?group=payment_gateways')); ?>">Voltar às configurações de pagamento</a>
+                            <a class="btn btn-default" style="white-space:normal;max-width:100%" href="<?php echo html_escape(admin_url('settings?group=payment_gateways')); ?>">Voltar às configurações de pagamento</a>
                             <a class="btn btn-default" href="<?php echo html_escape(admin_url('asaas/asaas/logs')); ?>">Atualizar diagnóstico</a>
                         </p>
                         <?php if ($database_state !== 'ok') { ?>
