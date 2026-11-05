@@ -106,13 +106,19 @@ class Checkout extends ClientsController
                             if ($status == "RECEIVED" || $status == "CONFIRMED" || $status == "RECEIVED_IN_CASH") {
                                 //echo "LINHA 109";
                                 //echo "<hr>";
-                                $this->asaas_gateway->addPayment([
+                                $recorded = $this->asaas_gateway->addPayment([
                                     'amount' => $invoice->total,
                                     'invoiceid' => $invoice->id,
                                     'paymentmode' => 'Asaas',
                                     'paymentmethod' => $content->billingType,
                                     'transactionid' => $content->id,
                                 ]);
+
+                                if ($recorded !== true) {
+                                    set_alert('warning', 'Pagamento confirmado no Asaas, mas a baixa no CRM está pendente de conciliação. Não repita o pagamento; consulte o financeiro.');
+                                    redirect(site_url('invoice/' . $invoice1->id . '/' . $invoice1->hash), 'refresh');
+                                    return;
+                                }
 
                                 log_activity('Asaas: Confirmação de pagamento para a fatura ' . $invoice->id . ', com o ID: ' . $externalReference);
                                 //echo 'Asaas: Confirmação de pagamento para a fatura ' . $invoice->id . ', com o ID: ' . $externalReference;

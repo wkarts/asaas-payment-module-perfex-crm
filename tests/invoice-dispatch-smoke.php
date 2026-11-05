@@ -5,6 +5,9 @@ declare(strict_types=1);
 /**
  * Runs the real invoice hooks, gateway, adapter and SDK with an offline transport.
  * Only Perfex/CodeIgniter interfaces and the HTTP provider are replaced.
+ * This suite isolates HTTP behavior with an already available invoice fixture.
+ * The before/after native persistence contract is in invoice-lifecycle-smoke.php.
+ * Requires the real mbstring extension used by the production description path.
  * Run: php tests/invoice-dispatch-smoke.php
  */
 if (PHP_SAPI !== 'cli') {
@@ -83,12 +86,43 @@ final class InvoiceSmokeResult
 
 final class InvoiceSmokeDatabase
 {
+    public bool $db_debug = true;
+    public int $_trans_depth = 0;
     public array $logs = [];
     public array $customers = [];
     public array $payments = [];
+    public array $writes = [];
     private string $table = '';
+    private ?array $transactionSnapshot = null;
 
     public function __construct(private InvoiceSmokeCi $ci) {}
+    public function trans_begin(): bool
+    {
+        if ($this->_trans_depth === 0) {
+            $this->transactionSnapshot = [$this->logs, $this->customers, $this->payments,
+                $this->ci->invoice ? clone $this->ci->invoice : null, $this->ci->client ? clone $this->ci->client : null];
+        }
+        ++$this->_trans_depth;
+        return true;
+    }
+    public function trans_commit(): bool
+    {
+        if ($this->_trans_depth < 1) { return false; }
+        --$this->_trans_depth;
+        if ($this->_trans_depth === 0) { $this->transactionSnapshot = null; }
+        return true;
+    }
+    public function trans_rollback(): bool
+    {
+        if ($this->_trans_depth < 1) { return false; }
+        --$this->_trans_depth;
+        if ($this->_trans_depth === 0 && $this->transactionSnapshot !== null) {
+            [$this->logs, $this->customers, $this->payments, $this->ci->invoice, $this->ci->client] = $this->transactionSnapshot;
+            $this->transactionSnapshot = null;
+        }
+        return true;
+    }
+    public function trans_status(): bool { return true; }
     public function table_exists(string $table): bool
     {
         return in_array($table, ['tblasaas_logs', 'tblasaas_customers_map', 'tblasaas_payments_map'], true);
@@ -113,6 +147,14 @@ final class InvoiceSmokeDatabase
     }
     public function get_where(string $table, array $where): InvoiceSmokeResult
     {
+        if ($table === 'tblinvoices') {
+            $record = $this->ci->invoice ? (array) $this->ci->invoice : [];
+            foreach ($where as $field => $value) {
+                if (($record[$field] ?? null) != $value) { return new InvoiceSmokeResult(); }
+            }
+            return new InvoiceSmokeResult($record === [] ? [] : [$record]);
+        }
+        if ($table === 'tblinvoicepaymentrecords') { return new InvoiceSmokeResult(); }
         $record = $table === 'tblasaas_customers_map'
             ? ($this->customers[$where['perfex_client_id']] ?? null)
             : ($this->payments[$where['invoice_id']] ?? null);
@@ -125,6 +167,7 @@ final class InvoiceSmokeDatabase
     }
     public function insert(string $table, array $payload): bool
     {
+        $this->writes[] = ['operation' => 'insert', 'table' => $table, 'payload' => $payload, 'depth' => $this->_trans_depth];
         if ($table === 'tblasaas_logs') {
             $this->logs[] = $payload;
         } elseif ($table === 'tblasaas_payments_map') {
@@ -134,6 +177,11 @@ final class InvoiceSmokeDatabase
     }
     public function update(string $table, array $payload): bool
     {
+        if ($table === 'tblinvoices') {
+            $this->writes[] = ['operation' => 'update', 'table' => $table, 'payload' => $payload, 'depth' => $this->_trans_depth];
+            foreach ($payload as $field => $value) { $this->ci->invoice->$field = $value; }
+            return true;
+        }
         return $this->insert($table, $payload);
     }
     public function query(string $sql): InvoiceSmokeResult
@@ -177,6 +225,8 @@ final class InvoiceSmokeCi
     public ?Asaas_gateway $asaas_gateway = null;
     public ?object $client;
     public ?object $invoice;
+    public float $received = 0.0;
+    public float $credits = 0.0;
 
     public function __construct()
     {
@@ -188,7 +238,7 @@ final class InvoiceSmokeCi
         $this->invoice = (object) [
             'id' => 42, 'clientid' => 7, 'client' => $this->client,
             'prefix' => 'INV-', 'number' => 42, 'hash' => INVOICE_SMOKE_HASH,
-            'duedate' => '2026-12-15', 'total' => '149.90', 'status' => 1,
+            'duedate' => '2026-12-15', 'total' => '149.90', 'subtotal' => '149.90', 'adjustment' => '0.00', 'recurring' => 0, 'status' => 1,
             'adminnote' => '', 'allowed_payment_modes' => serialize(['asaas']),
         ];
         $this->db = new InvoiceSmokeDatabase($this);
@@ -227,6 +277,11 @@ function html_escape(string $value): string { return htmlspecialchars($value, EN
 function site_url(string $path = ''): string { return 'https://crm.example.test/' . $path; }
 function admin_url(string $path = ''): string { return site_url('admin/' . $path); }
 function format_invoice_number(mixed $id): string { return 'INV-' . str_pad((string) $id, 6, '0', STR_PAD_LEFT); }
+function get_invoice_total_left_to_pay($id, $total = null): float
+{
+    $ci = get_instance();
+    return max(0.0, (float) ($total ?? $ci->invoice->total) - $ci->received - $ci->credits);
+}
 function redirect(string $url): void { $GLOBALS['invoice_smoke_redirects'][] = $url; }
 function register_activation_hook(string $module, callable $callback): void {}
 function register_payment_gateway(string $gateway, string $module): void {}
@@ -247,6 +302,10 @@ final class InvoiceSmokeProvider extends AsaasSdkProvider
 
 function invoiceSmokeFixture(array $responses, array &$history): InvoiceSmokeCi
 {
+    asaas_receipt_lock_shutdown();
+    $state = &asaas_lifecycle_state(); $state = [];
+    $atomic = &asaas_atomic_payment_state(); $atomic = [];
+    $locks = &asaas_receipt_lock_state(); $locks = [];
     $history = [];
     $GLOBALS['invoice_smoke_staff'] = true;
     $GLOBALS['invoice_smoke_alerts'] = [];
@@ -261,7 +320,7 @@ function invoiceSmokeFixture(array $responses, array &$history): InvoiceSmokeCi
         'webhook_secret' => '', 'billet_only' => '1', 'card_only' => '1', 'pix_only' => '1',
         'update_charge' => '0', 'description' => 'Pagamento {invoice_number}',
         'interest_value' => '0', 'fine_value' => '0', 'discount_value' => '0',
-        'discount_days' => '0', 'discount_type' => '1', 'disable_charge_notification' => '1',
+        'discount_days' => '0', 'discount_type' => '1', 'disable_charge_notification' => '1', 'diasdevencimento' => '10',
     ] as $name => $value) {
         $GLOBALS['invoice_smoke_options']['paymentmethod_asaas_' . $name] = $value;
     }
@@ -304,6 +363,27 @@ function invoiceSmokePayload(array $history, int $index): array
 function invoiceSmokeRequests(array $history): array
 {
     return array_map(static fn (array $entry): string => $entry['request']->getMethod() . ' ' . $entry['request']->getUri()->getPath(), $history);
+}
+
+function invoiceSmokeReject(callable $operation, ?int $expectedStatus = null): AsaasInvoiceSyncException
+{
+    try { $operation(); }
+    catch (AsaasInvoiceSyncException $error) {
+        invoiceSmokeCheck(str_contains($error->getMessage(), 'bloqueado'), 'A rejeição deve explicar que a operação foi bloqueada.');
+        if ($expectedStatus !== null) {
+            invoiceSmokeCheck($error->getCode() === $expectedStatus, 'A rejeição deve preservar o status HTTP remoto.');
+        }
+        return $error;
+    }
+    throw new RuntimeException('Era esperada uma AsaasInvoiceSyncException no contrato CLI.');
+}
+
+function invoiceSmokeCheckout(InvoiceSmokeCi $ci, string $method)
+{
+    return $ci->asaas_gateway->$method(['invoice' => $ci->invoice, 'card' => [
+        'installmentCount' => 2, 'holderName' => 'Card fixture', 'number' => '4111111111111111',
+        'expiryMonth' => '12', 'expiryYear' => '2030', 'cvv' => '123',
+    ]]);
 }
 
 $GLOBALS['invoice_smoke_assertions'] = 0;
@@ -375,7 +455,11 @@ foreach (['boleto desabilitado', 'sem vencimento', 'forma não permitida', 'modo
         } else {
             $ci->invoice = null;
         }
-        invoiceSmokeCheck(asaas_after_invoice_added(42) === 42, 'A saída deve preservar o ID.');
+        if ($reason === 'fatura ausente') {
+            invoiceSmokeReject(static fn () => asaas_after_invoice_added(42));
+        } else {
+            invoiceSmokeCheck(asaas_after_invoice_added(42) === 42, 'A saída deve preservar o ID.');
+        }
         invoiceSmokeCheck($history === [], 'A regra existente deve impedir qualquer requisição.');
         invoiceSmokeCheck(count($ci->db->logs) > 0, 'O motivo de não envio deve ser registrado.');
         invoiceSmokeCheck($GLOBALS['invoice_smoke_alerts'] === [], 'Ausência de envio por configuração não é falha de transporte.');
@@ -420,28 +504,27 @@ foreach (['library', 'model'] as $dependency) {
             $ci = invoiceSmokeFixture([], $history);
             $ci->load->failure = $dependency;
             $before = serialize($ci->invoice);
-            $result = $event === 'added' ? asaas_after_invoice_added(42) : asaas_after_invoice_updated(['id' => 42]);
-            invoiceSmokeCheck($result === 42 && serialize($ci->invoice) === $before, 'Falha na carga não pode remover ou alterar a fatura.');
+            invoiceSmokeReject(static fn () => $event === 'added' ? asaas_after_invoice_added(42) : asaas_after_invoice_updated(['id' => 42]));
+            invoiceSmokeCheck(serialize($ci->invoice) === $before, 'O teste de transporte não deve alterar seu objeto de fatura.');
             invoiceSmokeCheck($history === [], 'Falha na carga deve ser capturada antes do HTTP.');
-            invoiceSmokeCheck(count($GLOBALS['invoice_smoke_alerts']) === 1, 'O administrador deve receber alerta visível.');
+            invoiceSmokeCheck($GLOBALS['invoice_smoke_alerts'] === [], 'CLI usa exceção, sem alerta em sessão.');
             invoiceSmokeCheck(str_contains(invoiceSmokeLogs($ci), 'Falha simulada ao carregar'), 'O erro anteriormente fora do try deve aparecer no diagnóstico.');
         };
     }
 }
 
 foreach (['added', 'updated'] as $event) {
-    $tests['erro HTTP no envio preserva fatura e não repete POST: ' . $event] = static function () use ($customer, $event): void {
+    $tests['erro HTTP no envio lança rejeição e não repete POST: ' . $event] = static function () use ($customer, $event): void {
         $history = [];
         $failure = new Response(422, ['Content-Type' => 'application/json'], '{"errors":[{"code":"invalid_value","description":"Valor de cobrança inválido."}]}');
         $responses = $event === 'added' ? [$customer, $failure] : [$customer, ['data' => []], $failure];
         $ci = invoiceSmokeFixture($responses, $history);
         $before = serialize($ci->invoice);
-        $result = $event === 'added' ? asaas_after_invoice_added(42) : asaas_after_invoice_updated(['id' => 42]);
-        invoiceSmokeCheck($result === 42 && serialize($ci->invoice) === $before, 'O erro da API não pode desfazer a fatura.');
+        invoiceSmokeReject(static fn () => $event === 'added' ? asaas_after_invoice_added(42) : asaas_after_invoice_updated(['id' => 42]), 422);
+        invoiceSmokeCheck(serialize($ci->invoice) === $before, 'O objeto da fixture permanece disponível para inspecionar o erro.');
         $posts = array_filter(invoiceSmokeRequests($history), static fn (string $request): bool => $request === 'POST /v3/payments');
         invoiceSmokeCheck(count($posts) === 1, 'Não deve haver retry ou criação duplicada após erro HTTP.');
-        invoiceSmokeCheck(count($GLOBALS['invoice_smoke_alerts']) === 1 && $GLOBALS['invoice_smoke_alerts'][0][0] === 'danger', 'O administrador deve receber um alerta de falha.');
-        invoiceSmokeCheck(str_contains($GLOBALS['invoice_smoke_alerts'][0][1], 'Ver logs da integração'), 'O aviso deve apontar para os logs.');
+        invoiceSmokeCheck($GLOBALS['invoice_smoke_alerts'] === [], 'CLI interrompe por exceção sem depender de flash de sessão.');
         invoiceSmokeCheck(str_contains(invoiceSmokeLogs($ci), '422') && str_contains(invoiceSmokeLogs($ci), 'Valor de cobrança inválido'), 'O diagnóstico deve conservar status e descrição úteis da API.');
         invoiceSmokeCheck(!str_contains(invoiceSmokeLogs($ci), INVOICE_SMOKE_KEY), 'O diagnóstico nunca deve registrar a API Key.');
     };
@@ -450,13 +533,22 @@ foreach (['added', 'updated'] as $event) {
 $tests['resposta sem id não é tratada como cobrança criada'] = static function () use ($customer): void {
     $history = [];
     $ci = invoiceSmokeFixture([$customer, []], $history);
-    asaas_after_invoice_added(42);
-    invoiceSmokeCheck(count($GLOBALS['invoice_smoke_alerts']) === 1, 'Resposta inválida deve gerar alerta.');
-    invoiceSmokeCheck(str_contains(invoiceSmokeLogs($ci), 'não confirmou a criação'), 'A resposta vazia deve ser identificada no diagnóstico.');
+    $error = invoiceSmokeReject(static fn () => asaas_after_invoice_added(42));
+    invoiceSmokeCheck($GLOBALS['invoice_smoke_alerts'] === [], 'Resposta inválida em CLI é uma exceção, sem flash de sessão.');
+    $cause = $error->getPrevious(); $identified = false;
+    foreach ($ci->db->logs as $row) {
+        $context = json_decode((string) ($row['context_json'] ?? $row['context'] ?? '{}'), true);
+        if (($row['level'] ?? '') === 'error' && is_array($context)
+            && ($context['invoice_id'] ?? null) === 42 && ($context['exception'] ?? null) === RuntimeException::class
+            && $cause instanceof RuntimeException && ($context['message'] ?? null) === asaas_diagnostic_sanitize($cause->getMessage())) {
+            $identified = true;
+        }
+    }
+    invoiceSmokeCheck($identified, 'Diagnóstico deve identificar a fatura e a causa da resposta inválida, sem depender da frase literal do gateway.');
     invoiceSmokeCheck(count($history) === 2, 'Não tentar criar novamente depois de resposta ambígua.');
 };
 
-$tests['process_payment usa os mesmos endpoints e preserva checkout'] = static function () use ($customer, $payment): void {
+$tests['checkout process_payment usa os mesmos endpoints e preserva redirecionamento'] = static function () use ($customer, $payment): void {
     $history = [];
     $ci = invoiceSmokeFixture([['data' => []], $customer, $payment], $history);
     $ci->asaas_gateway->process_payment(['invoice' => $ci->invoice]);
@@ -465,12 +557,72 @@ $tests['process_payment usa os mesmos endpoints e preserva checkout'] = static f
     invoiceSmokeCheck($GLOBALS['invoice_smoke_redirects'] === [site_url('asaas/checkout/index/' . INVOICE_SMOKE_HASH)], 'O redirecionamento original do checkout deve ser mantido.');
 };
 
+foreach (['process_payment', 'charge_pix', 'charge_credit_card'] as $method) {
+    $tests['checkout ' . $method . ' restaura fatura vencida após HTTP 400'] = static function () use ($customer, $payment, $method): void {
+        $existing = array_replace($payment, ['id' => 'pay_checkout_existing', 'status' => 'OVERDUE',
+            'customer' => 'cus_existing', 'description' => 'Original charge', 'externalReference' => INVOICE_SMOKE_HASH]);
+        $error = new Response(400, ['Content-Type' => 'application/json'], json_encode([
+            'errors' => [['code' => 'invalid_value', 'description' => 'Cobrança recusada no transporte de teste.']],
+        ], JSON_THROW_ON_ERROR));
+        $responses = $method === 'process_payment'
+            ? [['data' => [$existing]], $customer, $error]
+            : [$customer, ['data' => [$existing]], $error];
+        $history = []; $ci = invoiceSmokeFixture($responses, $history);
+        $ci->invoice->status = 4; $ci->invoice->duedate = date('Y-m-d', strtotime('-2 days'));
+        $GLOBALS['invoice_smoke_options']['paymentmethod_asaas_fine_value'] = '2';
+        $before = serialize($ci->invoice); $clientBefore = serialize($ci->client);
+        invoiceSmokeReject(static fn () => invoiceSmokeCheckout($ci, $method), 400);
+        invoiceSmokeCheck(serialize($ci->invoice) === $before, 'HTTP 400 deve restaurar total, subtotal, multa, status e vencimento.');
+        invoiceSmokeCheck(serialize($ci->client) === $clientBefore, 'Checkout recusado deve preservar cliente e contato.');
+        $writes = array_values(array_filter($ci->db->writes, static fn (array $write): bool => $write['table'] === 'tblinvoices'));
+        invoiceSmokeCheck(count($writes) === 1 && $writes[0]['depth'] > 0, 'O teste deve exercer uma atualização real da fixture dentro da transação.');
+        invoiceSmokeCheck($writes[0]['payload']['total'] > 149.90 && $writes[0]['payload']['duedate'] !== $ci->invoice->duedate, 'A atualização tentada deve alterar valor e vencimento antes de ser revertida.');
+        invoiceSmokeCheck(count($history) === 3 && invoiceSmokeRequests($history)[2] === 'POST /v3/payments/pay_checkout_existing', 'Executar a requisição real do SDK e não repetir POST recusado.');
+        invoiceSmokeCheck($ci->db->_trans_depth === 0 && $ci->db->payments === [], 'Recusa remota não deixa transação nem vínculo novo.');
+        invoiceSmokeCheck($GLOBALS['invoice_smoke_redirects'] === [], 'Não redirecionar como sucesso após erro da cobrança.');
+    };
+}
+
+foreach (['process_payment', 'charge_pix', 'charge_credit_card'] as $method) {
+    $tests['checkout ' . $method . ' rejeita R$ 1 no payload antes de POST'] = static function () use ($customer, $method): void {
+        $responses = $method === 'process_payment' ? [['data' => []], $customer] : [$customer];
+        $history = []; $ci = invoiceSmokeFixture($responses, $history);
+        $ci->invoice->total = '1.00'; $ci->invoice->subtotal = '1.00';
+        $before = serialize($ci->invoice);
+        invoiceSmokeReject(static fn () => invoiceSmokeCheckout($ci, $method), 400);
+        invoiceSmokeCheck(!array_filter($history, static fn (array $entry): bool => $entry['request']->getMethod() === 'POST'), 'Valor mínimo inválido não chega ao endpoint de criação.');
+        invoiceSmokeCheck(serialize($ci->invoice) === $before, 'Validação do payload preserva a fatura.');
+        invoiceSmokeCheck($ci->db->_trans_depth === 0 && $ci->db->payments === [], 'Validação fecha a transação sem gravar cobrança.');
+    };
+}
+
+$tests['checkout cartão usa saldo líquido e não persiste dados sensíveis'] = static function () use ($payment): void {
+    $history = [];
+    $ci = invoiceSmokeFixture([['totalCount' => 0, 'data' => []], ['id' => 'cus_checkout'],
+        array_replace($payment, ['id' => 'pay_card_checkout', 'billingType' => 'CREDIT_CARD', 'value' => 100.0])], $history);
+    $ci->received = 39.90; $ci->credits = 10.00;
+    $before = serialize($ci->invoice); $clientBefore = serialize($ci->client);
+    $result = invoiceSmokeCheckout($ci, 'charge_credit_card');
+    invoiceSmokeCheck(json_decode($result, true, 512, JSON_THROW_ON_ERROR)['id'] === 'pay_card_checkout', 'Cartão preserva o contrato de retorno JSON.');
+    invoiceSmokeCheck(invoiceSmokeRequests($history) === ['GET /v3/customers', 'POST /v3/customers', 'POST /v3/payments'], 'Cadastro e cobrança usam o SDK real com transporte controlado.');
+    $customerPayload = invoiceSmokePayload($history, 1); $payload = invoiceSmokePayload($history, 2);
+    invoiceSmokeCheck($customerPayload['externalReference'] === '7', 'Cliente novo usa clientid escalar como referência externa.');
+    invoiceSmokeCheck($customerPayload['email'] === $ci->client->email && $customerPayload['phone'] === $ci->client->phonenumber && $customerPayload['mobilePhone'] === $ci->client->phonenumber, 'Preservar o email e os telefones do contato atual.');
+    invoiceSmokeCheck((float) $payload['value'] === 100.0 && (float) $payload['installmentValue'] === 50.0 && $payload['installmentCount'] === 2, 'Parcelas usam saldo após recebimentos e créditos.');
+    invoiceSmokeCheck($payload['billingType'] === 'CREDIT_CARD' && $payload['externalReference'] === INVOICE_SMOKE_HASH, 'Preservar modalidade e hash da fatura.');
+    invoiceSmokeCheck(serialize($ci->invoice) === $before && serialize($ci->client) === $clientBefore, 'Checkout não regrava dados de cliente nem total original da fatura.');
+    invoiceSmokeCheck(!array_filter($ci->db->writes, static fn (array $write): bool => str_contains($write['table'], 'ac_a_ccta')), 'Não inserir cartão na tabela legada ac_a_ccta.');
+    $stored = json_encode([$ci->db->logs, $ci->db->payments, $GLOBALS['invoice_smoke_framework_logs']], JSON_THROW_ON_ERROR);
+    invoiceSmokeCheck(!str_contains($stored, '4111111111111111') && !str_contains($stored, '"creditCard"') && !str_contains($stored, '"ccv"'), 'PAN e CVV não entram no mapa nem no diagnóstico persistido.');
+    invoiceSmokeCheck($ci->db->_trans_depth === 0, 'Checkout confirma e fecha sua transação antes de retornar.');
+};
+
 $tests['falha sem sessão de staff não cria alerta de interface'] = static function (): void {
     $history = [];
     $ci = invoiceSmokeFixture([], $history);
     $GLOBALS['invoice_smoke_staff'] = false;
     $ci->load->failure = 'library';
-    asaas_after_invoice_added(42);
+    invoiceSmokeReject(static fn () => asaas_after_invoice_added(42));
     invoiceSmokeCheck($GLOBALS['invoice_smoke_alerts'] === [], 'Rotina sem staff deve apenas registrar o erro.');
     invoiceSmokeCheck(count($ci->db->logs) > 0, 'A ausência de sessão não deve esconder o diagnóstico.');
 };
@@ -481,13 +633,15 @@ $tests['falha no CRON é diagnosticada sem flash de sessão'] = static function 
     $history = [];
     $ci = invoiceSmokeFixture([], $history);
     $ci->load->failure = 'model';
-    invoiceSmokeCheck(asaas_after_invoice_updated(42) === 42, 'CRON deve preservar a fatura.');
+    invoiceSmokeReject(static fn () => asaas_after_invoice_updated(42));
     invoiceSmokeCheck($GLOBALS['invoice_smoke_alerts'] === [], 'CRON não deve criar alerta em sessão.');
     invoiceSmokeCheck(count($ci->db->logs) > 0, 'CRON deve registrar a falha.');
 };
 
-$failures = 0;
+$failures = 0; $executed = 0;
 foreach ($tests as $name => $test) {
+    if (in_array('--checkout', $argv, true) && !str_starts_with($name, 'checkout ')) { continue; }
+    ++$executed;
     try {
         $test();
         echo 'OK  ', $name, PHP_EOL;
@@ -499,5 +653,6 @@ foreach ($tests as $name => $test) {
         }
     }
 }
-echo 'Invoice dispatch smoke: ', count($tests), ' cenários, ', $GLOBALS['invoice_smoke_assertions'], ' asserções, ', $failures, ' falhas.', PHP_EOL;
+asaas_receipt_lock_shutdown();
+echo 'Invoice dispatch smoke: ', $executed, ' cenários executados de ', count($tests), ', ', $GLOBALS['invoice_smoke_assertions'], ' asserções, ', $failures, ' falhas.', PHP_EOL;
 exit($failures === 0 ? 0 : 1);

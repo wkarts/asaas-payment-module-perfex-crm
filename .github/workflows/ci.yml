@@ -21,7 +21,7 @@ jobs:
         with:
           php-version: ${{ matrix.php }}
           tools: composer
-          extensions: mbstring
+          extensions: mbstring, pdo_sqlite
 
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist
@@ -47,6 +47,16 @@ jobs:
           php tests/payment-api-smoke.php
           php tests/invoice-dispatch-smoke.php
           php tests/diagnostics-smoke.php
+
+      - name: Consistência de faturas e recebimentos
+        run: |
+          php tests/payment-validation-smoke.php
+          php tests/payment-lifecycle-api-smoke.php
+          php tests/invoice-transaction-smoke.php
+          php tests/invoice-lifecycle-smoke.php
+          php tests/atomic-payment-smoke.php
+          php tests/invoice-receipt-lock-smoke.php
+          php tests/checkout-receipt-smoke.php
 
       - name: JavaScript das configurações do webhook
         run: node --check assets/js/asaas-webhook-settings.js

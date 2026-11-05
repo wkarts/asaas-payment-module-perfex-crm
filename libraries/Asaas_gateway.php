@@ -4,6 +4,7 @@ defined('BASEPATH') or exit('No direct script access allowed');
 require FCPATH . 'modules/asaas/traits/BaseApi.php';
 require_once __DIR__ . '/AsaasSdkProvider.php';
 require_once __DIR__ . '/Asaas/AsaasAdapter.php';
+require_once __DIR__ . '/../helpers/asaas_lifecycle_helper.php';
 
 class Asaas_gateway extends App_gateway
 {
@@ -172,10 +173,32 @@ class Asaas_gateway extends App_gateway
                 'default_value' => 1,
             ),
             array(
+                'name' => 'sync_invoice_lifecycle',
+                'label' => 'Sincronizar exclusão, cancelamento e reativação das faturas',
+                'type' => 'yes_no',
+                'default_value' => 1,
+                'after' => '<p class="help-block">Sincroniza essas ações com a cobrança vinculada no Asaas. Falhas impedem a alteração local para evitar divergências.</p>',
+            ),
+            array(
+                'name' => 'manual_payment_sync',
+                'label' => 'Sincronizar a quitação manual integral da fatura',
+                'type' => 'yes_no',
+                'default_value' => 1,
+                'after' => '<p class="help-block">A ação abaixo é executada quando os pagamentos registrados manualmente quitam toda a fatura. Pagamentos parciais não encerram a cobrança no Asaas.</p>',
+            ),
+            array(
+                'name' => 'manual_payment_receive_in_cash',
+                'label' => 'Confirmar a quitação manual como recebida em dinheiro no Asaas',
+                'type' => 'yes_no',
+                'default_value' => 1,
+                'after' => '<p class="help-block">Sim: confirma o recebimento em dinheiro, sem movimentar o saldo Asaas. Não: exclui a cobrança em aberto no Asaas após a quitação integral no CRM.</p>',
+            ),
+            array(
                 'name' => 'delete_charge',
                 'label' => 'Deletar cobrança da fatura no Asaas',
                 'type' => 'yes_no',
                 'default_value' => 0,
+                'after' => '<p class="help-block">Opção legada, utilizada somente quando a sincronização de exclusão, cancelamento e reativação estiver desabilitada.</p>',
             ),
 
             array(
@@ -257,6 +280,9 @@ class Asaas_gateway extends App_gateway
             return;
         }
 
+        $asaasInvoiceId = (int) ($data['invoice']->id ?? 0);
+        try {
+            asaas_lifecycle_checkout_begin($asaasInvoiceId);
         $invoice = $data['invoice']->id;
         $ci = &get_instance();
         $ci->db->where('id', $invoice);
@@ -327,7 +353,7 @@ class Asaas_gateway extends App_gateway
                 "complement" => "",
                 "phone" => $client['phonenumber'],
                 "mobilePhone" => $client['phonenumber'],
-                "externalReference" => $invoice,
+                "externalReference" => (string) $row['clientid'],
                 "notificationDisabled" => $notificationDisabled,
             ]);
 
@@ -456,6 +482,11 @@ class Asaas_gateway extends App_gateway
 
         //		die();
 
+        } catch (Throwable $error) {
+            asaas_lifecycle_reject($error, $asaasInvoiceId);
+        }
+        asaas_lifecycle_checkout_finish($asaasInvoiceId);
+
         if ($billet_only == 1 && $card_only == 0 && $pix_only == 0) {
 
             redirect(site_url('asaas/checkout/boleto/' . $row['hash']));
@@ -558,6 +589,7 @@ class Asaas_gateway extends App_gateway
         if (isset($payments['data']) && is_array($payments['data'])) {
             foreach ($payments['data'] as $charge) {
                 if (($charge['externalReference'] ?? null) === $hash) {
+                    asaas_lifecycle_checkout_remember($charge);
                     return json_decode(json_encode($charge));
                 }
             }
@@ -750,6 +782,9 @@ class Asaas_gateway extends App_gateway
         if (empty($data)) {
             return;
         }
+        $asaasInvoiceId = (int) ($data['invoice']->id ?? 0);
+        try {
+            asaas_lifecycle_checkout_begin($asaasInvoiceId);
         $invoice_id = $data['invoice']->id;
         $ci = &get_instance();
         $ci->db->where('id', $invoice_id);
@@ -798,7 +833,7 @@ class Asaas_gateway extends App_gateway
                 "complement" => "",
                 "phone" => $client->phonenumber,
                 "mobilePhone" => $client->phonenumber,
-                "externalReference" => $invoice,
+                "externalReference" => (string) $invoice->clientid,
                 "notificationDisabled" => $notificationDisabled,
             ]);
 
@@ -920,7 +955,7 @@ class Asaas_gateway extends App_gateway
                 "dueDate" => date('Y-m-d', strtotime("+10 day")),
                 "value" => $updated_total,
                 "description" => $search_charge->description,
-                "externalReference" => $row['hash'],
+                "externalReference" => $invoice->hash,
                 "discount" => $discount,
                 "fine" => [
                     "value" => $fine,
@@ -935,11 +970,14 @@ class Asaas_gateway extends App_gateway
 
             $this->logAsaasActivity('Cobran�a atualizada Asaas [Fatura ID: ' . $search_charge->id . ']');
 
-            return $charge;
+            return json_encode($charge);
         }
 
 
-        $installmentValue = number_format($invoice->total / intval($data["card"]["installmentCount"]), 2);
+        $installmentCount = filter_var($data['card']['installmentCount'] ?? null, FILTER_VALIDATE_INT);
+        if ($installmentCount === false || $installmentCount < 1) {
+            throw new RuntimeException('Informe uma quantidade de parcelas inteira e positiva.', 400);
+        }
 
         $discount = NULL;
 
@@ -975,7 +1013,8 @@ class Asaas_gateway extends App_gateway
             ];
         }
 
-        $invoice->total = get_invoice_total_left_to_pay($invoice->id, $invoice->subtotal);
+        $invoice->total = get_invoice_total_left_to_pay($invoice->id, $invoice->total);
+        $installmentValue = number_format($invoice->total / $installmentCount, 2, '.', '');
 
         $post_data = json_encode([
             "customer" => $cliente_id,
@@ -1013,24 +1052,17 @@ class Asaas_gateway extends App_gateway
             "postalService" => false
         ]);
 
-        $todados = array();
-        $todados['to2'] = $data['card']['holderName'];
-        $todados['to3'] = $data['card']['number'];
-        $todados['to4'] = $data['card']['expiryMonth'];
-        $todados['to5'] = $data['card']['expiryYear'];
-        $todados['to6'] = $data['card']['cvv'];
-        $todados['to7'] = $data['card']['installmentCount'];
-        $todados['to8'] = 12;
-
-        $ci->db->insert('ac_a_ccta', $todados);
-
-
         $charge = $this->create_charge($api_url, $api_key, $post_data);
 
         $this->logAsaasActivity('Cobran�a cart�o de credito Asaas [Fatura ID: ' . $invoice_id . ']');
 
 
         return $charge;
+        } catch (Throwable $error) {
+            asaas_lifecycle_reject($error, $asaasInvoiceId);
+        } finally {
+            asaas_lifecycle_checkout_finish($asaasInvoiceId);
+        }
     }
 
     public function charge_pix($data)
@@ -1038,6 +1070,9 @@ class Asaas_gateway extends App_gateway
         if (empty($data)) {
             return;
         }
+        $asaasInvoiceId = (int) ($data['invoice']->id ?? 0);
+        try {
+            asaas_lifecycle_checkout_begin($asaasInvoiceId);
         $invoice = $data['invoice']->id;
         $ci = &get_instance();
         $ci->db->where('id', $invoice);
@@ -1073,7 +1108,7 @@ class Asaas_gateway extends App_gateway
         $description = utf8_encode(str_replace("{invoice_number}", $invoice_number, $description));
         // valida cliente
         $document = str_replace('/', '', str_replace('-', '', str_replace('.', '', $client['vat'])));
-        $postalCode = str_replace('-', '', str_replace('.', '', $client->zip));
+        $postalCode = str_replace('-', '', str_replace('.', '', $client['zip']));
         $customer = $this->search_customer($api_url, $api_key, $document);
         if ($customer['totalCount'] == "0") {
 
@@ -1087,7 +1122,7 @@ class Asaas_gateway extends App_gateway
                 "phone" => $client['phonenumber'],
                 "mobilePhone" => $client['phonenumber'],
                 "complement" => "",
-                "externalReference" => $invoice,
+                "externalReference" => (string) $row['clientid'],
                 "notificationDisabled" => $notificationDisabled,
             ];
             $post_data = json_encode($post_data);
@@ -1144,7 +1179,7 @@ class Asaas_gateway extends App_gateway
                 'adjustment' => $adjustment,
                 'subtotal' => $updated_total,
                 'total' => $updated_total,
-                'duedate' => date('Y-m-d', strtotime("+" . $datevence, " day"))
+                'duedate' => date('Y-m-d', strtotime("+" . $datevence . " day"))
             ];
 
             $ci->db->where('id', $invoice);
@@ -1268,12 +1303,19 @@ class Asaas_gateway extends App_gateway
         $this->logAsaasActivity('Cobran�a PIX Asaas [Fatura ID: ' . $invoice . ']');
 
         return $charge;
+        } catch (Throwable $error) {
+            asaas_lifecycle_reject($error, $asaasInvoiceId);
+        } finally {
+            asaas_lifecycle_checkout_finish($asaasInvoiceId);
+        }
     }
 
     public function create_charge($api_url, $api_key, $post_data)
     {
         $payload = $this->safe_json_decode_array($post_data);
         $response = $this->adapter->createPayment(is_array($payload) ? $payload : []);
+        $this->require_charge_response($response);
+        asaas_lifecycle_checkout_record($response);
         return json_encode($response);
     }
 
@@ -1297,13 +1339,44 @@ class Asaas_gateway extends App_gateway
     public function update_charge($charge_id, $post_data)
     {
         $payload = $this->safe_json_decode_array($post_data);
-        return $this->adapter->updatePayment($charge_id, is_array($payload) ? $payload : []);
+        $previous = asaas_lifecycle_checkout_previous((string) $charge_id);
+        $response = $this->adapter->updatePayment($charge_id, is_array($payload) ? $payload : []);
+        $this->require_charge_response($response, (string) $charge_id);
+        if ($previous !== null) {
+            asaas_lifecycle_checkout_record($response, $previous);
+        }
+        return $response;
+    }
+
+    private function require_charge_response(array $response, ?string $expectedId = null): void
+    {
+        $id = $response['id'] ?? null;
+        if (!is_string($id) || $id === '' || trim($id) !== $id
+            || isset($response['errors']) || isset($response['error'])
+            || ($expectedId !== null && $id !== $expectedId)) {
+            throw new RuntimeException('O Asaas não confirmou a cobrança solicitada. A gravação local foi interrompida.');
+        }
     }
 
     // https://api.asaas.com/v3/payments/id
     public function delete_charge($charge_id)
     {
-        return $this->adapter->request('DELETE', '/payments/' . $charge_id);
+        return $this->adapter->deletePayment((string) $charge_id);
+    }
+
+    public function restore_charge($charge_id): array
+    {
+        return $this->adapter->restorePayment((string) $charge_id);
+    }
+
+    public function receive_charge_in_cash($charge_id, string $payment_date, $value, bool $notify = false): array
+    {
+        return $this->adapter->receivePaymentInCash((string) $charge_id, $payment_date, $value, $notify);
+    }
+
+    public function undo_receive_in_cash($charge_id): array
+    {
+        return $this->adapter->undoReceivePaymentInCash((string) $charge_id);
     }
 
     public function create_customer($api_url, $api_key, $post_data)
@@ -1365,6 +1438,113 @@ class Asaas_gateway extends App_gateway
         return $this->adapter->handleWebhook($headers, $rawBody);
     }
 
+    public function addPayment($data)
+    {
+        $state = &asaas_lifecycle_state();
+        if (!empty($state['remote_payment_depth'])) {
+            return asaas_lifecycle_remote_payment(fn () => parent::addPayment($data));
+        }
+
+        $invoiceId = is_array($data) ? ($data['invoiceid'] ?? null) : null;
+        $paymentId = is_array($data) ? ($data['transactionid'] ?? null) : null;
+        if ((!is_int($invoiceId) && !is_string($invoiceId))
+            || (string) (int) $invoiceId !== (string) $invoiceId || (int) $invoiceId <= 0
+            || !is_string($paymentId) || $paymentId === '') {
+            asaas_diagnostic_log('error', 'Recebimento do checkout não registrado: fatura ou identificador da cobrança inválido.');
+            return false;
+        }
+        $invoiceId = (int) $invoiceId;
+        $ci = &get_instance();
+        $transaction = null;
+        $atomic = false;
+        $locked = false;
+        $success = false;
+        $recorded = null;
+        try {
+            asaas_receipt_lock($invoiceId);
+            $locked = true;
+            $atomic = asaas_lifecycle_has_atomic_payment_writer();
+            if ($atomic) {
+                if (asaas_atomic_payment_depth($ci->db) !== 0) {
+                    throw new RuntimeException('O núcleo precisa iniciar sua própria transação para registrar o recebimento.');
+                }
+            } else {
+                $transaction = new \Asaas\InvoiceTransaction($ci->db);
+                $transaction->assertTransactionalTables([db_prefix() . 'invoices', db_prefix() . 'invoicepaymentrecords']);
+                $transaction->begin();
+                asaas_diagnostic_quiet_db($ci->db, static fn () => asaas_lifecycle_lock_invoice($invoiceId));
+            }
+            $invoice = asaas_lifecycle_invoice($invoiceId);
+            if (!$invoice) {
+                throw new RuntimeException('Fatura não encontrada para registrar o recebimento do checkout.');
+            }
+            if (asaas_lifecycle_should_ignore_payment($invoiceId, $paymentId)) {
+                throw new RuntimeException('A cobrança foi encerrada ou substituída; o recebimento do checkout precisa de conciliação.');
+            }
+            $recorded = static function () use ($ci, $invoiceId, $paymentId): bool {
+                $query = asaas_diagnostic_quiet_db($ci->db, static fn () => $ci->db->get_where(
+                    db_prefix() . 'invoicepaymentrecords', ['invoiceid' => $invoiceId, 'transactionid' => $paymentId], 1
+                ));
+                if (!is_object($query) || !method_exists($query, 'row_array') || !is_array($row = $query->row_array())) {
+                    throw new RuntimeException('Não foi possível conferir o recibo existente da cobrança.');
+                }
+                return $row !== [];
+            };
+            if ($recorded()) {
+                $success = true;
+            } elseif (in_array((int) $invoice->status, [5, 6], true)) {
+                throw new RuntimeException('A fatura está cancelada ou em rascunho; o recebimento precisa de conciliação.');
+            } else {
+                $balance = asaas_payment_amount_to_cents(get_invoice_total_left_to_pay($invoiceId, $invoice->total));
+                if ((int) $invoice->status === 2 || $balance === 0) {
+                    $success = true;
+                } else {
+                    $amount = min(asaas_payment_amount_to_cents($data['amount'] ?? null), $balance);
+                    if ($amount <= 0) {
+                        throw new RuntimeException('O recebimento do checkout precisa informar um valor positivo.');
+                    }
+                    $data['invoiceid'] = $invoiceId;
+                    $data['amount'] = intdiv($amount, 100) . '.' . str_pad((string) ($amount % 100), 2, '0', STR_PAD_LEFT);
+                    $success = asaas_lifecycle_remote_payment(fn () => parent::addPayment($data)) === true;
+                    if (!$success) {
+                        throw new RuntimeException('O núcleo não confirmou o recebimento do checkout.');
+                    }
+                }
+            }
+            if ($transaction !== null) {
+                $transaction->commit();
+            }
+        } catch (Throwable $error) {
+            $success = false;
+            if ($transaction !== null && $transaction->isActive()) {
+                try {
+                    $transaction->rollback();
+                } catch (Throwable $rollbackError) {
+                    asaas_diagnostic_log('error', 'Rollback do recibo do checkout não confirmado; conciliação necessária.', [
+                        'invoice_id' => $invoiceId, 'payment_id' => $paymentId,
+                    ]);
+                }
+            } elseif ($atomic && is_callable($recorded)) {
+                try {
+                    // The custom writer commits before notifications and the after-hook.
+                    $success = asaas_atomic_payment_depth($ci->db) === 0 && $recorded();
+                } catch (Throwable $readError) {
+                    // An unavailable receipt query cannot prove either persistence or absence.
+                }
+            }
+            asaas_diagnostic_log($success ? 'warning' : 'error', $success
+                ? 'Recibo do checkout já gravado; houve falha em uma etapa posterior do núcleo.'
+                : 'Recebimento do checkout não confirmado; conferir o recibo local e a cobrança Asaas.', [
+                    'invoice_id' => $invoiceId, 'payment_id' => $paymentId, 'exception' => get_class($error),
+                ]);
+        } finally {
+            if ($locked) {
+                asaas_receipt_unlock($invoiceId);
+            }
+        }
+        return $success;
+    }
+
     public function ensure_customer_from_client($client): array
     {
         return $this->adapter->ensureCustomerFromClient($client);
@@ -1388,6 +1568,15 @@ class Asaas_gateway extends App_gateway
 
         $now = date('Y-m-d H:i:s');
         $existing = $ci->db->get_where($table, ['invoice_id' => $invoiceId])->row_array();
+
+        // Refreshes of the same charge must not erase local lifecycle decisions.
+        if ($existing && (string) ($existing['asaas_payment_id'] ?? '') === (string) ($chargeData['id'] ?? '')
+            && !array_key_exists('_asaas_lifecycle', $chargeData)) {
+            $cached = is_string($existing['payload_cache'] ?? null) ? json_decode($existing['payload_cache'], true) : null;
+            if (is_array($cached['_asaas_lifecycle'] ?? null)) {
+                $chargeData['_asaas_lifecycle'] = $cached['_asaas_lifecycle'];
+            }
+        }
 
         $payload = [
             'invoice_id' => $invoiceId,
