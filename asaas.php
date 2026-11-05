@@ -23,8 +23,11 @@ Author URI: https://t.me/wkartspro
 
 define('ASAAS_MODULE_NAME', 'asaas');
 
+require_once __DIR__ . '/helpers/asaas_webhook_helper.php';
+
 hooks()->add_action('before_render_payment_gateway_settings', 'asaas_before_render_payment_gateway_settings');
 hooks()->add_action('app_admin_footer', 'asaas_settings_tab_footer');
+hooks()->add_filter('before_settings_updated', 'asaas_validate_webhook_settings');
 hooks()->add_action('after_invoice_added', 'asaas_after_invoice_added');
 if (function_exists('do_action_deprecated')) {
     hooks()->add_action('invoice_updated', 'asaas_after_invoice_updated');
@@ -74,6 +77,7 @@ function asaas_before_render_payment_gateway_settings($gateway)
 
 function asaas_settings_tab_footer()
 {
+    echo '<script src="' . html_escape(module_dir_url(ASAAS_MODULE_NAME, 'assets/js/asaas-webhook-settings.js')) . '"></script>';
 ?>
     <script>
         $(document).ready(function() {
@@ -124,23 +128,13 @@ function asaas_settings_tab_footer()
             }
         });
 
-        $("#online_payments_asaas_tab > div:nth-child(13) > div:nth-child(2) > label").html("Valor fixo");
-
-        $("#online_payments_asaas_tab > div:nth-child(13) > div:nth-child(3) > label").html("Porcentagem");
-
-        $("#y_opt_1_Tipo\\ de\\ desconto").change(function() {
-
-            $("#online_payments_asaas_tab > div:nth-child(13) > label").empty();
-            $("#online_payments_asaas_tab > div:nth-child(13) > label").html("Valor desconto ");
-
-        });
-
-        $("#y_opt_2_Tipo\\ de\\ desconto").change(function() {
-
-            // console.log( asaas);
-            $("#online_payments_asaas_tab > div:nth-child(13) > label").empty();
-            $("#online_payments_asaas_tab > div:nth-child(13) > label").html("Valor desconto (Informar porcentagem)");
-
+        var asaasDiscountType = $('#online_payments_asaas_tab input[name="settings[paymentmethod_asaas_discount_type]"]');
+        asaasDiscountType.filter('[value="1"]').siblings('label').text('Valor fixo');
+        asaasDiscountType.filter('[value="0"]').siblings('label').text('Porcentagem');
+        asaasDiscountType.change(function() {
+            $('#online_payments_asaas_tab input[name="settings[paymentmethod_asaas_discount_value]"]')
+                .closest('.form-group').children('label')
+                .text(this.value === '1' ? 'Valor desconto' : 'Valor desconto (Informar porcentagem)');
         });
     </script>
 <?php

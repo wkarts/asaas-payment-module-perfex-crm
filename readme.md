@@ -1,3 +1,7 @@
+## Webhook com token de autenticação
+
+As configurações do meio de pagamento Asaas exibem a URL do webhook e permitem informar, gerar, exibir e copiar o token. O recebedor reconhece o header oficial `asaas-access-token`, preservando a configuração e os contratos legados. Consulte o [guia de configuração e atualização](docs/WEBHOOK.md).
+
 Refatorações:
 
 # Arquivo: modules/asaas/asaas.php

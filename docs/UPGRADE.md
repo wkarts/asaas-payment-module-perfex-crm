@@ -25,16 +25,18 @@
 - Configure as chaves de API para cada ambiente no gateway Asaas.
 - O User-Agent é definido automaticamente pelo SDK.
 - Os timeouts seguem os padrões do SDK, sem necessidade de ajuste manual.
-- Defina o token interno de webhook para validação.
+- Informe ou gere o token de autenticação do webhook nas configurações do gateway e configure o mesmo `authToken` no Asaas.
 
 ## Multi-tenant (sem .env)
 - Opcionalmente, salve overrides em `paymentmethod_asaas_{setting}_company_{companyId}`.
   Exemplo: `paymentmethod_asaas_api_key_company_2`.
 
 ## Webhook
-- Endpoint padrão: `/asaas/gateways/callback`.
-- Envie o token via header `X-Asaas-Webhook-Token` ou query `?token=`.
+- A URL completa aparece nas configurações do meio de pagamento Asaas. Endpoint: `/asaas/gateways/callback/index`; o alias `/asaas/gateways/callback` continua válido.
+- O Asaas envia o token no header oficial `asaas-access-token`. Novos cadastros devem usar esse header, sem segredos na URL.
+- As formas legadas são mantidas somente por compatibilidade quando o header oficial está ausente. Campo vazio mantém a instalação sem autenticação por token, com aviso explícito.
 - Eventos duplicados são ignorados por `event_id`.
+- Consulte [WEBHOOK.md](WEBHOOK.md) para geração, configuração, respostas HTTP, compatibilidade, testes e rollback.
 
 ## CRON / Sincronização
 - Parâmetros de CRON foram preparados nos settings (janela de dias e limite).

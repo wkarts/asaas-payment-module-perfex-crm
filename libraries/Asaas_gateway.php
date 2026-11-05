@@ -51,8 +51,32 @@ class Asaas_gateway extends App_gateway
             ),
             array(
                 'name' => 'webhook_secret',
-                'label' => 'Webhook secret/token interno',
+                'label' => 'Token de autenticação do webhook (authToken)',
                 'type' => 'input',
+                'input_type' => 'password',
+                'field_attributes' => [
+                    'autocomplete' => 'new-password',
+                    'spellcheck' => 'false',
+                    'aria-describedby' => 'asaas-webhook-token-help asaas-webhook-feedback',
+                ],
+                'after' => '<div id="asaas-webhook-settings" class="mbot20">'
+                    . '<div class="mbot10">'
+                    . '<button type="button" class="btn btn-default btn-sm mright5 mbot5" data-asaas-webhook-action="generate">Gerar token</button>'
+                    . '<button type="button" class="btn btn-default btn-sm mright5 mbot5" data-asaas-webhook-action="toggle" aria-pressed="false">Exibir token</button>'
+                    . '<button type="button" class="btn btn-default btn-sm mbot5" data-asaas-webhook-action="copy-token">Copiar token</button>'
+                    . '</div>'
+                    . '<p id="asaas-webhook-token-help" class="help-block">Informe o mesmo <code>authToken</code> configurado no Asaas. Novos tokens devem ter de 32 a 255 caracteres, sem espaços. Não utilize sua API Key. O Asaas envia esse valor no cabeçalho <code>asaas-access-token</code>.</p>'
+                    . '<p id="asaas-webhook-security-state" class="text-warning mtop10" role="status" aria-live="polite"></p>'
+                    . '<noscript><p class="text-warning">Se o token estiver vazio, o webhook continuará sem autenticação por token. Informe um token válido neste campo e configure o mesmo valor no Asaas.</p></noscript>'
+                    . '<div class="form-group mtop15">'
+                    . '<label for="asaas-webhook-url" class="control-label">URL do webhook no CRM</label>'
+                    . '<div class="input-group">'
+                    . '<input type="url" id="asaas-webhook-url" class="form-control" readonly value="' . html_escape(site_url('asaas/gateways/callback/index')) . '" aria-describedby="asaas-webhook-url-help">'
+                    . '<span class="input-group-btn"><button type="button" class="btn btn-default" data-asaas-webhook-action="copy-url">Copiar URL</button></span>'
+                    . '</div></div>'
+                    . '<p id="asaas-webhook-url-help" class="help-block">Cadastre esta URL no webhook do Asaas, sem acrescentar o token à URL. Gerar ou editar o token não altera automaticamente o cadastro no Asaas.</p>'
+                    . '<p id="asaas-webhook-feedback" role="status" aria-live="polite"></p>'
+                    . '</div>',
             ),
             array(
                 'name' => 'sync_enabled',
@@ -1286,13 +1310,13 @@ class Asaas_gateway extends App_gateway
 
     public function get_webhook($api_key, $api_url)
     {
-        return $this->adapter->request('GET', '/webhook');
+        return $this->adapter->findWebhook(site_url('asaas/gateways/callback/index'));
     }
 
     public function create_webhook($api_key, $api_url, $post_data)
     {
         $payload = $this->safe_json_decode_array($post_data);
-        return $this->adapter->request('POST', '/webhook', [], [], is_array($payload) ? $payload : []);
+        return $this->adapter->createWebhook($payload);
     }
 
     public function get_webhook_invoice($api_key, $api_url)

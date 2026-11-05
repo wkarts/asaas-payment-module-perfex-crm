@@ -174,7 +174,7 @@ class Asaas extends AdminController
     public function set_webhook($api_key, $api_url, $email)
     {
         $webhook = $this->asaas_gateway->get_webhook($api_key, $api_url);
-        if ($webhook["url"] !== site_url('asaas/gateways/callback/index')) {
+        if (empty($webhook['url'])) {
             $post_data = json_encode([
                 "url" => site_url('asaas/gateways/callback/index'),
                 "email" => $email,
@@ -185,6 +185,8 @@ class Asaas extends AdminController
             $create_webhook = $this->asaas_gateway->create_webhook($api_key, $api_url, $post_data);
             return $create_webhook;
         }
+
+        return $webhook;
     }
 
     public function set_webhook_invoice($api_key, $api_url, $email)
