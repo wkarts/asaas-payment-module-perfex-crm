@@ -1440,7 +1440,109 @@ class Asaas_gateway extends App_gateway
 
     public function addPayment($data)
     {
-        return asaas_lifecycle_remote_payment(fn () => parent::addPayment($data));
+        $state = &asaas_lifecycle_state();
+        if (!empty($state['remote_payment_depth'])) {
+            return asaas_lifecycle_remote_payment(fn () => parent::addPayment($data));
+        }
+
+        $invoiceId = is_array($data) ? ($data['invoiceid'] ?? null) : null;
+        $paymentId = is_array($data) ? ($data['transactionid'] ?? null) : null;
+        if ((!is_int($invoiceId) && !is_string($invoiceId))
+            || (string) (int) $invoiceId !== (string) $invoiceId || (int) $invoiceId <= 0
+            || !is_string($paymentId) || $paymentId === '') {
+            asaas_diagnostic_log('error', 'Recebimento do checkout não registrado: fatura ou identificador da cobrança inválido.');
+            return false;
+        }
+        $invoiceId = (int) $invoiceId;
+        $ci = &get_instance();
+        $transaction = null;
+        $atomic = false;
+        $locked = false;
+        $success = false;
+        $recorded = null;
+        try {
+            asaas_receipt_lock($invoiceId);
+            $locked = true;
+            $atomic = asaas_lifecycle_has_atomic_payment_writer();
+            if ($atomic) {
+                if (asaas_atomic_payment_depth($ci->db) !== 0) {
+                    throw new RuntimeException('O núcleo precisa iniciar sua própria transação para registrar o recebimento.');
+                }
+            } else {
+                $transaction = new \Asaas\InvoiceTransaction($ci->db);
+                $transaction->assertTransactionalTables([db_prefix() . 'invoices', db_prefix() . 'invoicepaymentrecords']);
+                $transaction->begin();
+                asaas_diagnostic_quiet_db($ci->db, static fn () => asaas_lifecycle_lock_invoice($invoiceId));
+            }
+            $invoice = asaas_lifecycle_invoice($invoiceId);
+            if (!$invoice) {
+                throw new RuntimeException('Fatura não encontrada para registrar o recebimento do checkout.');
+            }
+            if (asaas_lifecycle_should_ignore_payment($invoiceId, $paymentId)) {
+                throw new RuntimeException('A cobrança foi encerrada ou substituída; o recebimento do checkout precisa de conciliação.');
+            }
+            $recorded = static function () use ($ci, $invoiceId, $paymentId): bool {
+                $query = asaas_diagnostic_quiet_db($ci->db, static fn () => $ci->db->get_where(
+                    db_prefix() . 'invoicepaymentrecords', ['invoiceid' => $invoiceId, 'transactionid' => $paymentId], 1
+                ));
+                if (!is_object($query) || !method_exists($query, 'row_array') || !is_array($row = $query->row_array())) {
+                    throw new RuntimeException('Não foi possível conferir o recibo existente da cobrança.');
+                }
+                return $row !== [];
+            };
+            if ($recorded()) {
+                $success = true;
+            } elseif (in_array((int) $invoice->status, [5, 6], true)) {
+                throw new RuntimeException('A fatura está cancelada ou em rascunho; o recebimento precisa de conciliação.');
+            } else {
+                $balance = asaas_payment_amount_to_cents(get_invoice_total_left_to_pay($invoiceId, $invoice->total));
+                if ((int) $invoice->status === 2 || $balance === 0) {
+                    $success = true;
+                } else {
+                    $amount = min(asaas_payment_amount_to_cents($data['amount'] ?? null), $balance);
+                    if ($amount <= 0) {
+                        throw new RuntimeException('O recebimento do checkout precisa informar um valor positivo.');
+                    }
+                    $data['invoiceid'] = $invoiceId;
+                    $data['amount'] = intdiv($amount, 100) . '.' . str_pad((string) ($amount % 100), 2, '0', STR_PAD_LEFT);
+                    $success = asaas_lifecycle_remote_payment(fn () => parent::addPayment($data)) === true;
+                    if (!$success) {
+                        throw new RuntimeException('O núcleo não confirmou o recebimento do checkout.');
+                    }
+                }
+            }
+            if ($transaction !== null) {
+                $transaction->commit();
+            }
+        } catch (Throwable $error) {
+            $success = false;
+            if ($transaction !== null && $transaction->isActive()) {
+                try {
+                    $transaction->rollback();
+                } catch (Throwable $rollbackError) {
+                    asaas_diagnostic_log('error', 'Rollback do recibo do checkout não confirmado; conciliação necessária.', [
+                        'invoice_id' => $invoiceId, 'payment_id' => $paymentId,
+                    ]);
+                }
+            } elseif ($atomic && is_callable($recorded)) {
+                try {
+                    // The custom writer commits before notifications and the after-hook.
+                    $success = asaas_atomic_payment_depth($ci->db) === 0 && $recorded();
+                } catch (Throwable $readError) {
+                    // An unavailable receipt query cannot prove either persistence or absence.
+                }
+            }
+            asaas_diagnostic_log($success ? 'warning' : 'error', $success
+                ? 'Recibo do checkout já gravado; houve falha em uma etapa posterior do núcleo.'
+                : 'Recebimento do checkout não confirmado; conferir o recibo local e a cobrança Asaas.', [
+                    'invoice_id' => $invoiceId, 'payment_id' => $paymentId, 'exception' => get_class($error),
+                ]);
+        } finally {
+            if ($locked) {
+                asaas_receipt_unlock($invoiceId);
+            }
+        }
+        return $success;
     }
 
     public function ensure_customer_from_client($client): array

@@ -58,6 +58,14 @@ function asaas_lifecycle_begin(string $operation): void
     $state['operations'][$operation] = true;
 }
 
+/** Acquire before BEGIN/FOR UPDATE so edits and cancellation also respect a manual handoff. */
+function asaas_lifecycle_lock_operation(int $invoiceId): void
+{
+    asaas_receipt_lock($invoiceId);
+    $state = &asaas_lifecycle_state();
+    $state['operation_locks'][$invoiceId] = true;
+}
+
 /** Serializes lifecycle writes and callbacks for the same invoice on native MySQL. */
 function asaas_lifecycle_lock_invoice(int $id): void
 {
@@ -84,6 +92,12 @@ function asaas_lifecycle_finish(string $operation): void
     if (empty($state['operations']) && isset($state['transaction']) && $state['transaction']->isActive()) {
         $state['transaction']->commit();
         $state['compensations'] = [];
+    }
+    if (empty($state['operations'])) {
+        foreach (array_keys($state['operation_locks'] ?? []) as $invoiceId) {
+            asaas_receipt_unlock((int) $invoiceId);
+        }
+        $state['operation_locks'] = [];
     }
 }
 
@@ -273,6 +287,7 @@ function asaas_lifecycle_reject(Throwable $error, int $invoiceId = 0): void
     $state['pending_manual_invoices'] = [];
     asaas_atomic_payment_shutdown();
     asaas_receipt_unlock_all();
+    $state['operation_locks'] = [];
     $message = (string) asaas_diagnostic_sanitize($error->getMessage());
     asaas_diagnostic_log('error', 'Operação da fatura bloqueada; consulte os registros de transação e conciliação.', [
         'invoice_id' => $invoiceId,
@@ -337,6 +352,9 @@ function asaas_admin_invoice_transaction(): void
             || in_array('asaas', asaas_invoice_payment_modes($post['allowed_payment_modes'] ?? []), true);
         if (!$associated) {
             return;
+        }
+        if ($id > 0) {
+            asaas_lifecycle_lock_operation($id);
         }
         asaas_lifecycle_transaction()->begin();
         $state = &asaas_lifecycle_state();
@@ -407,6 +425,7 @@ function asaas_before_update_invoice(array $hook, $id = null): array
             return $hook;
         }
         asaas_lifecycle_validate_invoice($invoice, true);
+        asaas_lifecycle_lock_operation($id);
         asaas_lifecycle_begin('update:' . $id);
         asaas_lifecycle_lock_invoice($id);
         $original = asaas_lifecycle_invoice($id);
@@ -526,6 +545,11 @@ function asaas_lifecycle_remove($invoice, string $reason): void
     $gateway = asaas_lifecycle_gateway();
     $charges = asaas_lifecycle_charges($invoice);
     foreach ($charges as $charge) {
+        if ($reason === 'manual_deleted'
+            && in_array($charge['status'] ?? '', ['RECEIVED', 'CONFIRMED', 'RECEIVED_IN_CASH'], true)) {
+            // The manual-delete setting closes only an outstanding charge, never a confirmed receipt.
+            continue;
+        }
         $id = (string) $charge['id'];
         $gateway->delete_charge($id);
         asaas_lifecycle_compensation((int) $invoice->id, $id, 'restore_removed', static function () use ($gateway, $id, $charge): void {
@@ -562,6 +586,7 @@ function asaas_invoice_marked_as_cancelled($id): void
             return;
         }
         $hadTransaction = asaas_lifecycle_transaction()->isActive();
+        asaas_lifecycle_lock_operation($id);
         asaas_lifecycle_begin('cancel:' . $id);
         asaas_lifecycle_lock_invoice($id);
         if (!$hadTransaction) {
@@ -584,6 +609,7 @@ function asaas_invoice_unmarked_as_cancelled($id): void
             return;
         }
         $hadTransaction = asaas_lifecycle_transaction()->isActive();
+        asaas_lifecycle_lock_operation($id);
         asaas_lifecycle_begin('reactivate:' . $id);
         asaas_lifecycle_lock_invoice($id);
         if (!$hadTransaction) {

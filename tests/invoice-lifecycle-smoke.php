@@ -497,6 +497,15 @@ lifecycleTest('manual final delete mode removes charge without receiveInCash', s
     lifecycleCheck(asaas_lifecycle_should_ignore_payment(42, 'pay_original'), 'Retired manual charge cannot cause duplicate payment.');
 });
 
+lifecycleTest('manual delete mode preserves a charge already received remotely', static function (): void {
+    $ci = lifecycleReset(); $GLOBALS['lifecycle_options']['paymentmethod_asaas_manual_payment_receive_in_cash'] = '0';
+    $ci->asaas_gateway->remote['pay_original']['status'] = 'RECEIVED';
+    lifecycleCheck(is_int(lifecyclePayment('100.00')), 'Native manual receipt still settles the invoice.');
+    lifecycleSame([], lifecycleRemoteCalls($ci, 'delete'), 'A delayed callback cannot cause deletion of an already received charge.');
+    lifecycleSame(false, $ci->asaas_gateway->remote['pay_original']['deleted'], 'Confirmed remote payment remains intact.');
+    lifecycleSame(1, count($ci->db->tables['tblinvoicepaymentrecords']), 'Exactly one native receipt is recorded.');
+});
+
 lifecycleTest('manual API rejection prevents payment insertion and status change', static function (): void {
     $ci = lifecycleReset(); $before = lifecycleBusinessSnapshot($ci);
     $ci->asaas_gateway->responses['cash'][] = new RuntimeException('Recebimento recusado.', 400);
@@ -639,6 +648,26 @@ foreach (['delete', 'cancel', 'payment'] as $operation) {
         lifecycleCheck($result !== false, 'Unrelated payment method remains usable.');
         lifecycleSame([], $ci->asaas_gateway->calls, 'No remote side effects for unrelated invoices.');
         lifecycleSame(0, $ci->db->_trans_depth, 'Admin guard still closes correctly.');
+    });
+}
+
+foreach (['cancel', 'delete'] as $operation) {
+    lifecycleTest('MySQL admin ' . $operation . ' holds named lock through remote action and local commit', static function () use ($operation): void {
+        $ci = lifecycleReset(); $ci->db->dbdriver = 'mysqli';
+        lifecycleSame(true, $operation === 'cancel' ? lifecycleCancel() : lifecycleDelete(), 'Admin action completes successfully.');
+        $advisory = lifecycleQueryPosition('GET_LOCK('); $begin = lifecycleTracePosition('db.begin');
+        $rowLock = lifecycleQueryPosition('FOR UPDATE'); $remote = lifecycleTracePosition('remote.delete');
+        $commit = lifecycleTracePosition('db.commit'); $release = lifecycleQueryPosition('RELEASE_LOCK(');
+        lifecycleCheck($advisory >= 0 && $advisory < $begin, 'Admin acquires the named lock before opening the transaction.');
+        lifecycleCheck($begin < $rowLock && $rowLock >= 0, 'Invoice row lock is taken inside the owned transaction.');
+        lifecycleCheck($rowLock < $remote && $remote >= 0, 'Remote removal starts only after both locks are held.');
+        lifecycleCheck($remote < $commit && $commit >= 0, 'Native commit follows remote acceptance.');
+        lifecycleCheck($commit < $release, 'Named lock remains held until local commit is confirmed.');
+        $queries = array_values(array_filter($GLOBALS['lifecycle_trace'], static fn (array $row): bool => $row['operation'] === 'db.query'));
+        lifecycleSame(1, count(array_filter($queries, static fn (array $row): bool => str_contains($row['details']['sql'], 'GET_LOCK('))), 'Admin and action hooks share one acquisition without reference leaks.');
+        lifecycleSame(1, count(array_filter($queries, static fn (array $row): bool => str_contains($row['details']['sql'], 'RELEASE_LOCK('))), 'Successful action releases its owned lock exactly once.');
+        lifecycleSame([], asaas_receipt_lock_state()['locks'] ?? [], 'Admin request leaves no held named lock.');
+        lifecycleSame(0, $ci->db->_trans_depth, 'Admin request leaves no open transaction.');
     });
 }
 

@@ -58,7 +58,7 @@ O módulo utiliza os hooks públicos do Perfex. O filtro anterior à criação a
 
 As tabelas envolvidas precisam ser transacionais. Em MySQL/MariaDB, o módulo verifica InnoDB nas tabelas existentes antes de iniciar uma operação protegida; não converte engines nem altera o schema automaticamente. Uma instalação com tabela não transacional recebe erro explícito, em vez de uma falsa garantia de rollback.
 
-O bloqueio da fatura usa `FOR UPDATE`. Recebimentos manuais, checkout e webhooks compartilham um bloqueio consultivo por fatura com espera de até cinco segundos, adquirido antes da transação. Ele permanece durante rollback e compensação para impedir que um callback do próprio recebimento seja tratado como um novo pagamento.
+O bloqueio da fatura usa `FOR UPDATE`. Recebimentos manuais, checkout, webhooks e alterações administrativas da fatura compartilham um bloqueio consultivo por fatura com espera de até cinco segundos, adquirido antes da transação. Ele permanece durante rollback e compensação para impedir que um callback do próprio recebimento seja tratado como um novo pagamento. A baixa originada no checkout também confere o recibo e o saldo depois de obter o bloqueio.
 
 Se a API aceitar a operação e a gravação local falhar, o módulo tenta a compensação correspondente **somente quando o rollback local estiver confirmado**:
 
@@ -79,6 +79,7 @@ Quando a referência de um recebimento dessa variante estiver vazia, o módulo p
 
 - Transações externas pertencem ao chamador. O módulo usa savepoint e não confirma a transação de outro componente; não consegue observar um rollback externo ocorrido depois de seu hook final.
 - Código externo que cancela/reativa diretamente pelo model só oferece o hook posterior. O módulo restaura o estado financeiro em caso de erro, mas não pode recuperar com certeza a numeração anterior de um rascunho nesse caminho. A ação administrativa é protegida antes da escrita.
+- Na edição direta pelo model fora do controller administrativo, o núcleo grava campos personalizados e tags antes do filtro de atualização. O filtro impede a alteração de totais/itens rejeitada, mas esses metadados anteriores ao hook exigem uma transação do chamador para rollback completo. A tela administrativa é protegida desde `admin_init`.
 - O rollback SQL não restaura arquivos físicos que o núcleo já tenha removido. A exclusão remota ocorre antes da exclusão local para que uma recusa da API não chegue à remoção dos anexos.
 - Emails/SMS de terceiros não participam da transação SQL. A correção protege os registros; não promete desfazer notificações já enviadas.
 
@@ -113,6 +114,7 @@ php tests/invoice-transaction-smoke.php
 php tests/invoice-lifecycle-smoke.php
 php tests/atomic-payment-smoke.php
 php tests/invoice-receipt-lock-smoke.php
+php tests/checkout-receipt-smoke.php
 php tests/webhook-token-smoke.php
 php tests/invoice-dispatch-smoke.php
 ```

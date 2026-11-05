@@ -453,6 +453,7 @@ function asaas_before_invoice_deleted($id)
         if (!$enabled) {
             return $id;
         }
+        asaas_lifecycle_lock_operation($id);
         asaas_lifecycle_begin('delete:' . $id);
         asaas_lifecycle_lock_invoice($id);
         $invoice = asaas_lifecycle_invoice($id);

@@ -262,9 +262,10 @@ foreach (['true', 'false', 'throw'] as $outcome) {
     $gateway->nativePaymentResult = $outcome !== 'false';
     $gateway->nativePaymentError = $outcome === 'throw' ? new RuntimeException('Native addPayment failed.') : null;
     $data = ['invoiceid' => 42, 'amount' => 10, 'transactionid' => 'pay_test'];
-    if ($outcome === 'throw') { lifecycleApiFails(static fn () => $gateway->addPayment($data)); }
-    else { lifecycleApiAssert($gateway->addPayment($data) === ($outcome === 'true'), 'Gateway addPayment must preserve native return.'); }
-    lifecycleApiAssert($gateway->paymentDepths === [1], 'Every Asaas payment must set remote origin before parent callback.');
+    $record = static fn () => asaas_lifecycle_remote_payment(static fn () => $gateway->addPayment($data));
+    if ($outcome === 'throw') { lifecycleApiFails($record); }
+    else { lifecycleApiAssert($record() === ($outcome === 'true'), 'Gateway addPayment must preserve native return.'); }
+    lifecycleApiAssert($gateway->paymentDepths === [2], 'An already guarded Asaas payment must preserve the nested origin guard before parent callback.');
     lifecycleApiAssert((asaas_lifecycle_state()['remote_payment_depth'] ?? null) === 0, 'Remote origin must clear on success, false and exception.');
     lifecycleApiAssert($gateway->nativePayments === ($outcome === 'true' ? [$data] : []), 'Gateway must not alter native payment fields.');
     lifecycleApiAssert($history === [], 'Native payment origin guard must not call Asaas.');

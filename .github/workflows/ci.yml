@@ -56,6 +56,7 @@ jobs:
           php tests/invoice-lifecycle-smoke.php
           php tests/atomic-payment-smoke.php
           php tests/invoice-receipt-lock-smoke.php
+          php tests/checkout-receipt-smoke.php
 
       - name: JavaScript das configurações do webhook
         run: node --check assets/js/asaas-webhook-settings.js
