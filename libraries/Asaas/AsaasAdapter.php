@@ -10,6 +10,8 @@ use Asaas\Sdk\Exception\TransportException;
 use AsaasSdkProvider;
 use RuntimeException;
 
+require_once __DIR__ . '/../../helpers/asaas_diagnostics_helper.php';
+
 final class AsaasAdapter
 {
     private const PREFACES_RESOURCE_PATH = '/prefaces';
@@ -35,49 +37,64 @@ final class AsaasAdapter
         bool $expectsBinary = false,
         ?int $companyId = null
     ): array {
-        $client = $this->provider->client($companyId);
         $correlationId = $headers['X-Correlation-Id'] ?? null;
         $headers = $this->provider->headers($headers, $correlationId);
+        $apiPath = $this->apiPath($path);
 
         try {
-            $response = $client->request($method, $path, $query, $headers, $payload, false, $expectsBinary);
+            $client = $this->provider->client($companyId);
+            $response = $client->request($method, $apiPath, $query, $headers, $payload, false, $expectsBinary);
             $this->log('info', 'Asaas request concluída.', [
                 'method' => $method,
-                'path' => $path,
+                'path' => $apiPath,
                 'query' => $query,
                 'correlation_id' => $headers['X-Correlation-Id'] ?? null,
             ]);
 
             return is_array($response) ? $response : [];
         } catch (ApiException $exception) {
+            $error = $this->describeFailure($exception);
             $this->log('error', 'Erro na API Asaas.', [
                 'method' => $method,
-                'path' => $path,
+                'path' => $apiPath,
                 'query' => $query,
-                'status' => $exception->getStatusCode(),
-                'message' => $exception->getMessage(),
+                'status' => $error['status'],
+                'message' => $error['message'],
                 'correlation_id' => $headers['X-Correlation-Id'] ?? null,
             ]);
 
             throw new RuntimeException(
-                sprintf('Erro HTTP Asaas [%s %s]: %s', $method, $path, $exception->getMessage()),
-                (int) $exception->getStatusCode(),
+                sprintf('Erro HTTP Asaas %s [%s %s]: %s', $error['status'], $method, $apiPath, $error['message']),
+                (int) $error['status'],
                 $exception
             );
         } catch (TransportException $exception) {
-            $this->log('error', 'Erro de transporte na API Asaas.', [
+            $error = $this->describeFailure($exception);
+            $this->log('error', $error['status'] ? 'Erro na API Asaas.' : 'Erro de transporte na API Asaas.', [
                 'method' => $method,
-                'path' => $path,
+                'path' => $apiPath,
                 'query' => $query,
-                'message' => $exception->getMessage(),
+                'status' => $error['status'],
+                'message' => $error['message'],
                 'correlation_id' => $headers['X-Correlation-Id'] ?? null,
             ]);
 
             throw new RuntimeException(
-                sprintf('Erro de transporte Asaas [%s %s]: %s', $method, $path, $exception->getMessage()),
-                0,
+                sprintf('Falha Asaas%s [%s %s]: %s', $error['status'] ? ' HTTP ' . $error['status'] : '', $method, $apiPath, $error['message']),
+                (int) $error['status'],
                 $exception
             );
+        } catch (\Throwable $exception) {
+            $error = $this->describeFailure($exception);
+            $this->log('error', 'Falha ao preparar ou executar integração Asaas.', [
+                'method' => $method,
+                'path' => $apiPath,
+                'exception' => get_class($exception),
+                'message' => $error['message'],
+                'correlation_id' => $headers['X-Correlation-Id'] ?? null,
+            ]);
+
+            throw new RuntimeException($error['message'], 0, $exception);
         }
     }
 
@@ -95,12 +112,13 @@ final class AsaasAdapter
         bool $expectsBinary = false,
         ?int $companyId = null
     ): array {
-        $client = $this->provider->client($companyId);
         $correlationId = $headers['X-Correlation-Id'] ?? null;
         $headers = $this->provider->headers($headers, $correlationId);
+        $apiPath = $this->apiPath($path);
 
         try {
-            $response = $client->request($method, $path, $query, $headers, $payload, false, $expectsBinary);
+            $client = $this->provider->client($companyId);
+            $response = $client->request($method, $apiPath, $query, $headers, $payload, false, $expectsBinary);
 
             return [
                 'success' => true,
@@ -113,13 +131,21 @@ final class AsaasAdapter
                 ],
             ];
         } catch (ApiException $exception) {
+            $error = $this->describeFailure($exception);
+            $this->log('error', 'Erro na API Asaas.', [
+                'method' => $method,
+                'path' => $apiPath,
+                'status' => $error['status'],
+                'message' => $error['message'],
+                'correlation_id' => $headers['X-Correlation-Id'] ?? null,
+            ]);
             return [
                 'success' => false,
                 'data' => null,
                 'error' => [
                     'type' => 'api_error',
-                    'status' => $exception->getStatusCode(),
-                    'message' => $exception->getMessage(),
+                    'status' => $error['status'],
+                    'message' => $error['message'],
                 ],
                 'meta' => [
                     'method' => $method,
@@ -128,13 +154,21 @@ final class AsaasAdapter
                 ],
             ];
         } catch (TransportException $exception) {
+            $error = $this->describeFailure($exception);
+            $this->log('error', $error['status'] ? 'Erro na API Asaas.' : 'Erro de transporte na API Asaas.', [
+                'method' => $method,
+                'path' => $apiPath,
+                'status' => $error['status'],
+                'message' => $error['message'],
+                'correlation_id' => $headers['X-Correlation-Id'] ?? null,
+            ]);
             return [
                 'success' => false,
                 'data' => null,
                 'error' => [
-                    'type' => 'transport_error',
-                    'status' => null,
-                    'message' => $exception->getMessage(),
+                    'type' => $error['status'] ? 'api_error' : 'transport_error',
+                    'status' => $error['status'],
+                    'message' => $error['message'],
                 ],
                 'meta' => [
                     'method' => $method,
@@ -142,7 +176,76 @@ final class AsaasAdapter
                     'correlation_id' => $headers['X-Correlation-Id'] ?? null,
                 ],
             ];
+        } catch (\Throwable $exception) {
+            $error = $this->describeFailure($exception);
+            $this->log('error', 'Falha ao preparar ou executar integração Asaas.', [
+                'method' => $method,
+                'path' => $apiPath,
+                'exception' => get_class($exception),
+                'message' => $error['message'],
+                'correlation_id' => $headers['X-Correlation-Id'] ?? null,
+            ]);
+
+            return [
+                'success' => false,
+                'data' => null,
+                'error' => ['type' => 'integration_error', 'status' => null, 'message' => $error['message']],
+                'meta' => ['method' => $method, 'path' => $path, 'correlation_id' => $headers['X-Correlation-Id'] ?? null],
+            ];
         }
+    }
+
+    /** Guzzle resolves /payments against the host, so the API version must be explicit. */
+    private function apiPath(string $path): string
+    {
+        if (preg_match('#^(?:https?://|//)#i', $path)) {
+            return $path;
+        }
+
+        $path = '/' . ltrim($path, '/');
+
+        return preg_match('#^/v3(?:/|\\?|$)#', $path) ? $path : '/v3' . $path;
+    }
+
+    /** Recover HTTP status/details even when older SDKs wrap Guzzle errors as transport errors. */
+    private function describeFailure(\Throwable $exception): array
+    {
+        $status = null;
+        $message = '';
+
+        for ($cause = $exception; $cause !== null; $cause = $cause->getPrevious()) {
+            if ($cause instanceof ApiException) {
+                $status = $cause->getStatusCode();
+                $message = $cause->getMessage();
+                break;
+            }
+
+            if ($cause instanceof \GuzzleHttp\Exception\RequestException && $cause->getResponse() !== null) {
+                $response = $cause->getResponse();
+                $status = $response->getStatusCode();
+                $body = (string) $response->getBody();
+                $decoded = strlen($body) <= 65536 ? json_decode($body, true) : null;
+                $description = is_array($decoded) ? ($decoded['errors'][0]['description'] ?? $decoded['message'] ?? '') : '';
+                $message = is_string($description) ? $description : '';
+                break;
+            }
+        }
+
+        if ($message === '' || $message === 'Erro na API Asaas.') {
+            if ($status === 401 || $status === 403) {
+                $message = 'A API recusou a autenticação. Confira a API Key do ambiente selecionado.';
+            } elseif ($status === 404) {
+                $message = 'Recurso não encontrado na API. Confira o caminho e o identificador da cobrança.';
+            } elseif ($status !== null) {
+                $message = 'A API Asaas retornou HTTP ' . $status . '.';
+            } elseif ($exception instanceof TransportException) {
+                $message = 'Não foi possível conectar à API Asaas. Confira DNS, conexão, TLS e timeout do servidor.';
+            } else {
+                $message = 'Falha ao carregar ou executar a integração Asaas: ' . $exception->getMessage();
+            }
+        }
+
+        return ['status' => $status, 'message' => \asaas_diagnostic_sanitize(substr($message, 0, 2000))];
     }
 
     /**
@@ -561,38 +664,11 @@ final class AsaasAdapter
 
     private function log(string $level, string $message, array $context = []): void
     {
-        $sanitized = $this->sanitizeContext($context);
-        $sanitizedContext = json_encode($sanitized, JSON_UNESCAPED_UNICODE);
-
-        log_message('error', '[Asaas][' . strtoupper($level) . '] ' . $message . ' | context=' . $sanitizedContext);
-
-        $table = db_prefix() . 'asaas_logs';
-        if (!$this->ci->db->table_exists($table)) {
-            return;
-        }
-
-        $payload = [
-            'level' => $level,
-            'message' => $message,
-            'created_at' => date('Y-m-d H:i:s'),
-        ];
-
-        $columns = $this->getLogColumns($table);
-
-        if (in_array('context_json', $columns, true)) {
-            $payload['context_json'] = $sanitizedContext;
-        } elseif (in_array('context', $columns, true)) {
-            $payload['context'] = $sanitizedContext;
-        }
-
-        if (in_array('correlation_id', $columns, true)) {
-            $payload['correlation_id'] = $sanitized['correlation_id'] ?? null;
-        }
-
-        $inserted = $this->ci->db->insert($table, $payload);
-        if ($inserted === false) {
-            $error = $this->ci->db->error();
-            log_message('error', '[Asaas] Falha ao persistir log em banco: ' . json_encode($error, JSON_UNESCAPED_UNICODE));
+        try {
+            \asaas_diagnostic_log($level, $message, $context, $this->shouldWriteFileLog());
+        } catch (\Throwable $exception) {
+            // A diagnostic failure must never turn an accepted charge into a failed request.
+            error_log('[Asaas] Não foi possível registrar o diagnóstico da integração.');
         }
     }
 

@@ -9,6 +9,10 @@ class Asaas extends AdminController
     public function __construct()
     {
         parent::__construct();
+        // Diagnostics must remain accessible when the payment SDK cannot bootstrap.
+        if (isset($this->router) && $this->router->fetch_method() === 'logs') {
+            return;
+        }
         $this->load->library('asaas/asaas_gateway');
         $this->apiKey  = $this->asaas_gateway->getApiKey();
     }
@@ -82,6 +86,20 @@ class Asaas extends AdminController
         ];
 
         $this->load->view('asaas/customers', $data);
+    }
+
+    /** Administrator-only diagnostics; linked from payment settings, without a new menu. */
+    public function logs()
+    {
+        if (!is_admin()) {
+            access_denied('Asaas');
+            return;
+        }
+
+        require_once __DIR__ . '/../helpers/asaas_diagnostics_helper.php';
+        $data = asaas_diagnostic_report();
+        $data['title'] = 'Diagnóstico da integração Asaas';
+        $this->load->view('asaas/logs', $data);
     }
 
     public function health()

@@ -2,6 +2,10 @@
 
 declare(strict_types=1);
 
+if (!defined('BASEPATH')) {
+    define('BASEPATH', __DIR__);
+}
+
 if (!defined('FCPATH')) {
     define('FCPATH', rtrim(dirname(__DIR__), '/\\') . DIRECTORY_SEPARATOR);
 }

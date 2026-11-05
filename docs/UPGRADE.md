@@ -50,5 +50,11 @@
 - Testar healthcheck com chave inválida (deve retornar AUTH_ERROR).
 - Verificar logs sem exposição da API Key.
 
+## Diagnóstico do envio de faturas
+
+- Abra **Configurações → Meios de pagamento → Asaas → Ver logs da integração** como administrador.
+- O envio registra a fatura, as condições de bloqueio, o resultado e os erros HTTP/SDK. A opção de log em arquivo grava um arquivo próprio sem depender do nível global de log do Perfex.
+- Consulte [DIAGNOSTICO.md](DIAGNOSTICO.md) para os caminhos, interpretação dos erros, testes e procedimento de atualização.
+
 ## GitHub Actions (Release)
 - Em **Settings → Actions → General → Workflow permissions**, selecione **Read and write permissions**.

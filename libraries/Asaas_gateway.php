@@ -48,6 +48,8 @@ class Asaas_gateway extends App_gateway
                 'label' => 'Habilitar log em arquivo (debug integração Asaas)',
                 'type' => 'yes_no',
                 'default_value' => 0,
+                'after' => '<p class="help-block">Consulte o resultado do envio de faturas, os erros da API e a localização dos arquivos de log.</p>'
+                    . '<p class="mbot15"><a class="btn btn-default btn-sm" href="' . html_escape(admin_url('asaas/asaas/logs')) . '">Ver logs da integração</a></p>',
             ),
             array(
                 'name' => 'webhook_secret',
@@ -332,7 +334,7 @@ class Asaas_gateway extends App_gateway
             $cliente_create = $this->create_customer($api_url, $api_key, $post_data);
             $cliente_id = $cliente_create['id'];
 
-            log_activity('Cliente cadastrado no Asaas [Cliente ID: ' . $cliente_id . ']');
+            $this->logAsaasActivity('Cliente cadastrado no Asaas [Cliente ID: ' . $cliente_id . ']');
 
             if ($this->debug_enable()) {
                 echo "Campos cadastro";
@@ -442,11 +444,11 @@ class Asaas_gateway extends App_gateway
         if (!$search_charge) {
             $charge = $this->create_charge($api_url, $api_key, $post_data);
 
-            log_activity('Cobrança Boleto/Pix Asaas [Fatura ID: ' . $invoice . ']');
+            $this->logAsaasActivity('Cobrança Boleto/Pix Asaas [Fatura ID: ' . $invoice . ']');
         } else {
             $charge = $this->update_charge($search_charge->id, $post_data);
 
-            log_activity('Cobrança atualizada Asaas [Fatura ID: ' . $invoice . ']');
+            $this->logAsaasActivity('Cobrança atualizada Asaas [Fatura ID: ' . $invoice . ']');
         }
 
 
@@ -626,7 +628,7 @@ class Asaas_gateway extends App_gateway
                 "complement"           => "",
                 "phone"                => $client->phonenumber,
                 "mobilePhone"          => $client->phonenumber,
-                "externalReference"    => $invoice, // TODO: verificar essa informação
+                "externalReference"    => (string) $invoice->clientid,
                 "notificationDisabled" => $notificationDisabled,
             ]);
 
@@ -634,7 +636,7 @@ class Asaas_gateway extends App_gateway
 
             $cliente_id = $cliente_create['id'];
 
-            log_activity('Cliente cadastrado no Asaas [Cliente ID: ' . $cliente_id . ']');
+            $this->logAsaasActivity('Cliente cadastrado no Asaas [Cliente ID: ' . $cliente_id . ']');
 
             if ($this->debug_enable()) {
                 echo "Campos cadastro";
@@ -726,7 +728,9 @@ class Asaas_gateway extends App_gateway
 
         $charge = $this->safe_json_decode_array($charge);
 
-        log_activity('Cobrança Boleto Criada no Asaas [Fatura ID: ' . $invoice->id . ']');
+        if (!empty($charge['id']) && empty($charge['errors']) && empty($charge['error'])) {
+            $this->logAsaasActivity('Cobrança Boleto Criada no Asaas [Fatura ID: ' . $invoice->id . ']');
+        }
 
         if ($this->debug_enable()) {
 
@@ -801,7 +805,7 @@ class Asaas_gateway extends App_gateway
 
             $cliente_create = $this->create_customer($api_url, $api_key, $post_data);
             $cliente_id = $cliente_create['id'];
-            log_activity('Cliente cadastrado no Asaas [Cliente ID: ' . $cliente_id . ']');
+            $this->logAsaasActivity('Cliente cadastrado no Asaas [Cliente ID: ' . $cliente_id . ']');
 
             if ($this->debug_enable()) {
                 echo "Campos cadastro";
@@ -929,7 +933,7 @@ class Asaas_gateway extends App_gateway
 
             $charge = $this->update_charge($search_charge->id, $post_data);
 
-            log_activity('Cobran�a atualizada Asaas [Fatura ID: ' . $search_charge->id . ']');
+            $this->logAsaasActivity('Cobran�a atualizada Asaas [Fatura ID: ' . $search_charge->id . ']');
 
             return $charge;
         }
@@ -1023,7 +1027,7 @@ class Asaas_gateway extends App_gateway
 
         $charge = $this->create_charge($api_url, $api_key, $post_data);
 
-        log_activity('Cobran�a cart�o de credito Asaas [Fatura ID: ' . $invoice_id . ']');
+        $this->logAsaasActivity('Cobran�a cart�o de credito Asaas [Fatura ID: ' . $invoice_id . ']');
 
 
         return $charge;
@@ -1089,7 +1093,7 @@ class Asaas_gateway extends App_gateway
             $post_data = json_encode($post_data);
             $cliente_create = $this->create_customer($api_url, $api_key, $post_data);
             $cliente_id = $cliente_create['id'];
-            log_activity('Cliente cadastrado no Asaas [Cliente ID: ' . $cliente_id . ']');
+            $this->logAsaasActivity('Cliente cadastrado no Asaas [Cliente ID: ' . $cliente_id . ']');
 
             if ($this->debug_enable()) {
                 echo "Campos cadastro";
@@ -1261,7 +1265,7 @@ class Asaas_gateway extends App_gateway
         $charge = $this->create_charge($api_url, $api_key, $post_data);
         $charge = $this->safe_json_decode_array($charge);
 
-        log_activity('Cobran�a PIX Asaas [Fatura ID: ' . $invoice . ']');
+        $this->logAsaasActivity('Cobran�a PIX Asaas [Fatura ID: ' . $invoice . ']');
 
         return $charge;
     }
@@ -1458,6 +1462,21 @@ class Asaas_gateway extends App_gateway
             return NULL;
         }
     }
+    private function logAsaasActivity(string $message): void
+    {
+        try {
+            $ci = &get_instance();
+            asaas_diagnostic_quiet_db($ci->db ?? null, static function () use ($message): void {
+                log_activity($message);
+            });
+        } catch (\Throwable $exception) {
+            asaas_diagnostic_log('warning', 'Falha ao gravar histórico de atividade; o resultado da operação Asaas foi preservado.', [
+                'operation' => 'activity_log',
+                'exception' => get_class($exception),
+            ]);
+        }
+    }
+
     private function safe_json_decode_array($json): array
     {
         if (!is_string($json) || trim($json) === '') {

@@ -16,13 +16,30 @@ class AsaasSdkProvider
     public function __construct(App_gateway $gateway)
     {
         $this->gateway = $gateway;
-        $this->ensureComposerAutoload();
+        try {
+            $this->ensureComposerAutoload();
+        } catch (\RuntimeException) {
+            // Bootstrap failure is already logged. Keep settings accessible;
+            // SDK operations will retry loading and fail explicitly if necessary.
+        }
     }
 
     public function ensureComposerAutoload(): void
     {
         if (self::$autoloaded) {
             return;
+        }
+
+        $bootstrapError = null;
+
+        // Perfex or another module may have registered a compatible SDK already.
+        try {
+            if ($this->hasRequiredSdkClasses()) {
+                self::$autoloaded = true;
+                return;
+            }
+        } catch (\Throwable $exception) {
+            $bootstrapError = $exception;
         }
 
         $paths = [];
@@ -33,12 +50,60 @@ class AsaasSdkProvider
 
         $paths[] = __DIR__ . '/../vendor/autoload.php';
 
-        foreach ($paths as $path) {
-            if (is_file($path)) {
-                require_once $path;
-                self::$autoloaded = true;
-                return;
+        foreach (array_unique($paths) as $path) {
+            if (!is_file($path)) {
+                continue;
             }
+
+            try {
+                require_once $path;
+
+                // A root Composer autoloader does not necessarily contain this module's SDK.
+                if ($this->hasRequiredSdkClasses()) {
+                    self::$autoloaded = true;
+                    return;
+                }
+            } catch (\Throwable $exception) {
+                $bootstrapError = $exception;
+            }
+        }
+
+        $message = 'Não foi possível carregar o SDK Asaas. Verifique o vendor do módulo e execute composer install nas dependências do módulo.';
+        $context = ['operation' => 'sdk_bootstrap'];
+        if ($bootstrapError !== null) {
+            $context['exception_class'] = get_class($bootstrapError);
+        }
+        $this->logDiagnostic($message, $context);
+
+        throw new \RuntimeException($message, 0, $bootstrapError);
+    }
+
+    private function hasRequiredSdkClasses(): bool
+    {
+        foreach ([
+            AsaasSdk::class,
+            AsaasConfig::class,
+            Client::class,
+            Environment::class,
+            ApiException::class,
+            TransportException::class,
+            \GuzzleHttp\Client::class,
+            \GuzzleHttp\HandlerStack::class,
+        ] as $class) {
+            if (!class_exists($class)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function logDiagnostic(string $message, array $context = []): void
+    {
+        if (function_exists('asaas_diagnostic_log')) {
+            asaas_diagnostic_log('error', $message, $context);
+        } elseif (function_exists('log_message')) {
+            log_message('error', '[Asaas] ' . $message . ' | context=' . json_encode($context));
         }
     }
 
@@ -117,7 +182,8 @@ class AsaasSdkProvider
         $startedAt = microtime(true);
 
         try {
-            $this->sdk($companyId)->payment->listPayments(['limit' => 1], $this->headers());
+            // The HTTP client contract is stable across SDK 0.1.x and 0.2.x.
+            $this->client($companyId)->request('GET', '/v3/payments', ['limit' => 1], $this->headers());
 
             return [
                 'online' => true,
@@ -128,6 +194,11 @@ class AsaasSdkProvider
             ];
         } catch (ApiException $exception) {
             $status = $exception->getStatusCode();
+            $this->logDiagnostic('Falha HTTP ao verificar a conexão com o Asaas.', [
+                'operation' => 'health_check',
+                'http_status' => $status,
+                'exception_class' => get_class($exception),
+            ]);
 
             return [
                 'online' => false,
@@ -137,12 +208,51 @@ class AsaasSdkProvider
                 'message' => $exception->getMessage(),
             ];
         } catch (TransportException $exception) {
+            // SDK 0.1.x wraps Guzzle's HTTP errors as transport errors.
+            $previous = $exception->getPrevious();
+            if ($previous instanceof \GuzzleHttp\Exception\RequestException && $previous->hasResponse()) {
+                $response = $previous->getResponse();
+                $status = $response->getStatusCode();
+                $apiError = ApiException::fromResponse($status, (string) $response->getBody());
+                $this->logDiagnostic('Falha HTTP ao verificar a conexão com o Asaas.', [
+                    'operation' => 'health_check',
+                    'http_status' => $status,
+                    'exception_class' => get_class($previous),
+                ]);
+
+                return [
+                    'online' => false,
+                    'status' => $this->mapApiStatus($status),
+                    'httpStatus' => $status,
+                    'latencyMs' => (int) ((microtime(true) - $startedAt) * 1000),
+                    'message' => $apiError->getMessage(),
+                ];
+            }
+
+            $this->logDiagnostic('Falha de transporte ao verificar a conexão com o Asaas.', [
+                'operation' => 'health_check',
+                'exception_class' => get_class($exception),
+            ]);
+
             return [
                 'online' => false,
                 'status' => 'TRANSPORT_ERROR',
                 'httpStatus' => null,
                 'latencyMs' => (int) ((microtime(true) - $startedAt) * 1000),
                 'message' => $exception->getMessage(),
+            ];
+        } catch (\Throwable $exception) {
+            $this->logDiagnostic('Não foi possível inicializar o SDK Asaas para verificar a conexão.', [
+                'operation' => 'health_check',
+                'exception_class' => get_class($exception),
+            ]);
+
+            return [
+                'online' => false,
+                'status' => 'SDK_ERROR',
+                'httpStatus' => null,
+                'latencyMs' => (int) ((microtime(true) - $startedAt) * 1000),
+                'message' => 'Não foi possível inicializar o SDK Asaas. Verifique as dependências e consulte o diagnóstico do módulo.',
             ];
         }
     }
