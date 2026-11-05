@@ -1,7 +1,7 @@
 # Plano de migração — Asaas (SDK argws)
 
 ## Plano (8–12 bullets)
-1. Manter apenas `argws/asaas-sdk-php` como dependência oficial do módulo.
+1. Manter `argws/asaas-sdk-php` como SDK da integração e preservar as demais dependências declaradas, incluindo `endroid/qr-code`.
 2. Criar `AsaasSdkProvider` para centralizar configuração (sandbox/produção, apiKey, user-agent, timeouts, headers e healthcheck).
 3. Criar `AsaasAdapter` como camada única de integração, encapsulando chamadas à SDK e chamadas HTTP diretas quando não houver métodos expostos.
 4. Refatorar `Asaas_gateway` para usar o Adapter nas operações de cobrança, cliente, webhook e consulta.
@@ -18,8 +18,8 @@
 
 ## Instalação e Composer
 1. Dentro do módulo, execute:
-   `composer install`
-2. Confirme que apenas `argws/asaas-sdk-php` está presente em `composer.json`.
+   `composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction`
+2. Use o `composer.lock` versionado e preserve todas as dependências de `composer.json`. Não substitua a lista de dependências nem execute atualização global para instalar esta correção.
 
 ## Configuração (Sandbox/Produção)
 - Configure as chaves de API para cada ambiente no gateway Asaas.
@@ -35,7 +35,7 @@
 - A URL completa aparece nas configurações do meio de pagamento Asaas. Endpoint: `/asaas/gateways/callback/index`; o alias `/asaas/gateways/callback` continua válido.
 - O Asaas envia o token no header oficial `asaas-access-token`. Novos cadastros devem usar esse header, sem segredos na URL.
 - As formas legadas são mantidas somente por compatibilidade quando o header oficial está ausente. Campo vazio mantém a instalação sem autenticação por token, com aviso explícito.
-- Eventos duplicados são ignorados por `event_id`.
+- Eventos já concluídos são ignorados por `event_id`; falhas de processamento podem ser tentadas novamente. O recibo também é conferido por fatura e identificador do pagamento.
 - Consulte [WEBHOOK.md](WEBHOOK.md) para geração, configuração, respostas HTTP, compatibilidade, testes e rollback.
 
 ## CRON / Sincronização
@@ -55,6 +55,10 @@
 - Abra **Configurações → Meios de pagamento → Asaas → Ver logs da integração** como administrador.
 - O envio registra a fatura, as condições de bloqueio, o resultado e os erros HTTP/SDK. A opção de log em arquivo grava um arquivo próprio sem depender do nível global de log do Perfex.
 - Consulte [DIAGNOSTICO.md](DIAGNOSTICO.md) para os caminhos, interpretação dos erros, testes e procedimento de atualização.
+
+## Ciclo de faturas e quitação manual
+
+Consulte [CICLO-FATURAS.md](CICLO-FATURAS.md) para exclusão, cancelamento, reativação, valor mínimo, bloqueio de salvamento após rejeição e escolha entre receber em dinheiro ou excluir a cobrança ao quitar manualmente. Essa atualização não exige uma nova versão da SDK.
 
 ## GitHub Actions (Release)
 - Em **Settings → Actions → General → Workflow permissions**, selecione **Read and write permissions**.

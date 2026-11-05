@@ -40,6 +40,8 @@ final class WebhookSmokeSuite
         $GLOBALS['webhook_smoke_options'] = [];
         $GLOBALS['webhook_smoke_alerts'] = [];
         $GLOBALS['webhook_smoke_logs'] = [];
+        $state = &asaas_lifecycle_state();
+        $state = [];
 
         try {
             $test();
@@ -81,6 +83,12 @@ class App_gateway
     public array $payments = [];
     public int $handleCalls = 0;
     public ?Asaas\AsaasAdapter $adapter = null;
+    public bool $paymentSucceeds = true;
+    public ?Throwable $paymentFailure = null;
+    public array $remoteDepths = [];
+    public array $nativeTransactionDepths = [];
+    public array $apiResponses = [];
+    public array $apiCalls = [];
 
     public function getSetting(string $name): mixed
     {
@@ -94,7 +102,29 @@ class App_gateway
 
     public function addPayment(array $payment): bool
     {
+        $state = &asaas_lifecycle_state();
+        $this->remoteDepths[] = $state['remote_payment_depth'] ?? 0;
+        $db = get_instance()->db;
+        $atomic = get_instance()->payments_model instanceof WebhookSmokeAtomicPaymentsModel;
+        $this->nativeTransactionDepths[] = $db->transactionDepth();
+        if ($atomic && $db->transactionDepth() !== 0) {
+            throw new RuntimeException('payment_outer_transaction_not_allowed');
+        }
+        if ($this->paymentFailure !== null) {
+            throw $this->paymentFailure;
+        }
+        if (!$this->paymentSucceeds) {
+            return false;
+        }
+        if ($atomic) {
+            $db->trans_begin();
+        }
         $this->payments[] = $payment;
+        $db->paymentRecords[] = $payment;
+        if ($atomic && !$db->trans_commit()) {
+            $db->trans_rollback();
+            throw new RuntimeException('payment_commit_unconfirmed');
+        }
         return true;
     }
 
@@ -102,6 +132,15 @@ class App_gateway
     {
         ++$this->handleCalls;
         return $this->adapter->handleWebhook($headers, $rawBody);
+    }
+
+    public function request(string $method, string $path): array
+    {
+        $this->apiCalls[] = [$method, $path];
+        if ($this->apiResponses === []) {
+            throw new RuntimeException('Consulta de cobrança sem resposta local programada no teste.');
+        }
+        return array_shift($this->apiResponses);
     }
 }
 
@@ -120,6 +159,11 @@ final class WebhookSmokeResult
     {
         return $this->record;
     }
+
+    public function result_array(): array
+    {
+        return $this->data;
+    }
 }
 
 final class WebhookSmokeDb
@@ -128,11 +172,29 @@ final class WebhookSmokeDb
     public array $events = [];
     public array $inserts = [];
     public array $updates = [];
+    public array $paymentRecords = [];
+    public array $paymentMaps = [];
+    public bool $paymentTableExists = true;
+    public bool $paymentFieldsExist = true;
+    public bool $mapTableExists = false;
     public bool $forbidCalls = false;
     public bool $eventsTableExists = true;
+    public bool $db_debug = true;
+    public string $dbdriver = 'mysqli';
+    public string $hostname = 'mysql.example.test';
+    public string $database = 'crm_webhook_test';
+    public bool $commitSucceeds = true;
+    public bool $insertSucceeds = true;
+    public bool $updateSucceeds = true;
+    public bool $receiptLockSucceeds = true;
+    public mixed $balance = null;
+    public ?Closure $onLock = null;
+    public ?Closure $onReceiptLock = null;
     public ?string $failureMessage = null;
     public ?object $invoice;
+    protected int $_trans_depth = 0;
     private array $where = [];
+    private ?array $snapshot = null;
 
     public function __construct()
     {
@@ -153,16 +215,39 @@ final class WebhookSmokeDb
     public function table_exists(string $table): bool
     {
         $this->hit('table_exists:' . $table);
-        return $table === 'tblasaas_webhook_events' && $this->eventsTableExists;
+        return match ($table) {
+            'tblasaas_webhook_events' => $this->eventsTableExists,
+            'tblinvoicepaymentrecords' => $this->paymentTableExists,
+            'tblasaas_payments_map' => $this->mapTableExists,
+            default => false,
+        };
+    }
+
+    public function field_exists(string $field, string $table): bool
+    {
+        $this->hit('field_exists:' . $table . ':' . $field);
+        return $table === 'tblinvoicepaymentrecords' && $this->paymentFieldsExist
+            && in_array($field, ['invoiceid', 'transactionid'], true);
     }
 
     public function get_where(string $table, array $where): WebhookSmokeResult
     {
         $this->hit('get_where:' . $table);
-        if ($table !== 'tblasaas_webhook_events') {
-            throw new RuntimeException('Consulta inesperada: ' . $table);
+        if ($table === 'tblasaas_webhook_events') {
+            return new WebhookSmokeResult($this->events[$where['event_id']] ?? []);
         }
-        return new WebhookSmokeResult($this->events[$where['event_id']] ?? []);
+        if ($table === 'tblasaas_payments_map') {
+            return new WebhookSmokeResult($this->paymentMaps[$where['invoice_id']] ?? []);
+        }
+        if ($table === 'tblinvoicepaymentrecords') {
+            foreach ($this->paymentRecords as $payment) {
+                if ((int) $payment['invoiceid'] === (int) $where['invoiceid'] && $payment['transactionid'] === $where['transactionid']) {
+                    return new WebhookSmokeResult($payment);
+                }
+            }
+            return new WebhookSmokeResult();
+        }
+        throw new RuntimeException('Consulta inesperada: ' . $table);
     }
 
     public function where(string $field, mixed $value): self
@@ -178,7 +263,10 @@ final class WebhookSmokeDb
         if ($table !== 'tblinvoices') {
             throw new RuntimeException('Consulta inesperada: ' . $table);
         }
-        $invoice = $this->invoice && ($this->where['hash'] ?? null) === $this->invoice->hash
+        $matches = $this->invoice
+            && ((!isset($this->where['hash']) || $this->where['hash'] === $this->invoice->hash)
+                && (!isset($this->where['id']) || (int) $this->where['id'] === (int) $this->invoice->id));
+        $invoice = $matches
             ? clone $this->invoice
             : null;
         $this->where = [];
@@ -188,6 +276,9 @@ final class WebhookSmokeDb
     public function insert(string $table, array $data): bool
     {
         $this->hit('insert:' . $table);
+        if (!$this->insertSucceeds) {
+            return false;
+        }
         if ($table !== 'tblasaas_webhook_events' || isset($this->events[$data['event_id']])) {
             throw new RuntimeException('Inserção inesperada ou evento duplicado.');
         }
@@ -199,6 +290,10 @@ final class WebhookSmokeDb
     public function update(string $table, array $data): bool
     {
         $this->hit('update:' . $table);
+        if (!$this->updateSucceeds) {
+            $this->where = [];
+            return false;
+        }
         $eventId = $this->where['event_id'] ?? '';
         if ($table !== 'tblasaas_webhook_events' || !isset($this->events[$eventId])) {
             throw new RuntimeException('Atualização inesperada ou evento inexistente.');
@@ -207,6 +302,71 @@ final class WebhookSmokeDb
         $this->events[$eventId] = array_replace($this->events[$eventId], $data);
         $this->where = [];
         return true;
+    }
+
+    public function trans_begin(): bool
+    {
+        $this->hit('trans_begin');
+        $this->snapshot = [$this->events, $this->paymentRecords];
+        ++$this->_trans_depth;
+        return true;
+    }
+
+    public function trans_commit(): bool
+    {
+        $this->hit('trans_commit');
+        if (!$this->commitSucceeds) {
+            return false;
+        }
+        --$this->_trans_depth;
+        $this->snapshot = null;
+        return true;
+    }
+
+    public function trans_rollback(): bool
+    {
+        $this->hit('trans_rollback');
+        --$this->_trans_depth;
+        if ($this->snapshot !== null) {
+            [$this->events, $this->paymentRecords] = $this->snapshot;
+            $this->snapshot = null;
+        }
+        $this->where = [];
+        return true;
+    }
+
+    public function trans_status(): bool
+    {
+        return true;
+    }
+
+    public function transactionDepth(): int
+    {
+        return $this->_trans_depth;
+    }
+
+    public function query(string $sql, array $bindings = []): WebhookSmokeResult
+    {
+        $this->hit('query:' . $sql);
+        if (str_contains($sql, 'GET_LOCK(')) {
+            if ($this->onReceiptLock !== null) {
+                ($this->onReceiptLock)($this);
+            }
+            return new WebhookSmokeResult(['acquired' => $this->receiptLockSucceeds ? 1 : 0]);
+        }
+        if (str_contains($sql, 'RELEASE_LOCK(')) {
+            return new WebhookSmokeResult(['released' => 1]);
+        }
+        if (str_contains($sql, 'information_schema.TABLES')) {
+            return new WebhookSmokeResult(array_map(static fn (string $table): array => ['table_name' => $table, 'engine' => 'InnoDB'], $bindings));
+        }
+        if (str_contains($sql, 'FOR UPDATE')) {
+            if ($this->onLock !== null) {
+                ($this->onLock)($this);
+            }
+            return new WebhookSmokeResult([], $this->invoice);
+        }
+        throw new RuntimeException('SQL inesperado no teste de webhook.');
     }
 }
 
@@ -224,13 +384,30 @@ final class WebhookSmokeCi
 {
     public WebhookSmokeDb $db;
     public WebhookSmokeEncryption $encryption;
+    public object $payments_model;
+    public object $load;
+    public App_gateway $asaas_gateway;
 
     public function __construct()
     {
         $this->db = new WebhookSmokeDb();
         $this->encryption = new WebhookSmokeEncryption();
+        $this->payments_model = new stdClass();
+        $this->load = new class {
+            public function model(string $model): void {}
+            public function library(string $library): void {}
+        };
     }
 }
+
+/** Capability markers for the custom core; payment behavior remains in the stub above. */
+final class WebhookSmokeAtomicPaymentsModel
+{
+    private function insert_payment_atomically(): void {}
+}
+
+final class WebhookSmokeAtomicWriter {}
+class_alias(WebhookSmokeAtomicWriter::class, 'app\\services\\InvoicePaymentWriter');
 
 function &get_instance(): object
 {
@@ -240,6 +417,21 @@ function &get_instance(): object
 function db_prefix(): string
 {
     return 'tbl';
+}
+
+function get_invoice_total_left_to_pay(int $invoiceId, mixed $total): mixed
+{
+    $db = get_instance()->db;
+    if ($db->balance !== null) {
+        return $db->balance;
+    }
+    $paid = 0;
+    foreach ($db->paymentRecords as $payment) {
+        if ((int) $payment['invoiceid'] === $invoiceId) {
+            $paid += (float) $payment['amount'];
+        }
+    }
+    return number_format((float) $total - $paid, 2, '.', '');
 }
 
 function get_option(string $name): mixed
@@ -334,6 +526,7 @@ function webhook_smoke_fixture(string $secret = WEBHOOK_SMOKE_TOKEN): array
     $gateway->settings['webhook_secret'] = $secret;
     $adapter = new Asaas\AsaasAdapter(new AsaasSdkProvider($gateway), $gateway);
     $gateway->adapter = $adapter;
+    get_instance()->asaas_gateway = $gateway;
     return [$adapter, $gateway, get_instance()->db];
 }
 
@@ -537,6 +730,310 @@ $suite->run('fatura não encontrada não recebe pagamento', function () use ($su
     $suite->same(null, $db->events['evt_smoke_1']['invoice_id'], 'Não inventar vínculo de fatura.');
 });
 
+$suite->run('status inteiro de fatura paga não duplica a baixa', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $db->invoice->status = 2;
+    $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload());
+    $suite->same(200, $result['http_status'], 'Status inteiro deve ser reconhecido.');
+    $suite->same([], $gateway->payments, 'Fatura paga não deve receber novo lançamento.');
+});
+
+$suite->run('baixa somente o saldo após pagamentos e créditos locais', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $db->balance = '12.34';
+    $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload());
+    $suite->same(200, $result['http_status'], 'Saldo positivo deve ser processado.');
+    $suite->same('12.34', $gateway->payments[0]['amount'], 'Deve usar o helper nativo de saldo, não o total ou valor do evento.');
+    $suite->same([1], $gateway->remoteDepths, 'Hook de pagamento manual precisa estar suspenso na baixa remota.');
+    $suite->same(0, asaas_lifecycle_state()['remote_payment_depth'], 'A flag precisa ser liberada após a baixa.');
+});
+
+foreach (['0.00', '-1.00'] as $balance) {
+    $suite->run('saldo sem dívida ' . $balance . ' não lança pagamento', function () use ($suite, $balance): void {
+        [$adapter, $gateway, $db] = webhook_smoke_fixture();
+        $db->balance = $balance;
+        $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload());
+        $suite->same(200, $result['http_status'], 'Fatura sem saldo pode confirmar o evento.');
+        $suite->same([], $gateway->payments, 'Não gerar baixa zero ou negativa.');
+    });
+}
+
+foreach (['received', 'failed', null] as $processStatus) {
+    $suite->run('evento incompleto ' . ($processStatus ?? 'null') . ' permite nova tentativa', function () use ($suite, $processStatus): void {
+        [$adapter, $gateway, $db] = webhook_smoke_fixture();
+        $db->events['evt_smoke_1'] = ['event_id' => 'evt_smoke_1', 'process_status' => $processStatus];
+        $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload());
+        $suite->same(200, $result['http_status'], 'Evento incompleto pode ser retomado.');
+        $suite->same(false, $result['duplicated'], 'Somente processed representa evento concluído.');
+        $suite->same(1, count($gateway->payments), 'Tentativa anterior incompleta não elimina a baixa.');
+        $suite->same([], $db->inserts, 'Registro incompleto deve ser reaproveitado.');
+        $suite->same('processed', $db->events['evt_smoke_1']['process_status'], 'Marcar concluído só depois da baixa.');
+    });
+}
+
+foreach (['false', 'throw'] as $failure) {
+    $suite->run('addPayment ' . $failure . ' reverte evento e permite retry', function () use ($suite, $failure): void {
+        [$adapter, $gateway, $db] = webhook_smoke_fixture();
+        $gateway->paymentSucceeds = $failure !== 'false';
+        $gateway->paymentFailure = $failure === 'throw' ? new RuntimeException('Teste de falha na baixa local.') : null;
+        $headers = ['asaas-access-token' => WEBHOOK_SMOKE_TOKEN];
+        $failed = $adapter->handleWebhook($headers, webhook_smoke_payload());
+        $suite->same(500, $failed['http_status'], 'Uma baixa não confirmada precisa pedir nova entrega.');
+        $suite->same(false, $failed['processed'], 'Evento com baixa falha não está processado.');
+        $suite->same([], $db->events, 'Rollback não pode deixar evento processed.');
+        $suite->same([], $db->paymentRecords, 'Rollback não deixa pagamento persistido.');
+        $suite->same(0, asaas_lifecycle_state()['remote_payment_depth'], 'Exceção também precisa liberar a flag.');
+        $suite->truth(!asaas_lifecycle_transaction()->isActive(), 'Transação precisa encerrar após a falha.');
+        $gateway->paymentSucceeds = true;
+        $gateway->paymentFailure = null;
+        $retried = $adapter->handleWebhook($headers, webhook_smoke_payload());
+        $suite->same(200, $retried['http_status'], 'Reenvio deve conseguir concluir a baixa.');
+        $suite->same(1, count($db->paymentRecords), 'Reenvio deve persistir somente um pagamento.');
+        $suite->same('processed', $db->events['evt_smoke_1']['process_status'], 'Só a nova tentativa bem sucedida conclui o evento.');
+    });
+}
+
+foreach (['insertSucceeds', 'updateSucceeds', 'commitSucceeds'] as $property) {
+    $suite->run('falha em ' . $property . ' não confirma entrega nem deixa baixa parcial', function () use ($suite, $property): void {
+        [$adapter, $gateway, $db] = webhook_smoke_fixture();
+        $db->{$property} = false;
+        $headers = ['asaas-access-token' => WEBHOOK_SMOKE_TOKEN];
+        $result = $adapter->handleWebhook($headers, webhook_smoke_payload());
+        $suite->same(500, $result['http_status'], 'Falha de gravação/commit deve responder 500.');
+        $suite->same([], $db->events, 'Registro do evento deve ser revertido.');
+        $suite->same([], $db->paymentRecords, 'Pagamento local deve ser revertido junto com o evento.');
+        $suite->same(true, $db->db_debug, 'Configuração de erro do CI precisa ser restaurada.');
+        $suite->truth(in_array('trans_rollback', $db->calls, true), 'Falha deve executar rollback real.');
+        $db->{$property} = true;
+        $retried = $adapter->handleWebhook($headers, webhook_smoke_payload());
+        $suite->same(200, $retried['http_status'], 'Reentrega deve continuar processável.');
+        $suite->same(1, count($db->paymentRecords), 'Após retry deve haver só uma baixa persistida.');
+    });
+}
+
+$suite->run('eventos distintos do mesmo pagamento usam transactionid e invoiceid', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $headers = ['asaas-access-token' => WEBHOOK_SMOKE_TOKEN];
+    $adapter->handleWebhook($headers, webhook_smoke_payload('evt_confirmed', 'CONFIRMED'));
+    $db->balance = '125.50';
+    $result = $adapter->handleWebhook($headers, webhook_smoke_payload('evt_received'));
+    $suite->same(200, $result['http_status'], 'Segundo evento deve ser confirmado.');
+    $suite->same(1, count($gateway->payments), 'Não duplicar pagamento mesmo que status/saldo ainda estejam desatualizados.');
+    $suite->same(2, count($db->events), 'Cada evento distinto deve receber sua confirmação.');
+});
+
+$suite->run('transactionid de outra fatura não oculta pagamento desta fatura', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $db->paymentRecords[] = ['invoiceid' => 43, 'transactionid' => 'pay_smoke_1', 'amount' => '1.00'];
+    $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload());
+    $suite->same(200, $result['http_status'], 'Fatura correta deve receber o evento.');
+    $suite->same(1, count($gateway->payments), 'Dedup precisa combinar as duas colunas.');
+});
+
+foreach (['deleted', 'cancelled', 'manual_received', 'manual_deleted'] as $lifecycleStatus) {
+    $suite->run('mapa ' . $lifecycleStatus . ' ignora callback antigo', function () use ($suite, $lifecycleStatus): void {
+        [$adapter, $gateway, $db] = webhook_smoke_fixture();
+        $db->mapTableExists = true;
+        $db->paymentMaps[42] = ['asaas_payment_id' => 'pay_smoke_1', 'payload_cache' => json_encode(['_asaas_lifecycle' => ['state' => $lifecycleStatus]])];
+        $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload());
+        $suite->same(200, $result['http_status'], 'Callback obsoleto deve ser confirmado sem nova baixa.');
+        $suite->same([], $gateway->payments, 'Estado local já conciliado não pode gerar nova baixa.');
+        $suite->same('processed', $db->events['evt_smoke_1']['process_status'], 'Callback ignorado deve encerrar sua entrega.');
+    });
+}
+
+foreach ([true, false] as $retired) {
+    $suite->run('id anterior ' . ($retired ? 'aposentado' : 'legado sem marca') . ' respeita metadata explícita', function () use ($suite, $retired): void {
+        [$adapter, $gateway, $db] = webhook_smoke_fixture();
+        $db->mapTableExists = true;
+        $db->paymentMaps[42] = ['asaas_payment_id' => 'pay_current', 'payload_cache' => json_encode([
+            '_asaas_lifecycle' => ['state' => 'active', 'retired_payment_ids' => $retired ? ['pay_smoke_1'] : []],
+        ])];
+        $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload());
+        $suite->same(200, $result['http_status'], 'Evento deve ser confirmado.');
+        $suite->same($retired ? 0 : 1, count($gateway->payments), 'Somente ID explicitamente aposentado deve ser ignorado; preservar múltiplas cobranças legadas.');
+    });
+}
+
+$suite->run('recarrega fatura após lock para observar quitação manual concorrente', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $db->onLock = static function (WebhookSmokeDb $db): void { $db->invoice->status = 2; };
+    $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload());
+    $suite->same(200, $result['http_status'], 'Commit manual anterior ao lock deve ser observado.');
+    $suite->same([], $gateway->payments, 'A leitura antiga da fatura não pode causar dupla baixa.');
+    $suite->truth(in_array('where:id', $db->calls, true), 'A fatura deve ser relida após o lock.');
+});
+
+$suite->run('reconsulta dedup do evento dentro do lock', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $db->onLock = static function (WebhookSmokeDb $db): void {
+        $db->events['evt_smoke_1'] = ['event_id' => 'evt_smoke_1', 'process_status' => 'processed'];
+    };
+    $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload());
+    $suite->same(true, $result['duplicated'], 'Outro callback pode concluir enquanto este aguarda o lock.');
+    $suite->same([], $gateway->payments, 'Evento concluído durante a espera não deve baixar novamente.');
+    $suite->same([], $db->inserts, 'Evento concluído durante a espera não deve ser inserido novamente.');
+});
+
+foreach (['PAYMENT_DELETED', 'PAYMENT_RECEIVED_IN_CASH_UNDONE', 'deleted'] as $event) {
+    $suite->run('evento ' . $event . ' com status anterior recebido não baixa', function () use ($suite, $event): void {
+        [$adapter, $gateway] = webhook_smoke_fixture();
+        $payload = json_decode(webhook_smoke_payload(), true);
+        if ($event === 'deleted') { $payload['payment']['deleted'] = true; }
+        else { $payload['event'] = $event; }
+        $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], json_encode($payload));
+        $suite->same(200, $result['http_status'], 'Evento sem recebimento deve ser confirmado.');
+        $suite->same([], $gateway->payments, 'Status histórico não deve transformar exclusão/reversão em recebimento.');
+    });
+}
+
+foreach (['missing_id', 'invalid_balance'] as $failure) {
+    $suite->run('recebimento incompleto ' . $failure . ' não marca processed', function () use ($suite, $failure): void {
+        [$adapter, $gateway, $db] = webhook_smoke_fixture();
+        $payload = json_decode(webhook_smoke_payload(), true);
+        if ($failure === 'missing_id') { unset($payload['payment']['id']); }
+        else { $db->balance = 'inválido'; }
+        $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], json_encode($payload));
+        $suite->same(500, $result['http_status'], 'Recebimento que não pode ser registrado precisa permanecer pendente.');
+        $suite->same([], $db->events, 'Evento incompleto não pode ser confirmado como processado.');
+        $suite->same([], $gateway->payments, 'Dados incompletos não podem gerar baixa.');
+    });
+}
+
+$suite->run('instalação sem tabela de eventos preserva dedup pelo pagamento', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $db->eventsTableExists = false;
+    $headers = ['asaas-access-token' => WEBHOOK_SMOKE_TOKEN];
+    $first = $adapter->handleWebhook($headers, webhook_smoke_payload('evt_first'));
+    $second = $adapter->handleWebhook($headers, webhook_smoke_payload('evt_second'));
+    $suite->same(200, $first['http_status'], 'Instalação legada deve aceitar a primeira entrega.');
+    $suite->same(200, $second['http_status'], 'Instalação legada deve aceitar reentrega.');
+    $suite->same(1, count($gateway->payments), 'Tabela nativa de pagamentos mantém deduplicação.');
+    $suite->same([], $db->events, 'Não criar dados em tabela inexistente.');
+});
+
+$suite->run('core com writer atômico não recebe transação externa', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    get_instance()->payments_model = new WebhookSmokeAtomicPaymentsModel();
+    $suite->same(true, asaas_lifecycle_has_atomic_payment_writer(), 'Teste deve ativar a capacidade real do core customizado.');
+    $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload());
+    $suite->same(200, $result['http_status'], 'Writer que rejeita outer transaction deve continuar funcionando.');
+    $suite->same([0], $gateway->nativeTransactionDepths, 'Transação deve pertencer exclusivamente ao writer do core.');
+    $suite->same(1, count($db->paymentRecords), 'Writer deve gravar exatamente um pagamento.');
+    $suite->same(0, $db->transactionDepth(), 'Writer deve concluir sua própria transação.');
+    $suite->same('processed', $db->events['evt_smoke_1']['process_status'], 'Evento só conclui após o retorno do writer.');
+});
+
+foreach (['PENDING' => 0, 'OVERDUE' => 0, 'RECEIVED' => 1, 'CONFIRMED' => 1, 'RECEIVED_IN_CASH' => 1, 'DELETED' => 0] as $remoteStatus => $expectedPayments) {
+    $suite->run('callback de dinheiro revertido confere estado atual ' . $remoteStatus, function () use ($suite, $remoteStatus, $expectedPayments): void {
+        [$adapter, $gateway, $db] = webhook_smoke_fixture();
+        $db->mapTableExists = true;
+        $db->paymentMaps[42] = ['asaas_payment_id' => 'pay_smoke_1', 'payload_cache' => json_encode([
+            '_asaas_lifecycle' => ['state' => 'active', 'cash_receipt_reverted' => true],
+        ])];
+        $gateway->apiResponses[] = ['id' => 'pay_smoke_1', 'status' => $remoteStatus === 'DELETED' ? 'RECEIVED_IN_CASH' : $remoteStatus, 'deleted' => $remoteStatus === 'DELETED'];
+        $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload('evt_old_cash', 'RECEIVED_IN_CASH'));
+        $suite->same(200, $result['http_status'], 'Estado atual confirmado deve resolver o evento.');
+        $suite->same($expectedPayments, count($gateway->payments), 'Evento de recebimento desfeito não pode baixar cobrança atualmente pendente/excluída.');
+        $suite->same([['GET', '/payments/pay_smoke_1']], $gateway->apiCalls, 'Só consultar a cobrança correspondente, usando o helper real e transporte local.');
+        $suite->same('processed', $db->events['evt_old_cash']['process_status'], 'Evento resolvido deve concluir o registro.');
+    });
+}
+
+$suite->run('conferência de dinheiro revertido sem ID confirmado pede retry', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $db->mapTableExists = true;
+    $db->paymentMaps[42] = ['asaas_payment_id' => 'pay_smoke_1', 'payload_cache' => json_encode([
+        '_asaas_lifecycle' => ['state' => 'active', 'cash_receipt_reverted' => true],
+    ])];
+    $gateway->apiResponses[] = ['id' => 'pay_other', 'status' => 'PENDING'];
+    $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload('evt_old_cash', 'RECEIVED_IN_CASH'));
+    $suite->same(500, $result['http_status'], 'Consulta sem confirmação não deve consumir o evento.');
+    $suite->same([], $gateway->payments, 'Resposta de outra cobrança não autoriza baixa.');
+    $suite->same([], $db->events, 'No core nativo, evento não confirmado deve ser revertido.');
+});
+
+$suite->run('mapa quitado manualmente prevalece sobre flag antigo de dinheiro revertido', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $db->mapTableExists = true;
+    $db->paymentMaps[42] = ['asaas_payment_id' => 'pay_smoke_1', 'payload_cache' => json_encode([
+        '_asaas_lifecycle' => ['state' => 'manual_received', 'cash_receipt_reverted' => true],
+    ])];
+    $gateway->apiResponses[] = ['id' => 'pay_smoke_1', 'status' => 'RECEIVED_IN_CASH'];
+    $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload('evt_old_cash', 'RECEIVED_IN_CASH'));
+    $suite->same(200, $result['http_status'], 'Callback antigo de quitação já conciliada deve ser confirmado sem baixa.');
+    $suite->same([], $gateway->payments, 'Metadata manual_received precisa impedir nova baixa, mesmo que status local seja reaberto.');
+    $suite->same([], $gateway->apiCalls, 'Estado manual concluído não precisa ser substituído por uma consulta remota.');
+});
+
+foreach ([false, true] as $atomic) {
+    $suite->run('lock do recebimento precede transações e releitura no core ' . ($atomic ? 'atômico' : 'nativo'), function () use ($suite, $atomic): void {
+        [$adapter, $gateway, $db] = webhook_smoke_fixture();
+        if ($atomic) { get_instance()->payments_model = new WebhookSmokeAtomicPaymentsModel(); }
+        $db->onReceiptLock = static function (WebhookSmokeDb $db): void { $db->invoice->status = 2; };
+        $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload());
+        $suite->same(200, $result['http_status'], 'Commit anterior à obtenção do lock deve ser observado.');
+        $suite->same([], $gateway->payments, 'Fatura deve ser relida depois de esperar pelo lock, inclusive no core atômico.');
+        $acquire = array_search('query:SELECT GET_LOCK(?, 5) AS acquired', $db->calls, true);
+        $release = array_search('query:SELECT RELEASE_LOCK(?) AS released', $db->calls, true);
+        $suite->truth(is_int($acquire) && is_int($release) && $acquire < $release, 'Callback deve obter e liberar o lock nomeado.');
+        if (!$atomic) {
+            $begin = array_search('trans_begin', $db->calls, true);
+            $commit = array_search('trans_commit', $db->calls, true);
+            $suite->truth(is_int($begin) && $acquire < $begin && is_int($commit) && $commit < $release, 'Proteção deve cobrir integralmente a transação.');
+        }
+    });
+}
+
+$suite->run('timeout no lock de recebimento pede retry antes de baixar ou gravar evento', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $db->receiptLockSucceeds = false;
+    $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], webhook_smoke_payload());
+    $suite->same(500, $result['http_status'], 'Timeout não pode confirmar um recebimento ainda não protegido.');
+    $suite->same([], $gateway->payments, 'Não baixar sem obter exclusão mútua.');
+    $suite->same([], $db->events, 'Não consumir evento antes de obter o lock.');
+    $suite->truth(!in_array('trans_begin', $db->calls, true), 'Lock nomeado deve vir antes da transação do banco.');
+});
+
+$suite->run('retry após writer commitado e evento não confirmado não duplica pagamento', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    get_instance()->payments_model = new WebhookSmokeAtomicPaymentsModel();
+    $db->updateSucceeds = false;
+    $headers = ['asaas-access-token' => WEBHOOK_SMOKE_TOKEN];
+    $first = $adapter->handleWebhook($headers, webhook_smoke_payload());
+    $suite->same(500, $first['http_status'], 'Falha ao confirmar o evento deve pedir reentrega.');
+    $suite->same(1, count($db->paymentRecords), 'Pagamento já commitado pelo core deve permanecer gravado.');
+    $suite->same('received', $db->events['evt_smoke_1']['process_status'], 'Evento não confirmado precisa continuar pendente.');
+    $suite->truth(!in_array('trans_rollback', $db->calls, true), 'Adapter não pode reverter transação que pertence ao core.');
+    $db->updateSucceeds = true;
+    $db->balance = '125.50';
+    $second = $adapter->handleWebhook($headers, webhook_smoke_payload());
+    $suite->same(200, $second['http_status'], 'Retry deve concluir o evento usando o pagamento já registrado.');
+    $suite->same(1, count($gateway->payments), 'Dedup por fatura e transactionid evita novo lançamento, mesmo com saldo desatualizado.');
+    $suite->same(1, count($db->paymentRecords), 'Pagamento confirmado não pode ser duplicado.');
+    $suite->same('processed', $db->events['evt_smoke_1']['process_status'], 'Retry deve concluir só o registro do evento.');
+});
+
+foreach (['false', 'throw'] as $failure) {
+    $suite->run('writer atômico ' . $failure . ' deixa evento pendente para retry', function () use ($suite, $failure): void {
+        [$adapter, $gateway, $db] = webhook_smoke_fixture();
+        get_instance()->payments_model = new WebhookSmokeAtomicPaymentsModel();
+        $gateway->paymentSucceeds = $failure !== 'false';
+        $gateway->paymentFailure = $failure === 'throw' ? new RuntimeException('payment_insert_failed') : null;
+        $headers = ['asaas-access-token' => WEBHOOK_SMOKE_TOKEN];
+        $first = $adapter->handleWebhook($headers, webhook_smoke_payload());
+        $suite->same(500, $first['http_status'], 'Falha do writer não pode ser confirmada.');
+        $suite->same('received', $db->events['evt_smoke_1']['process_status'], 'Evento recebido sem pagamento precisa permitir retry.');
+        $suite->same([], $db->paymentRecords, 'Writer recusado não deve persistir pagamento.');
+        $gateway->paymentSucceeds = true;
+        $gateway->paymentFailure = null;
+        $second = $adapter->handleWebhook($headers, webhook_smoke_payload());
+        $suite->same(200, $second['http_status'], 'Retry deve conseguir concluir.');
+        $suite->same(1, count($db->paymentRecords), 'Retry deve deixar somente um pagamento.');
+        $suite->same([0, 0], $gateway->nativeTransactionDepths, 'Nenhuma tentativa pode receber transação externa.');
+    });
+}
+
 foreach (['GET', 'PUT'] as $method) {
     $suite->run('controller rejeita ' . $method . ' com Allow: POST', function () use ($suite, $method): void {
         [, $gateway, $db] = webhook_smoke_fixture();
@@ -592,7 +1089,7 @@ $suite->run('controller devolve 500 genérico e não vaza exceção', function (
     $result = $controller->index();
     $suite->same(500, $result->status, 'Falha interna não pode confirmar entrega com 200.');
     $suite->same('Falha interna ao processar webhook.', $result->body, 'Resposta deve ser genérica.');
-    $suite->same(['Asaas: Falha interna ao processar webhook.'], $GLOBALS['webhook_smoke_logs'], 'Log não pode conter texto de exceção.');
+    $suite->truth(!str_contains(json_encode($GLOBALS['webhook_smoke_logs']), WEBHOOK_SMOKE_TOKEN), 'Log não pode conter token presente no texto de exceção.');
     $suite->truth(!str_contains($result->body, WEBHOOK_SMOKE_TOKEN), 'Resposta não pode revelar o token.');
     $suite->same([], $gateway->payments, 'Falha do banco não pode baixar pagamento.');
 });

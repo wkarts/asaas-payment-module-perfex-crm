@@ -11,6 +11,9 @@ use AsaasSdkProvider;
 use RuntimeException;
 
 require_once __DIR__ . '/../../helpers/asaas_diagnostics_helper.php';
+require_once __DIR__ . '/../../helpers/asaas_payment_validation_helper.php';
+require_once __DIR__ . '/../../helpers/asaas_lifecycle_helper.php';
+require_once __DIR__ . '/../../helpers/asaas_receipt_lock_helper.php';
 
 final class AsaasAdapter
 {
@@ -423,6 +426,7 @@ final class AsaasAdapter
 
     public function createPayment(array $payload): array
     {
+        \asaas_payment_validate_payload($payload);
         return $this->request('POST', '/payments', [], [], $payload);
     }
 
@@ -438,12 +442,90 @@ final class AsaasAdapter
 
     public function updatePayment(string $paymentId, array $payload): array
     {
+        $this->requirePaymentId($paymentId);
+        \asaas_payment_validate_payload($payload);
         return $this->request('POST', '/payments/' . $paymentId, [], [], $payload);
     }
 
     public function cancelPayment(string $paymentId): array
     {
-        return $this->request('POST', '/payments/' . $paymentId . '/cancel');
+        return $this->deletePayment($paymentId);
+    }
+
+    public function deletePayment(string $paymentId): array
+    {
+        $this->requirePaymentId($paymentId);
+        $response = $this->request('DELETE', '/payments/' . rawurlencode($paymentId));
+        $this->requirePaymentResponse($response, $paymentId, 'exclusão');
+        if (($response['deleted'] ?? null) !== true) {
+            throw new RuntimeException('O Asaas não confirmou a exclusão da cobrança. Consulte o estado atual antes de tentar novamente.');
+        }
+        return $response;
+    }
+
+    public function restorePayment(string $paymentId): array
+    {
+        $this->requirePaymentId($paymentId);
+        $response = $this->request('POST', '/payments/' . rawurlencode($paymentId) . '/restore');
+        $this->requirePaymentResponse($response, $paymentId, 'restauração');
+        if (($response['deleted'] ?? null) !== false || !in_array($response['status'] ?? null, ['PENDING', 'OVERDUE'], true)) {
+            throw new RuntimeException('O Asaas não confirmou a restauração da cobrança em aberto. Consulte o estado atual antes de tentar novamente.');
+        }
+        return $response;
+    }
+
+    public function receivePaymentInCash(string $paymentId, string $paymentDate, $value, bool $notifyCustomer = false): array
+    {
+        $this->requirePaymentId($paymentId);
+        $date = \DateTimeImmutable::createFromFormat('!Y-m-d', $paymentDate);
+        if ($date === false || $date->format('Y-m-d') !== $paymentDate) {
+            throw new RuntimeException('Informe uma data de recebimento válida no formato AAAA-MM-DD.', 400);
+        }
+        try {
+            $receivedCents = \asaas_payment_amount_to_cents($value, 'Valor recebido');
+        } catch (\InvalidArgumentException $exception) {
+            throw new RuntimeException($exception->getMessage(), 400, $exception);
+        }
+        if ($receivedCents <= 0) {
+            throw new RuntimeException('O valor recebido deve ser maior que zero.', 400);
+        }
+        $response = $this->request('POST', '/payments/' . rawurlencode($paymentId) . '/receiveInCash', [], [], [
+            'paymentDate' => $paymentDate,
+            'value' => $value,
+            'notifyCustomer' => $notifyCustomer,
+        ]);
+        $this->requirePaymentResponse($response, $paymentId, 'recebimento em dinheiro');
+        $received = ($response['status'] ?? null) === 'RECEIVED_IN_CASH'
+            || (($response['status'] ?? null) === 'RECEIVED' && ($response['billingType'] ?? null) === 'RECEIVED_IN_CASH');
+        if (!$received || ($response['deleted'] ?? false) !== false) {
+            throw new RuntimeException('O Asaas não confirmou o recebimento em dinheiro. Consulte o estado atual antes de tentar novamente.');
+        }
+        return $response;
+    }
+
+    public function undoReceivePaymentInCash(string $paymentId): array
+    {
+        $this->requirePaymentId($paymentId);
+        $response = $this->request('POST', '/payments/' . rawurlencode($paymentId) . '/undoReceivedInCash');
+        $this->requirePaymentResponse($response, $paymentId, 'reversão do recebimento em dinheiro');
+        if (($response['deleted'] ?? false) !== false || !in_array($response['status'] ?? null, ['PENDING', 'OVERDUE'], true)) {
+            throw new RuntimeException('O Asaas não confirmou a reversão do recebimento em dinheiro para uma cobrança em aberto.');
+        }
+        return $response;
+    }
+
+    private function requirePaymentId(string $paymentId): void
+    {
+        if ($paymentId === '' || trim($paymentId) !== $paymentId || !preg_match('/^[a-zA-Z0-9_-]+$/D', $paymentId)) {
+            throw new RuntimeException('Identificador da cobrança Asaas inválido.', 400);
+        }
+    }
+
+    private function requirePaymentResponse(array $response, string $paymentId, string $operation): void
+    {
+        if (($response['id'] ?? null) !== $paymentId || isset($response['errors']) || isset($response['error'])) {
+            throw new RuntimeException('O Asaas retornou uma resposta sem confirmação válida para a ' . $operation . ' da cobrança.');
+        }
     }
 
     public function refundPayment(string $paymentId, array $payload = []): array
@@ -568,70 +650,163 @@ final class AsaasAdapter
             ];
         }
 
-        $eventId = $payload['id'] ?? $payload['eventId'] ?? md5($rawBody);
+        $candidateId = $payload['id'] ?? $payload['eventId'] ?? null;
+        $eventId = is_string($candidateId) && $candidateId !== '' ? $candidateId : md5($rawBody);
         $eventTable = db_prefix() . 'asaas_webhook_events';
+        $operation = 'webhook:' . $eventId;
+        $started = false;
+        $receiptLockInvoiceId = null;
 
-        if ($this->ci->db->table_exists($eventTable)) {
-            $existing = $this->ci->db->get_where($eventTable, ['event_id' => $eventId])->row_array();
-            if ($existing) {
-                return [
-                    'processed' => true,
-                    'duplicated' => true,
-                    'message' => 'Evento já processado.',
-                    'http_status' => 200,
-                ];
+        try {
+            $hasEventTable = $this->ci->db->table_exists($eventTable);
+            $existing = $hasEventTable ? $this->ci->db->get_where($eventTable, ['event_id' => $eventId])->row_array() : [];
+            if (($existing['process_status'] ?? null) === 'processed') {
+                return $this->webhookResult(true, true, 'Evento já processado.');
+            }
+
+            $payment = is_array($payload['payment'] ?? null) ? $payload['payment'] : [];
+            $externalReference = is_string($payment['externalReference'] ?? null) ? $payment['externalReference'] : null;
+            $paymentId = is_string($payment['id'] ?? null) ? $payment['id'] : null;
+            $status = $payment['status'] ?? null;
+            $invoice = null;
+            if ($externalReference !== null && $externalReference !== '') {
+                $this->ci->db->where('hash', $externalReference);
+                $invoice = $this->ci->db->get(db_prefix() . 'invoices')->row();
+            }
+
+            if ($invoice) {
+                \asaas_receipt_lock((int) $invoice->id);
+                $receiptLockInvoiceId = (int) $invoice->id;
+            }
+
+            // Some Perfex variants already own an independent payment transaction.
+            // Their writer rejects an outer transaction; its committed receipt is
+            // recovered by transactionid/invoiceid if recording this event fails.
+            $atomicPaymentWriter = \asaas_lifecycle_has_atomic_payment_writer();
+            if (!$atomicPaymentWriter) {
+                \asaas_lifecycle_begin($operation);
+                $started = true;
+            }
+            if ($invoice) {
+                if (!$atomicPaymentWriter) {
+                    \asaas_lifecycle_lock_invoice((int) $invoice->id);
+                }
+                // A manual settlement may have committed while this callback waited for its lock.
+                $this->ci->db->where('id', (int) $invoice->id);
+                $invoice = $this->ci->db->get(db_prefix() . 'invoices')->row();
+            }
+
+            $existing = $hasEventTable ? $this->ci->db->get_where($eventTable, ['event_id' => $eventId])->row_array() : [];
+            if (($existing['process_status'] ?? null) === 'processed') {
+                if ($started) {
+                    \asaas_lifecycle_finish($operation);
+                }
+                return $this->webhookResult(true, true, 'Evento já processado.');
+            }
+            if ($hasEventTable && !$existing) {
+                $inserted = $this->ci->db->insert($eventTable, [
+                    'event_id' => $eventId,
+                    'event_type' => is_string($payload['event'] ?? null) ? $payload['event'] : null,
+                    'asaas_payment_id' => $paymentId,
+                    'invoice_id' => $invoice?->id,
+                    'received_at' => date('Y-m-d H:i:s'),
+                    'payload' => $rawBody,
+                    'process_status' => 'received',
+                ]);
+                if ($inserted === false) {
+                    throw new RuntimeException('Não foi possível registrar o evento do webhook.');
+                }
+            }
+
+            $receiptEvent = !isset($payload['event']) || in_array($payload['event'], ['PAYMENT_RECEIVED', 'PAYMENT_CONFIRMED', 'PAYMENT_DUNNING_RECEIVED'], true);
+            if ($invoice && $receiptEvent && empty($payment['deleted'])
+                && in_array($status, ['RECEIVED', 'CONFIRMED', 'RECEIVED_IN_CASH'], true)) {
+                if ($paymentId === null || $paymentId === '') {
+                    throw new RuntimeException('O evento de recebimento não informou o identificador da cobrança.');
+                }
+                $ignored = \asaas_lifecycle_should_ignore_payment((int) $invoice->id, $paymentId);
+                $alreadyRecorded = $this->hasRecordedPayment((int) $invoice->id, $paymentId);
+                if (!$ignored && !$alreadyRecorded && (int) $invoice->status !== 2) {
+                    if ($this->gateway === null) {
+                        throw new RuntimeException('O gateway Asaas não está disponível para registrar o recebimento.');
+                    }
+                    $balance = get_invoice_total_left_to_pay((int) $invoice->id, $invoice->total);
+                    if (!is_numeric($balance) || !is_finite((float) $balance)) {
+                        throw new RuntimeException('Não foi possível apurar o saldo da fatura para registrar o recebimento.');
+                    }
+                    if ((float) $balance > 0) {
+                        $added = \asaas_lifecycle_remote_payment(fn () => $this->gateway->addPayment([
+                            'amount' => $balance,
+                            'invoiceid' => $invoice->id,
+                            'paymentmode' => 'Asaas',
+                            'paymentmethod' => is_string($payment['billingType'] ?? null) ? $payment['billingType'] : 'Asaas',
+                            'transactionid' => $paymentId,
+                        ]));
+                        if ($added !== true) {
+                            throw new RuntimeException('O Perfex não confirmou o registro do recebimento da cobrança.');
+                        }
+                    }
+                }
+            }
+
+            if ($hasEventTable) {
+                $this->ci->db->where('event_id', $eventId);
+                $updated = $this->ci->db->update($eventTable, [
+                    'processed_at' => date('Y-m-d H:i:s'),
+                    'process_status' => 'processed',
+                    'error_message' => null,
+                ]);
+                if ($updated === false) {
+                    throw new RuntimeException('Não foi possível concluir o registro do evento do webhook.');
+                }
+            }
+
+            if ($started) {
+                \asaas_lifecycle_finish($operation);
+            }
+            return $this->webhookResult(true, false, 'Evento processado.');
+        } catch (\Throwable $exception) {
+            if ($started) {
+                try {
+                    \asaas_lifecycle_transaction()->rollback();
+                    \asaas_lifecycle_finish($operation);
+                } catch (\Throwable $rollbackError) {
+                    $this->log('error', 'Falha ao reverter o processamento do webhook Asaas.', ['exception' => get_class($rollbackError)]);
+                }
+            }
+            $this->log('error', 'Não foi possível concluir o recebimento pelo webhook Asaas.', [
+                'event_id' => $eventId,
+                'exception' => get_class($exception),
+            ]);
+            return $this->webhookResult(false, false, 'Falha interna ao processar webhook.', 500);
+        } finally {
+            if ($receiptLockInvoiceId !== null) {
+                try {
+                    \asaas_receipt_unlock($receiptLockInvoiceId);
+                } catch (\Throwable $unlockError) {
+                    $this->log('error', 'Não foi possível liberar a proteção de recebimento da fatura.', [
+                        'invoice_id' => $receiptLockInvoiceId,
+                        'exception' => get_class($unlockError),
+                    ]);
+                }
             }
         }
+    }
 
-        $payment = $payload['payment'] ?? [];
-        $externalReference = $payment['externalReference'] ?? null;
-        $paymentId = $payment['id'] ?? null;
-        $status = $payment['status'] ?? null;
+    private function webhookResult(bool $processed, bool $duplicated, string $message, int $httpStatus = 200): array
+    {
+        return ['processed' => $processed, 'duplicated' => $duplicated, 'message' => $message, 'http_status' => $httpStatus];
+    }
 
-        $invoice = null;
-        if ($externalReference) {
-            $this->ci->db->where('hash', $externalReference);
-            $invoice = $this->ci->db->get(db_prefix() . 'invoices')->row();
+    private function hasRecordedPayment(int $invoiceId, string $paymentId): bool
+    {
+        $table = db_prefix() . 'invoicepaymentrecords';
+        if (!$this->ci->db->table_exists($table)
+            || !$this->ci->db->field_exists('invoiceid', $table)
+            || !$this->ci->db->field_exists('transactionid', $table)) {
+            return false;
         }
-
-        $receivedAt = date('Y-m-d H:i:s');
-        if ($this->ci->db->table_exists($eventTable)) {
-            $this->ci->db->insert($eventTable, [
-                'event_id' => $eventId,
-                'event_type' => $payload['event'] ?? null,
-                'asaas_payment_id' => $paymentId,
-                'invoice_id' => $invoice?->id,
-                'received_at' => $receivedAt,
-                'payload' => $rawBody,
-                'process_status' => 'received',
-            ]);
-        }
-
-        if ($invoice && $this->gateway && $invoice->status !== '2' && in_array($status, ['RECEIVED', 'CONFIRMED', 'RECEIVED_IN_CASH'], true)) {
-            $this->gateway->addPayment([
-                'amount' => $invoice->total,
-                'invoiceid' => $invoice->id,
-                'paymentmode' => 'Asaas',
-                'paymentmethod' => $payment['billingType'] ?? 'Asaas',
-                'transactionid' => $paymentId,
-            ]);
-        }
-
-        if ($this->ci->db->table_exists($eventTable)) {
-            $this->ci->db->where('event_id', $eventId);
-            $this->ci->db->update($eventTable, [
-                'processed_at' => date('Y-m-d H:i:s'),
-                'process_status' => 'processed',
-                'error_message' => null,
-            ]);
-        }
-
-        return [
-            'processed' => true,
-            'duplicated' => false,
-            'message' => 'Evento processado.',
-            'http_status' => 200,
-        ];
+        return (bool) $this->ci->db->get_where($table, ['invoiceid' => $invoiceId, 'transactionid' => $paymentId])->row_array();
     }
 
     public function healthStatus(): array

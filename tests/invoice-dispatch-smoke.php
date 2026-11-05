@@ -5,6 +5,9 @@ declare(strict_types=1);
 /**
  * Runs the real invoice hooks, gateway, adapter and SDK with an offline transport.
  * Only Perfex/CodeIgniter interfaces and the HTTP provider are replaced.
+ * This suite isolates HTTP behavior with an already available invoice fixture.
+ * The before/after native persistence contract is in invoice-lifecycle-smoke.php.
+ * Requires the real mbstring extension used by the production description path.
  * Run: php tests/invoice-dispatch-smoke.php
  */
 if (PHP_SAPI !== 'cli') {
@@ -83,12 +86,41 @@ final class InvoiceSmokeResult
 
 final class InvoiceSmokeDatabase
 {
+    public bool $db_debug = true;
+    public int $_trans_depth = 0;
     public array $logs = [];
     public array $customers = [];
     public array $payments = [];
     private string $table = '';
+    private ?array $transactionSnapshot = null;
 
     public function __construct(private InvoiceSmokeCi $ci) {}
+    public function trans_begin(): bool
+    {
+        if ($this->_trans_depth === 0) {
+            $this->transactionSnapshot = [$this->logs, $this->customers, $this->payments];
+        }
+        ++$this->_trans_depth;
+        return true;
+    }
+    public function trans_commit(): bool
+    {
+        if ($this->_trans_depth < 1) { return false; }
+        --$this->_trans_depth;
+        if ($this->_trans_depth === 0) { $this->transactionSnapshot = null; }
+        return true;
+    }
+    public function trans_rollback(): bool
+    {
+        if ($this->_trans_depth < 1) { return false; }
+        --$this->_trans_depth;
+        if ($this->_trans_depth === 0 && $this->transactionSnapshot !== null) {
+            [$this->logs, $this->customers, $this->payments] = $this->transactionSnapshot;
+            $this->transactionSnapshot = null;
+        }
+        return true;
+    }
+    public function trans_status(): bool { return true; }
     public function table_exists(string $table): bool
     {
         return in_array($table, ['tblasaas_logs', 'tblasaas_customers_map', 'tblasaas_payments_map'], true);
@@ -247,6 +279,9 @@ final class InvoiceSmokeProvider extends AsaasSdkProvider
 
 function invoiceSmokeFixture(array $responses, array &$history): InvoiceSmokeCi
 {
+    $state = &asaas_lifecycle_state();
+    if (isset($state['transaction'])) { $state['transaction']->shutdown(); }
+    $state = [];
     $history = [];
     $GLOBALS['invoice_smoke_staff'] = true;
     $GLOBALS['invoice_smoke_alerts'] = [];
@@ -304,6 +339,19 @@ function invoiceSmokePayload(array $history, int $index): array
 function invoiceSmokeRequests(array $history): array
 {
     return array_map(static fn (array $entry): string => $entry['request']->getMethod() . ' ' . $entry['request']->getUri()->getPath(), $history);
+}
+
+function invoiceSmokeReject(callable $operation, ?int $expectedStatus = null): AsaasInvoiceSyncException
+{
+    try { $operation(); }
+    catch (AsaasInvoiceSyncException $error) {
+        invoiceSmokeCheck(str_contains($error->getMessage(), 'bloqueado'), 'A rejeição deve explicar que a operação foi bloqueada.');
+        if ($expectedStatus !== null) {
+            invoiceSmokeCheck($error->getCode() === $expectedStatus, 'A rejeição deve preservar o status HTTP remoto.');
+        }
+        return $error;
+    }
+    throw new RuntimeException('Era esperada uma AsaasInvoiceSyncException no contrato CLI.');
 }
 
 $GLOBALS['invoice_smoke_assertions'] = 0;
@@ -375,7 +423,11 @@ foreach (['boleto desabilitado', 'sem vencimento', 'forma não permitida', 'modo
         } else {
             $ci->invoice = null;
         }
-        invoiceSmokeCheck(asaas_after_invoice_added(42) === 42, 'A saída deve preservar o ID.');
+        if ($reason === 'fatura ausente') {
+            invoiceSmokeReject(static fn () => asaas_after_invoice_added(42));
+        } else {
+            invoiceSmokeCheck(asaas_after_invoice_added(42) === 42, 'A saída deve preservar o ID.');
+        }
         invoiceSmokeCheck($history === [], 'A regra existente deve impedir qualquer requisição.');
         invoiceSmokeCheck(count($ci->db->logs) > 0, 'O motivo de não envio deve ser registrado.');
         invoiceSmokeCheck($GLOBALS['invoice_smoke_alerts'] === [], 'Ausência de envio por configuração não é falha de transporte.');
@@ -420,28 +472,27 @@ foreach (['library', 'model'] as $dependency) {
             $ci = invoiceSmokeFixture([], $history);
             $ci->load->failure = $dependency;
             $before = serialize($ci->invoice);
-            $result = $event === 'added' ? asaas_after_invoice_added(42) : asaas_after_invoice_updated(['id' => 42]);
-            invoiceSmokeCheck($result === 42 && serialize($ci->invoice) === $before, 'Falha na carga não pode remover ou alterar a fatura.');
+            invoiceSmokeReject(static fn () => $event === 'added' ? asaas_after_invoice_added(42) : asaas_after_invoice_updated(['id' => 42]));
+            invoiceSmokeCheck(serialize($ci->invoice) === $before, 'O teste de transporte não deve alterar seu objeto de fatura.');
             invoiceSmokeCheck($history === [], 'Falha na carga deve ser capturada antes do HTTP.');
-            invoiceSmokeCheck(count($GLOBALS['invoice_smoke_alerts']) === 1, 'O administrador deve receber alerta visível.');
+            invoiceSmokeCheck($GLOBALS['invoice_smoke_alerts'] === [], 'CLI usa exceção, sem alerta em sessão.');
             invoiceSmokeCheck(str_contains(invoiceSmokeLogs($ci), 'Falha simulada ao carregar'), 'O erro anteriormente fora do try deve aparecer no diagnóstico.');
         };
     }
 }
 
 foreach (['added', 'updated'] as $event) {
-    $tests['erro HTTP no envio preserva fatura e não repete POST: ' . $event] = static function () use ($customer, $event): void {
+    $tests['erro HTTP no envio lança rejeição e não repete POST: ' . $event] = static function () use ($customer, $event): void {
         $history = [];
         $failure = new Response(422, ['Content-Type' => 'application/json'], '{"errors":[{"code":"invalid_value","description":"Valor de cobrança inválido."}]}');
         $responses = $event === 'added' ? [$customer, $failure] : [$customer, ['data' => []], $failure];
         $ci = invoiceSmokeFixture($responses, $history);
         $before = serialize($ci->invoice);
-        $result = $event === 'added' ? asaas_after_invoice_added(42) : asaas_after_invoice_updated(['id' => 42]);
-        invoiceSmokeCheck($result === 42 && serialize($ci->invoice) === $before, 'O erro da API não pode desfazer a fatura.');
+        invoiceSmokeReject(static fn () => $event === 'added' ? asaas_after_invoice_added(42) : asaas_after_invoice_updated(['id' => 42]), 422);
+        invoiceSmokeCheck(serialize($ci->invoice) === $before, 'O objeto da fixture permanece disponível para inspecionar o erro.');
         $posts = array_filter(invoiceSmokeRequests($history), static fn (string $request): bool => $request === 'POST /v3/payments');
         invoiceSmokeCheck(count($posts) === 1, 'Não deve haver retry ou criação duplicada após erro HTTP.');
-        invoiceSmokeCheck(count($GLOBALS['invoice_smoke_alerts']) === 1 && $GLOBALS['invoice_smoke_alerts'][0][0] === 'danger', 'O administrador deve receber um alerta de falha.');
-        invoiceSmokeCheck(str_contains($GLOBALS['invoice_smoke_alerts'][0][1], 'Ver logs da integração'), 'O aviso deve apontar para os logs.');
+        invoiceSmokeCheck($GLOBALS['invoice_smoke_alerts'] === [], 'CLI interrompe por exceção sem depender de flash de sessão.');
         invoiceSmokeCheck(str_contains(invoiceSmokeLogs($ci), '422') && str_contains(invoiceSmokeLogs($ci), 'Valor de cobrança inválido'), 'O diagnóstico deve conservar status e descrição úteis da API.');
         invoiceSmokeCheck(!str_contains(invoiceSmokeLogs($ci), INVOICE_SMOKE_KEY), 'O diagnóstico nunca deve registrar a API Key.');
     };
@@ -450,8 +501,8 @@ foreach (['added', 'updated'] as $event) {
 $tests['resposta sem id não é tratada como cobrança criada'] = static function () use ($customer): void {
     $history = [];
     $ci = invoiceSmokeFixture([$customer, []], $history);
-    asaas_after_invoice_added(42);
-    invoiceSmokeCheck(count($GLOBALS['invoice_smoke_alerts']) === 1, 'Resposta inválida deve gerar alerta.');
+    invoiceSmokeReject(static fn () => asaas_after_invoice_added(42));
+    invoiceSmokeCheck($GLOBALS['invoice_smoke_alerts'] === [], 'Resposta inválida em CLI é uma exceção, sem flash de sessão.');
     invoiceSmokeCheck(str_contains(invoiceSmokeLogs($ci), 'não confirmou a criação'), 'A resposta vazia deve ser identificada no diagnóstico.');
     invoiceSmokeCheck(count($history) === 2, 'Não tentar criar novamente depois de resposta ambígua.');
 };
@@ -470,7 +521,7 @@ $tests['falha sem sessão de staff não cria alerta de interface'] = static func
     $ci = invoiceSmokeFixture([], $history);
     $GLOBALS['invoice_smoke_staff'] = false;
     $ci->load->failure = 'library';
-    asaas_after_invoice_added(42);
+    invoiceSmokeReject(static fn () => asaas_after_invoice_added(42));
     invoiceSmokeCheck($GLOBALS['invoice_smoke_alerts'] === [], 'Rotina sem staff deve apenas registrar o erro.');
     invoiceSmokeCheck(count($ci->db->logs) > 0, 'A ausência de sessão não deve esconder o diagnóstico.');
 };
@@ -481,7 +532,7 @@ $tests['falha no CRON é diagnosticada sem flash de sessão'] = static function 
     $history = [];
     $ci = invoiceSmokeFixture([], $history);
     $ci->load->failure = 'model';
-    invoiceSmokeCheck(asaas_after_invoice_updated(42) === 42, 'CRON deve preservar a fatura.');
+    invoiceSmokeReject(static fn () => asaas_after_invoice_updated(42));
     invoiceSmokeCheck($GLOBALS['invoice_smoke_alerts'] === [], 'CRON não deve criar alerta em sessão.');
     invoiceSmokeCheck(count($ci->db->logs) > 0, 'CRON deve registrar a falha.');
 };

@@ -23,7 +23,7 @@ O arquivo próprio funciona independentemente do `log_threshold` global. Não al
 4. Execute a operação necessária na fatura e abra a tela de logs.
 5. Procure `invoice_id`, `payment_id`, método/caminho HTTP, status, mensagem e `correlation_id`.
 
-Os hooks registram a entrada no envio, o sucesso confirmado e as condições que impedem uma chamada: boleto automático desabilitado, ausência de vencimento, forma de pagamento Asaas não permitida, cliente não encontrado ou falha na inicialização da integração. Falhas reais apresentam um alerta ao funcionário autenticado e preservam a fatura salva no CRM.
+Os hooks registram a entrada no envio, o sucesso confirmado e as condições que impedem uma chamada: boleto automático desabilitado, ausência de vencimento, forma de pagamento Asaas não permitida, cliente não encontrado ou falha na inicialização da integração. Falhas reais interrompem o salvamento e mostram o motivo. Nas operações protegidas, o banco local é revertido; se a API já tiver aceitado uma alteração, a compensação depende da confirmação desse rollback. Consulte [CICLO-FATURAS.md](CICLO-FATURAS.md) para garantias, limites e opções de recebimento manual.
 
 | Registro | Interpretação |
 | --- | --- |
@@ -35,6 +35,9 @@ Os hooks registram a entrada no envio, o sucesso confirmado e as condições que
 | HTTP 5xx | Falha informada pela API; confira o estado remoto antes de repetir uma criação. |
 | Erro de transporte sem status | Verifique DNS, conexão, TLS e timeout do servidor. |
 | Falha ao carregar SDK | Confira o `vendor` instalado; um autoloader da raiz sem a SDK deve permitir o fallback para o módulo. |
+| Operação da fatura bloqueada | A operação não terminou como sucesso; confira a causa e os registros de rollback/compensação. |
+| Conciliação manual necessária | A resposta ou compensação ficou inconclusiva; confira CRM e Asaas antes de repetir uma cobrança. |
+| Bloqueio de recebimento não obtido | Outra operação está trabalhando na mesma fatura; aguarde sua conclusão antes de tentar novamente. |
 
 O diagnóstico recupera o status HTTP mesmo quando uma versão da SDK o encapsula como erro genérico de transporte. Ele não adiciona repetição automática de cobranças. Falhas no próprio logger não devem substituir a resposta de um pagamento aceito.
 

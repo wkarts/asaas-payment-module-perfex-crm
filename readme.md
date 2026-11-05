@@ -6,6 +6,10 @@ As configurações do meio de pagamento Asaas exibem a URL do webhook e permitem
 
 Em **Configurações → Meios de pagamento → Asaas**, o botão **Ver logs da integração** permite ao administrador consultar os resultados e localizar os arquivos de log. O módulo preserva `/v3` nas chamadas de clientes/cobranças e usa as dependências locais como fallback quando a raiz do Perfex não fornece a SDK. Consulte o [guia de diagnóstico](docs/DIAGNOSTICO.md).
 
+## Ciclo de faturas e recebimentos
+
+Exclusão, cancelamento e reativação podem acompanhar a cobrança no Asaas. A quitação manual integral permite confirmar recebimento em dinheiro ou excluir a cobrança. Valores inválidos e rejeições da API interrompem a operação para evitar salvar uma fatura divergente. Consulte o [guia de comportamento, configuração, transações e atualização](docs/CICLO-FATURAS.md).
+
 Refatorações:
 
 # Arquivo: modules/asaas/asaas.php
