@@ -35,6 +35,14 @@ jobs:
       - name: PHPUnit
         run: vendor/bin/phpunit
 
+      - name: Webhook - autenticação, configurações e contrato Asaas
+        run: |
+          php tests/webhook-token-smoke.php
+          php tests/webhook-api-smoke.php
+
+      - name: JavaScript das configurações do webhook
+        run: node --check assets/js/asaas-webhook-settings.js
+
       - name: Validar padrão Perfex (versão + migrations)
         run: ./.github/scripts/check_perfex_module.sh
 

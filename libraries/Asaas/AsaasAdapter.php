@@ -370,21 +370,87 @@ final class AsaasAdapter
         ];
     }
 
+    /** Retorna somente o webhook desta instalação, preservando o contrato legado de objeto único. */
+    public function findWebhook(string $callbackUrl): array
+    {
+        $urls = [rtrim($callbackUrl, '/')];
+        if (substr($urls[0], -6) === '/index') {
+            $urls[] = substr($urls[0], 0, -6);
+        }
+
+        $offset = 0;
+        do {
+            // O cliente atual recebe caminhos absolutos; manter /v3 no caminho da API.
+            $response = $this->request('GET', '/v3/webhooks', ['limit' => 100, 'offset' => $offset]);
+            $webhooks = $response['data'] ?? [];
+            foreach ($webhooks as $webhook) {
+                if (in_array(rtrim((string) ($webhook['url'] ?? ''), '/'), $urls, true)) {
+                    unset($webhook['authToken']);
+                    return $webhook;
+                }
+            }
+            $offset += count($webhooks);
+        } while (!empty($response['hasMore']) && count($webhooks) > 0);
+
+        return [];
+    }
+
+    /** Cria o webhook de pagamentos com o mesmo segredo já salvo no recebedor. */
+    public function createWebhook(array $payload): array
+    {
+        require_once __DIR__ . '/../../helpers/asaas_webhook_helper.php';
+
+        $secret = (string) $this->provider->setting('webhook_secret');
+        if ($secret === '') {
+            throw new RuntimeException('Informe e salve o token de autenticação do webhook nas configurações do Asaas antes de cadastrá-lo pela API.');
+        }
+        $error = \asaas_webhook_token_validation_error($secret, null, [$this->provider->apiKey()]);
+        if ($error !== null) {
+            throw new RuntimeException($error);
+        }
+
+        $payload['authToken'] = $secret;
+        $payload += [
+            'name' => 'Perfex CRM - Asaas',
+            'apiVersion' => 3,
+            'enabled' => true,
+            'interrupted' => false,
+            'sendType' => 'SEQUENTIALLY',
+            'events' => ['PAYMENT_CONFIRMED', 'PAYMENT_RECEIVED'],
+        ];
+
+        $response = $this->request('POST', '/v3/webhooks', [], [], $payload);
+        // O token já está salvo; não propagá-lo para saídas de diagnóstico legadas.
+        unset($response['authToken']);
+        return $response;
+    }
+
     /**
-     * @return array{processed: bool, duplicated: bool, message: string}
+     * @return array{processed: bool, duplicated: bool, message: string, http_status: int}
      */
     public function handleWebhook(array $headers, string $rawBody): array
     {
         $secret = (string) $this->provider->setting('webhook_secret');
         if ($secret !== '') {
-            $headerToken = $headers['x-asaas-webhook-token'] ?? $headers['x-webhook-token'] ?? '';
-            $queryToken = $_GET['token'] ?? '';
+            $headers = array_change_key_case($headers, CASE_LOWER);
+            if (array_key_exists('asaas-access-token', $headers)) {
+                // O header oficial tem precedência: não aceitar fallback se ele for inválido.
+                $token = $headers['asaas-access-token'];
+                $authenticated = is_string($token) && hash_equals($secret, $token);
+            } else {
+                // Compatibilidade com integrações existentes; novos webhooks usam o header oficial.
+                $headerToken = $headers['x-asaas-webhook-token'] ?? $headers['x-webhook-token'] ?? null;
+                $queryToken = $_GET['token'] ?? null;
+                $authenticated = (is_string($headerToken) && hash_equals($secret, $headerToken))
+                    || (is_string($queryToken) && hash_equals($secret, $queryToken));
+            }
 
-            if ($secret !== $headerToken && $secret !== $queryToken) {
+            if (!$authenticated) {
                 return [
                     'processed' => false,
                     'duplicated' => false,
                     'message' => 'Token inválido.',
+                    'http_status' => 401,
                 ];
             }
         }
@@ -395,6 +461,7 @@ final class AsaasAdapter
                 'processed' => false,
                 'duplicated' => false,
                 'message' => 'Payload inválido.',
+                'http_status' => 400,
             ];
         }
 
@@ -408,6 +475,7 @@ final class AsaasAdapter
                     'processed' => true,
                     'duplicated' => true,
                     'message' => 'Evento já processado.',
+                    'http_status' => 200,
                 ];
             }
         }
@@ -459,6 +527,7 @@ final class AsaasAdapter
             'processed' => true,
             'duplicated' => false,
             'message' => 'Evento processado.',
+            'http_status' => 200,
         ];
     }
 
@@ -539,7 +608,8 @@ final class AsaasAdapter
 
     private function sanitizeContext(array $context): array
     {
-        $sensitiveKeys = ['apiKey', 'api_key', 'access_token', 'authorization', 'token'];
+        $sensitiveKeys = ['apiKey', 'api_key', 'access_token', 'authorization', 'token',
+            'authToken', 'webhook_secret', 'asaas-access-token', 'x-asaas-webhook-token', 'x-webhook-token'];
 
         foreach ($context as $key => $value) {
             if (is_array($value)) {

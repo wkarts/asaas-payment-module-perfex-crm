@@ -12,22 +12,36 @@ class Callback extends APP_Controller
 
     public function index()
     {
-        if (strcasecmp($_SERVER['REQUEST_METHOD'], 'POST') !== 0) {
-            return;
+        if ($this->input->method(true) !== 'POST') {
+            return $this->output
+                ->set_header('Allow: POST')
+                ->set_status_header(405)
+                ->set_content_type('text/plain', 'utf-8')
+                ->set_output('Método não permitido.');
         }
 
-        $rawBody = trim(file_get_contents("php://input"));
-        $headers = array_change_key_case($this->input->request_headers(), CASE_LOWER);
+        $rawBody = trim($this->input->raw_input_stream);
+        $headers = $this->input->request_headers();
 
-        $result = $this->asaas_gateway->handle_webhook($headers, $rawBody);
-
-        if ($result['processed'] === true) {
-            echo $result['message'];
-            return;
+        try {
+            $result = $this->asaas_gateway->handle_webhook($headers, $rawBody);
+        } catch (\Throwable $exception) {
+            // Não registrar payload, headers ou mensagens de terceiros que possam conter segredos.
+            log_activity('Asaas: Falha interna ao processar webhook.');
+            return $this->output
+                ->set_status_header(500)
+                ->set_content_type('text/plain', 'utf-8')
+                ->set_output('Falha interna ao processar webhook.');
         }
 
-        log_activity('Asaas: Falha ao processar webhook. ' . $result['message']);
-        echo $result['message'];
+        if ($result['processed'] !== true) {
+            log_activity('Asaas: Falha ao processar webhook. ' . $result['message']);
+        }
+
+        return $this->output
+            ->set_status_header($result['http_status'] ?? ($result['processed'] ? 200 : 400))
+            ->set_content_type('text/plain', 'utf-8')
+            ->set_output($result['message']);
     }
 
 
