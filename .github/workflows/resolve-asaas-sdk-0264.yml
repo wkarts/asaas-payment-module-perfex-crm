@@ -31,7 +31,7 @@ jobs:
           php-version: '8.3'
           tools: composer
           coverage: none
-          extensions: mbstring, pdo_sqlite, sqlite3, dom, xml, xmlwriter, xmlreader, ctype, tokenizer, curl, iconv, fileinfo, simplexml
+          extensions: mbstring, pdo_sqlite, sqlite3, dom, xml, xmlwriter, xmlreader, ctype, tokenizer, curl, iconv, fileinfo, simplexml, phar
 
       - name: Resolve only the SDK using its public source repository
         shell: bash
@@ -78,7 +78,7 @@ jobs:
           shutil.copy2(php, runtime / 'bin' / 'php.bin')
           shutil.copy2(composer, runtime / 'composer.phar')
           extension_dir = pathlib.Path(subprocess.check_output([str(php), '-r', 'echo ini_get("extension_dir");'], text=True).strip())
-          requested = ['pdo', 'pdo_sqlite', 'sqlite3', 'ctype', 'tokenizer', 'fileinfo', 'iconv', 'mbstring', 'dom', 'xml', 'xmlwriter', 'xmlreader', 'simplexml', 'curl']
+          requested = ['pdo', 'pdo_sqlite', 'sqlite3', 'ctype', 'tokenizer', 'fileinfo', 'iconv', 'mbstring', 'dom', 'xml', 'xmlwriter', 'xmlreader', 'simplexml', 'curl', 'phar']
           extensions = []
           elf_inputs = [php]
           for name in requested:
