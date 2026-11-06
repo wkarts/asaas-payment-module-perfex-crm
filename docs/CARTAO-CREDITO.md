@@ -16,6 +16,23 @@ A validação de valor mínimo também ocorre antes de salvar uma nova fatura qu
 
 O formulário solicita nome, número, validade e CVV do cartão, além de e-mail, CPF/CNPJ, CEP, número do endereço e telefone do titular. Os dados do titular atendem à autorização do cartão; não alteram as preferências nem o cadastro de e-mail/telefone do cliente no CRM ou no Asaas.
 
+## Privacidade dos dados do cartão
+
+O módulo não mantém um cadastro de cartões. Número completo ou mascarado, validade, CVV, nome/dados informados do titular e token reutilizável do cartão são descartados dos payloads antes de salvar o mapa da cobrança e os eventos de webhook. A sanitização também cobre campos isolados, variações de nomes e objetos JSON aninhados. Os erros de captura não incluem a resposta bruta da API nem a exceção original da SDK.
+
+| Destino | Política do módulo |
+|---|---|
+| Banco, logs e arquivos de diagnóstico | Não gravar os dados de cartão/titular informados no checkout nem o token reutilizável. Manter IDs, valores, datas, status e parcelas necessários à conciliação. |
+| Sessão e cookies | Não gravar dados de cartão. A sessão pode conter somente a mensagem controlada de resultado desse fluxo; os cookies normais de sessão/CSRF do Perfex continuam funcionando. |
+| `localStorage`, `sessionStorage`, IndexedDB e outros armazenamentos do navegador | O JavaScript do checkout não utiliza esses mecanismos nem grava cookies. |
+| Preenchimento automático | Formulário e campos editáveis usam `autocomplete="off"`. PAN, validade, CVV e nome do cartão não são repopulados pelo servidor. Defaults de contato vêm exclusivamente do cadastro já existente, sem recuperar o POST anterior. |
+| Cache e histórico | A rota de cartão envia `Cache-Control: no-store`, inclusive nos redirecionamentos/erros, desativa cache de página e profiler do CodeIgniter e usa HTTP 303 após POST. O JavaScript limpa os campos ao sair e ao restaurar a página pelo histórico; a restauração consulta o estado do pagamento por GET. |
+| Variáveis da requisição | Depois de ler o formulário, o controller retira os campos sensíveis de `$_POST` e `$_REQUEST`, antes da captura, e libera sua variável local ao terminar a tentativa. Isso não equivale a apagar de forma garantida toda a memória do processo PHP. |
+
+Os dados precisam existir temporariamente no formulário, no corpo HTTPS da requisição e em memória para serem enviados ao Asaas. O processamento e a eventual tokenização realizados pelo próprio Asaas seguem o contrato do provedor; o módulo não salva nem reutiliza o token retornado.
+
+`autocomplete="off"` e `no-store` são instruções ao navegador, não controle absoluto sobre extensões, gerenciadores de cartões/senhas ou decisões do usuário. Esta implementação também não audita a configuração de proxy, WAF, APM, módulos de terceiros, gravação de sessões ou logs de corpo de requisição da instalação. Esses componentes não devem capturar os campos de cartão nem o corpo do POST dessa rota. Não há limpeza retroativa de dados que outra versão ou outro componente tenha gravado.
+
 ## Atualização da SDK e instalação
 
 A dependência `argws/asaas-sdk-php` está fixada no lock em **v0.2.64**, commit `170831639665082c3bf50422877942b04a4a5315`. O `composer.json` usa o repositório `wkarts/asaas-sdk-argws` somente para esse pacote. Isso permite resolver a versão publicada no GitHub mesmo quando o índice do Packagist ainda está atrasado.
@@ -69,6 +86,8 @@ O CI executa os testes anteriores e os novos cenários em PHP 8.1 e 8.2. O job d
 
 Foram incluídos testes de transporte com SDK/Guzzle reais e respostas controladas, persistência da tentativa em SQLite conferida por uma segunda conexão, renderização das views, controller real com interfaces Perfex simuladas, baixa por parcela, duplicatas e regressões do ciclo de faturas. O núcleo proprietário do Perfex e a autorização na conta Asaas devem ser homologados no ambiente sandbox da instalação antes de produção.
 
+Os testes de privacidade verificam sanitização de dados aninhados/aliases, preservação dos metadados financeiros, headers e profiler desativado no controller, remoção dos campos das variáveis globais, formulário sem autocomplete, limpeza ao navegar/restaurar a página e integridade do POST antes da limpeza. A verificação de cookies/cache e de ferramentas de observabilidade no navegador e servidor efetivamente instalados continua sendo parte da homologação.
+
 Para rollback do código, restaure a pasta anterior completa, inclusive o vendor. Antes disso, concilie tentativas de cartão pendentes; versões anteriores não conhecem a marca que impede repetir uma captura incerta. Os dados e IDs das tentativas não devem ser apagados para forçar uma nova cobrança.
 
 ## Referências
@@ -77,3 +96,5 @@ Para rollback do código, restaure a pasta anterior completa, inclusive o vendor
 - [Pagar cobrança existente com cartão de crédito](https://docs.asaas.com/reference/pagar-uma-cobranca-com-cartao-de-credito)
 - [Guia de cobranças por cartão](https://docs.asaas.com/docs/cobrancas-via-cartao-de-credito)
 - [SDK 0.2.64](https://github.com/wkarts/asaas-sdk-argws/releases/tag/v0.2.64)
+- [Atributo autocomplete — MDN](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Attributes/autocomplete)
+- [Cache-Control — MDN](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control)

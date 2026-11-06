@@ -1285,14 +1285,27 @@ $suite->run('credenciais de cartão do webhook não são persistidas', function 
     $event['payment'] = array_replace($event['payment'], ['billingType' => 'CREDIT_CARD', 'value' => '125.50',
         'creditCardToken' => 'token-fixture-never-store',
         'creditCard' => ['number' => '4111111111111111', 'ccv' => 'unlogged-cvv'],
-        'creditCardHolderInfo' => ['name' => 'unlogged-holder']]);
+        'creditCardHolderInfo' => ['name' => 'unlogged-holder'],
+        'credit_card_number' => '4111111111111111', 'credit-card-brand' => 'unlogged-brand',
+        'holder_name' => 'unlogged-holder', 'expiry-month' => 'unlogged-expiry-month',
+        'expiry_year' => 'unlogged-expiry-year', 'expirationMonth' => 'unlogged-expiration-month',
+        'expiration-year' => 'unlogged-expiration-year', 'credit_card_token' => 'token-fixture-never-store',
+        'holder_email' => 'unlogged-holder-email',
+        'metadata' => ['security_code' => 'unlogged-cvv', 'holder-document' => 'unlogged-document'],
+        'customer' => 'cus_privacy_fixture', 'invoiceNumber' => '1234567890123456', 'number' => '9876543210987654']);
     $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], json_encode($event));
     $suite->same(200, $result['http_status'], 'Dados sensíveis não impedem a conciliação dos dados públicos.');
     $stored = json_encode([$db->events, $GLOBALS['webhook_smoke_logs']]);
-    foreach (['token-fixture-never-store', '4111111111111111', 'unlogged-cvv', 'unlogged-holder'] as $secret) {
+    foreach (['token-fixture-never-store', '4111111111111111', 'unlogged-cvv', 'unlogged-holder', 'unlogged-brand',
+        'unlogged-expiry-month', 'unlogged-expiry-year', 'unlogged-expiration-month', 'unlogged-expiration-year',
+        'unlogged-holder-email', 'unlogged-document'] as $secret) {
         $suite->truth(!str_contains($stored, $secret), 'Não armazenar credenciais de cartão no evento nem nos logs.');
     }
     $suite->same('125.50', $gateway->payments[0]['amount'], 'Valor e identificador continuam disponíveis.');
+    $storedPayment = json_decode($db->events['evt_card_safe']['payload'], true)['payment'];
+    foreach (['id', 'customer', 'value', 'billingType', 'invoiceNumber', 'number'] as $field) {
+        $suite->same($event['payment'][$field], $storedPayment[$field], 'Preservar campo financeiro ou referência: ' . $field);
+    }
 });
 
 foreach ([5, 6] as $invoiceStatus) {

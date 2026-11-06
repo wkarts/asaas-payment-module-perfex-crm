@@ -497,6 +497,49 @@ cardCheckoutTest('card secrets and reusable tokens are excluded from map, return
     cardCheckoutAssert(!str_contains($stored, '4111111111111111') && !str_contains($stored, 'fixture-secret-card-token'), 'PAN and reusable tokens cannot be persisted, logged or returned.');
     cardCheckoutAssert(!preg_match('/"(?:ccv|cvv|securityCode|creditCard)"\s*:/i', $stored), 'Stored/safe responses must not retain card credentials.');
 });
+cardCheckoutTest('flat aliases and JSON objects cannot retain cardholder details in a completed payment', static function (): void {
+    [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture();
+    $aliases = [
+        'creditCardNumber', 'CREDIT_CARD_NUMBER', 'credit-card-number', 'creditCardBrand', 'credit_card_brand',
+        'holderName', 'holder_name', 'holder-name', 'expiryMonth', 'expiry_month', 'expiry-month',
+        'expiryYear', 'expiry_year', 'expiry-year', 'expirationMonth', 'expiration_month', 'expiration-month',
+        'expirationYear', 'expiration_year', 'expiration-year', 'creditCardToken', 'credit_card_token', 'credit-card-token',
+        'cardNumber', 'card_number', 'card-number', 'securityCode', 'security_code', 'security-code',
+        'holderEmail', 'holderDocument', 'holderPostalCode', 'holderAddressNumber', 'holderPhone',
+        'card-holder-name', 'card_holder_info', 'credit_card_holder_info', 'credit_card', 'card_token',
+    ];
+    $api->responseOverrides = array_fill_keys($aliases, 'private-card-data-fixture');
+    $api->responseOverrides += [
+        'invoiceNumber' => '1234567890123456', 'number' => '9876543210987654',
+        'metadata' => json_decode('{"holder_name":"private-card-data-fixture","receipt":{"number":"1234567890123456","credit-card-token":"private-card-data-fixture"},"empty":{"security_code":"private-card-data-fixture"}}', false, 512, JSON_THROW_ON_ERROR),
+    ];
+    $result = $service->pay(cardCheckoutData($invoice));
+    $cached = $db->cache(true);
+    $stored = json_encode([$cached, $result, $GLOBALS['card_checkout_logs'], $db->query('SELECT * FROM tblasaas_logs')->result_array()], JSON_THROW_ON_ERROR);
+    cardCheckoutAssert(!str_contains($stored, 'private-card-data-fixture'), 'All supported card/holder aliases must be removed before persistence and public return.');
+    foreach ($aliases as $alias) {
+        cardCheckoutAssert(!array_key_exists($alias, $cached) && !array_key_exists($alias, $result), 'Sensitive alias retained: ' . $alias);
+    }
+    foreach (['id' => 'pay_new_1', 'customer' => 'cus_fixture', 'value' => '100.00', 'billingType' => 'CREDIT_CARD',
+        'invoiceNumber' => '1234567890123456', 'number' => '9876543210987654'] as $field => $expected) {
+        cardCheckoutAssert($cached[$field] === $expected && $result[$field] === $expected, 'Financial/reference field must survive sanitization: ' . $field);
+    }
+    cardCheckoutAssert(json_encode($result['metadata'], JSON_THROW_ON_ERROR) === '{"receipt":{"number":"1234567890123456"},"empty":{}}', 'Nested JSON objects must be sanitized without changing their JSON shape.');
+    cardCheckoutAssert($api->responseOverrides['metadata']->holder_name === 'private-card-data-fixture', 'Sanitization must not mutate the SDK response object.');
+});
+cardCheckoutTest('payload sanitization preserves opaque application objects without invoking their methods', static function (): void {
+    $opaque = new class implements JsonSerializable {
+        public function jsonSerialize(): mixed { throw new LogicException('Serialization is not allowed during sanitization.'); }
+        public function __clone() { throw new LogicException('Cloning is not allowed during sanitization.'); }
+        public function __toString(): string { throw new LogicException('String conversion is not allowed during sanitization.'); }
+    };
+    $payload = ['customer' => $opaque, 'nested' => (object) ['application' => $opaque, 'holder_name' => 'private-holder-fixture'],
+        'installment' => 'ins_1234567890123456', 'installmentNumber' => 1, 'number' => '1234567890123456'];
+    $safe = asaas_card_safe_payload($payload);
+    cardCheckoutAssert($safe['customer'] === $opaque && $safe['nested']->application === $opaque, 'Opaque application objects must retain identity without executing code.');
+    cardCheckoutAssert(!isset($safe['nested']->holder_name) && isset($payload['nested']->holder_name), 'JSON object properties must be filtered on a new object.');
+    cardCheckoutAssert($safe['installment'] === $payload['installment'] && $safe['installmentNumber'] === 1 && $safe['number'] === $payload['number'], 'Numeric-looking references and installment metadata must not be treated as card numbers.');
+});
 cardCheckoutTest('failed processing marker write prevents the card POST', static function (): void {
     [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture();
     $gateway->failMapWrite = 2;
