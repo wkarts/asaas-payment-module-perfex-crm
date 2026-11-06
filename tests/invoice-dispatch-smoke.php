@@ -421,7 +421,8 @@ $customer = ['totalCount' => 1, 'data' => [['id' => 'cus_existing']]];
 $payment = ['id' => 'pay_created', 'billingType' => 'BOLETO', 'status' => 'PENDING', 'value' => 149.90, 'dueDate' => '2026-12-15'];
 
 $tests['registro nativo de hooks sem duplicar atualização'] = static function (): void {
-    invoiceSmokeCheck(hooks()->actions['after_invoice_added'] === ['asaas_after_invoice_added'], 'O hook de criação deve permanecer registrado.');
+    invoiceSmokeCheck(hooks()->actions['after_invoice_added'] === ['asaas_after_invoice_added', 'asaas_recurring_invoice_added'],
+        'O envio original deve permanecer único e anteceder o enfileiramento opcional da recorrência.');
     invoiceSmokeCheck(hooks()->actions['invoice_updated'] === ['asaas_after_invoice_updated'], 'Perfex moderno deve usar invoice_updated.');
     invoiceSmokeCheck(!isset(hooks()->actions['after_invoice_updated']), 'Não registrar o callback legado e moderno simultaneamente.');
 };

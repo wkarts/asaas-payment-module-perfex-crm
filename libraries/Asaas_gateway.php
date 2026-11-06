@@ -432,7 +432,8 @@ class Asaas_gateway extends App_gateway
             return;
         }
 
-        if (asaas_card_attempt_blocks(asaas_lifecycle_cached_payment(asaas_lifecycle_map((int) ($data['invoice']->id ?? 0))))) {
+        if (asaas_card_attempt_blocks(asaas_lifecycle_cached_payment(asaas_lifecycle_map((int) ($data['invoice']->id ?? 0))))
+            || (function_exists('asaas_recurring_invoice_blocks') && asaas_recurring_invoice_blocks((int) ($data['invoice']->id ?? 0)))) {
             redirect(site_url('asaas/checkout/cartao/' . $data['invoice']->hash));
             return;
         }
@@ -1198,7 +1199,18 @@ class Asaas_gateway extends App_gateway
 
     public function handle_webhook(array $headers, string $rawBody): array
     {
-        return $this->adapter->handleWebhook($headers, $rawBody);
+        $result = $this->adapter->handleWebhook($headers, $rawBody);
+        try {
+            if (!empty($result['processed']) && empty($result['duplicated'])
+                && (string) $this->provider->setting('webhook_secret') !== ''
+                && function_exists('asaas_recurring_observe_webhook')) {
+                $payload = json_decode($rawBody, true);
+                if (is_array($payload)) { asaas_recurring_observe_webhook($payload); }
+            }
+        } catch (\Throwable) {
+            // Optional recurring observation must never change a completed native webhook result.
+        }
+        return $result;
     }
 
     public function addPayment($data)

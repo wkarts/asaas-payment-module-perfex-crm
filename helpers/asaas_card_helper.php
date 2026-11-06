@@ -146,7 +146,8 @@ function asaas_card_receipt_amount(array $payment, $balance, array $cache = []):
 function asaas_card_assert_invoice_edit(object $invoice, array $updates): void
 {
     $cache = asaas_lifecycle_cached_payment(asaas_lifecycle_map((int) $invoice->id));
-    if (!asaas_card_attempt_blocks($cache) && empty($cache['installment'])) {
+    if (!asaas_card_attempt_blocks($cache) && empty($cache['installment'])
+        && (!function_exists('asaas_recurring_invoice_blocks') || !asaas_recurring_invoice_blocks((int) $invoice->id))) {
         return;
     }
     foreach (['total', 'duedate', 'clientid', 'currency', 'allowed_payment_modes'] as $field) {
@@ -175,7 +176,8 @@ function asaas_card_attempt_blocks(array $cached): bool
 function asaas_card_assert_no_uncertain_payment(int $invoiceId): void
 {
     $cached = asaas_lifecycle_cached_payment(asaas_lifecycle_map($invoiceId));
-    if (in_array($cached['_asaas_lifecycle']['card_attempt']['state'] ?? '', ['preparing', 'processing', 'ambiguous', 'pending'], true)) {
+    if (in_array($cached['_asaas_lifecycle']['card_attempt']['state'] ?? '', ['preparing', 'processing', 'ambiguous', 'pending'], true)
+        || (function_exists('asaas_recurring_invoice_blocks') && asaas_recurring_invoice_blocks($invoiceId))) {
         throw new RuntimeException('O cartão ainda está em acompanhamento no Asaas. Concilie a tentativa antes de cancelar, excluir ou receber esta fatura por outro meio.');
     }
 }

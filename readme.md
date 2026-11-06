@@ -14,6 +14,10 @@ Exclusão, cancelamento e reativação podem acompanhar a cobrança no Asaas. A 
 
 O módulo distribui a SDK `argws/asaas-sdk-php` **0.2.64**, com checkout de cartão à vista ou em até 12 parcelas, conforme limite configurado e saldo da fatura. O processamento confere a resposta Asaas, acompanha parcelas individualmente e mantém proteção contra envio repetido. A opção **Exibir o ambiente em produção na área de pagamentos** permite ocultar a faixa no checkout; o aviso de sandbox permanece visível. Consulte [configuração, instalação e conciliação do cartão](docs/CARTAO-CREDITO.md).
 
+## Cartão de crédito recorrente
+
+O meio **Cartão de crédito recorrente – Asaas** é independente das opções do checkout pontual. O cliente entra na própria conta, autoriza esta fatura e as próximas faturas Asaas elegíveis, e pode revogar a autorização. A fila usa o cron do Perfex, conserva somente um token criptografado e mantém a cobrança em aberto quando há recusa. Um resultado incerto é consultado sem repetir a captura. O recurso inicia desativado e utiliza a SDK **0.2.64** já distribuída. Consulte o [guia de recorrência, consentimento, instalação e operação](docs/CARTAO-RECORRENTE.md).
+
 Refatorações:
 
 # Arquivo: modules/asaas/asaas.php

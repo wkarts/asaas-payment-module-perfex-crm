@@ -1,0 +1,38 @@
+#asaas-recurring { max-width: 1100px; }
+#asaas-recurring .asaas-recurring-heading,
+#asaas-recurring .asaas-recurring-state,
+#asaas-recurring .asaas-recurring-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+#asaas-recurring .asaas-recurring-heading h2 { font-size: 23px; line-height: 1.3; margin-bottom: 0; }
+#asaas-recurring .asaas-recurring-state { align-items: flex-start; padding: 16px; border: 1px solid #dce4ee; border-radius: 5px; }
+#asaas-recurring .asaas-recurring-state > div { flex: 1 1 160px; min-width: 0; }
+#asaas-recurring .asaas-recurring-state strong { display: block; margin-top: 5px; }
+#asaas-recurring .asaas-recurring-explanation h3 { font-size: 18px; }
+#asaas-recurring .asaas-recurring-explanation ul { padding-left: 20px; }
+#asaas-recurring .asaas-recurring-explanation li { margin: 7px 0; }
+#asaas-recurring .asaas-recurring-price { padding: 16px; border: 1px solid #dce4ee; border-radius: 5px; }
+#asaas-recurring .asaas-recurring-price > div { display: flex; justify-content: space-between; gap: 15px; margin: 8px 0; }
+#asaas-recurring .asaas-recurring-price strong { white-space: nowrap; }
+#asaas-recurring .asaas-recurring-total { padding-top: 12px; border-top: 1px solid #dce4ee; font-size: 17px; }
+#asaas-recurring .asaas-recurring-consent { padding: 15px 15px 15px 37px; border: 1px solid #dce4ee; border-radius: 5px; }
+#asaas-recurring .asaas-recurring-consent label { line-height: 1.6; }
+#asaas-recurring .asaas-recurring-privacy { line-height: 1.6; }
+#asaas-recurring .asaas-recurring-revoke { border-top: 1px solid #dce4ee; padding-top: 18px; }
+#asaas-recurring .asaas-recurring-alternative { border-top: 1px solid #dce4ee; padding-top: 18px; }
+#asaas-recurring .asaas-recurring-actions { justify-content: flex-start; }
+#asaas-recurring .btn { white-space: normal; }
+@media (max-width: 575px) {
+    #asaas-recurring .panel-body { padding: 16px; }
+    #asaas-recurring .asaas-recurring-heading { align-items: flex-start; }
+    #asaas-recurring .asaas-recurring-heading h2 { font-size: 21px; }
+    #asaas-recurring .asaas-recurring-price > div { flex-wrap: wrap; gap: 5px; }
+    #asaas-recurring .asaas-recurring-price strong { margin-left: auto; }
+    #asaas-recurring .asaas-recurring-consent { padding-right: 10px; }
+    #asaas-recurring .asaas-recurring-state > div { flex-basis: 100%; }
+    #asaas-recurring .control-label { font-size: 12px; }
+}

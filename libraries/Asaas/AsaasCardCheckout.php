@@ -36,6 +36,7 @@ final class AsaasCardCheckout
         return (string) $this->gateway->getSetting('card_only') === '1'
             && (string) $this->gateway->getSetting('active') !== '0'
             && in_array('asaas', \asaas_invoice_payment_modes($invoice->allowed_payment_modes ?? []), true)
+            && (!function_exists('asaas_recurring_invoice_blocks') || !\asaas_recurring_invoice_blocks((int) $invoice->id))
             && !in_array((int) ($invoice->status ?? 0), [2, 5, 6], true);
     }
 
@@ -138,6 +139,24 @@ final class AsaasCardCheckout
 
     public function pay(array $data): array
     {
+        return $this->payInvoice($data);
+    }
+
+    /** Internal authorized path: a single existing charge, with no PAN or invented payer IP. */
+    public function payAuthorizedToken(object $invoice, #[\SensitiveParameter] string $token, string $customerId, callable $assertAuthorized): array
+    {
+        if (!preg_match('/\A[A-Za-z0-9._~-]{16,512}\z/D', $token) || ctype_digit($token)
+            || !preg_match('/\Acus_[A-Za-z0-9_-]{1,100}\z/D', $customerId)) {
+            throw new AsaasCardCheckoutException('A autorização recorrente precisa ser cadastrada novamente.');
+        }
+        return $this->payInvoice(['invoice' => $invoice], [
+            'token' => $token, 'customer_id' => $customerId, 'assert' => $assertAuthorized,
+        ]);
+    }
+
+    /** The public one-time checkout keeps its original validation and payment contracts. */
+    private function payInvoice(array $data, #[\SensitiveParameter] ?array $authorized = null): array
+    {
         $invoiceId = (int) ($data['invoice']->id ?? 0);
         if ($invoiceId <= 0) {
             throw new \InvalidArgumentException('Fatura não encontrada.');
@@ -150,9 +169,15 @@ final class AsaasCardCheckout
         \asaas_receipt_lock($invoiceId);
         try {
             $invoice = \asaas_lifecycle_invoice($invoiceId);
-            if (!$invoice || !hash_equals((string) $invoice->hash, (string) ($data['invoice']->hash ?? '')) || !$this->available($invoice)) {
+            $available = $invoice && ($authorized === null ? $this->available($invoice)
+                : ((string) get_option('paymentmethod_asaas_recurring_active') === '1'
+                    && (string) $this->gateway->getSetting('active') === '1'
+                    && array_intersect(['asaas', 'asaas_recurring'], \asaas_invoice_payment_modes($invoice->allowed_payment_modes ?? [])) !== []
+                    && !in_array((int) ($invoice->status ?? 0), [2, 5, 6], true)));
+            if (!$invoice || !hash_equals((string) $invoice->hash, (string) ($data['invoice']->hash ?? '')) || !$available) {
                 throw new \InvalidArgumentException('O pagamento por cartão não está disponível para esta fatura.');
             }
+            if ($authorized !== null) { ($authorized['assert'])($invoice); }
             $cache = \asaas_lifecycle_cached_payment(\asaas_lifecycle_map($invoiceId));
             if (\asaas_card_attempt_blocks($cache)) {
                 $payment = $this->reconcileLocked($invoice);
@@ -162,7 +187,9 @@ final class AsaasCardCheckout
                 throw new AsaasCardCheckoutException('Existe uma tentativa de cartão aguardando confirmação. Não repita o pagamento; consulte o financeiro.');
             }
             $settings = \asaas_card_pricing_settings($this->gateway);
-            $card = \asaas_card_validate_input((array) ($data['card'] ?? []), $settings['installmentCount']);
+            $card = $authorized === null
+                ? \asaas_card_validate_input((array) ($data['card'] ?? []), $settings['installmentCount'])
+                : ['installmentCount' => 1];
             $balance = \asaas_card_money(\asaas_payment_amount_to_cents(get_invoice_total_left_to_pay($invoiceId, $invoice->total)));
             $count = $card['installmentCount'];
             try {
@@ -173,18 +200,18 @@ final class AsaasCardCheckout
                 throw $error;
             }
             $quote = $data['card']['quote'] ?? '';
-            if (($price['fee_cents'] > 0 || $quote !== '') && (!is_string($quote)
+            if ($authorized === null && ($price['fee_cents'] > 0 || $quote !== '') && (!is_string($quote)
                 || !hash_equals(\asaas_card_pricing_token($price, $this->pricingContext($invoice)), $quote))) {
                 throw new \InvalidArgumentException('As condições do cartão mudaram ou não foram confirmadas. Confira o total e as parcelas novamente antes de pagar.');
             }
             $charged = \asaas_card_money($price['charged_cents']);
             $amount = $count === 1 ? ['value' => $charged] : ['installmentCount' => $count, 'totalValue' => $charged];
             \asaas_payment_validate_payload(['billingType' => 'CREDIT_CARD', 'discount' => $this->discount()] + $amount);
-            $remoteIp = isset($ci->input) ? $ci->input->ip_address() : '';
-            if (!is_string($remoteIp) || !filter_var($remoteIp, FILTER_VALIDATE_IP)) {
+            $remoteIp = $authorized === null && isset($ci->input) ? $ci->input->ip_address() : '';
+            if ($authorized === null && (!is_string($remoteIp) || !filter_var($remoteIp, FILTER_VALIDATE_IP))) {
                 throw new \InvalidArgumentException('Não foi possível identificar o dispositivo do pagador.');
             }
-            if (function_exists('is_https') && !is_https()) {
+            if ($authorized === null && function_exists('is_https') && !is_https()) {
                 throw new AsaasCardCheckoutException('Acesse esta página por HTTPS para pagar com cartão.');
             }
             $charges = \asaas_lifecycle_charges($invoice);
@@ -207,6 +234,10 @@ final class AsaasCardCheckout
                 throw new AsaasCardCheckoutException('Esta fatura já possui várias cobranças. Concilie os vínculos antes de iniciar outro pagamento.');
             }
             $previous = $charges[0] ?? null;
+            if ($authorized !== null && ($previous === null || !empty($previous['installment'])
+                || ($previous['customer'] ?? null) !== $authorized['customer_id'])) {
+                throw new AsaasCardCheckoutException('A recorrência exige uma cobrança única já vinculada ao cliente autorizado. Confira a fatura antes de cobrar.');
+            }
             if ($previous !== null && !in_array($previous['status'] ?? '', ['PENDING', 'OVERDUE'], true)) {
                 throw new AsaasCardCheckoutException('A cobrança já foi processada ou está em análise. Consulte o financeiro antes de tentar novamente.');
             }
@@ -252,8 +283,12 @@ final class AsaasCardCheckout
                 }
                 $attempt['state'] = 'processing';
                 $this->save($invoiceId, $payment, $attempt);
+                // Re-read consent/account/policy after preparing the remote charge and before capture.
+                if ($authorized !== null) { ($authorized['assert'])($invoice); }
                 $sent = true;
-                $credentials = ['creditCard' => $card['creditCard'], 'creditCardHolderInfo' => $card['creditCardHolderInfo']];
+                $credentials = $authorized === null
+                    ? ['creditCard' => $card['creditCard'], 'creditCardHolderInfo' => $card['creditCardHolderInfo']]
+                    : ['creditCardToken' => $authorized['token']];
                 if ($previous !== null && ($count === 1 || $existingInstallment)) {
                     $payment = $this->api->payPayment($previous['id'], $credentials);
                 } else {
@@ -289,8 +324,10 @@ final class AsaasCardCheckout
                     }
                 } elseif ($definitive && $prepared && $previous !== null && !$existingInstallment) {
                     try {
+                        // Preparation does not change the due date. Reposting an expired
+                        // date can reject the rollback and unnecessarily block boleto/Pix.
                         $payment = $this->gateway->update_charge($previous['id'], json_encode(array_intersect_key(
-                            $previous, array_flip(['billingType', 'value', 'dueDate', 'discount', 'fine', 'interest'])
+                            $previous, array_flip(['billingType', 'value', 'discount', 'fine', 'interest'])
                         ), JSON_THROW_ON_ERROR));
                     } catch (\Throwable $restoreError) {
                         $attempt['state'] = 'ambiguous';

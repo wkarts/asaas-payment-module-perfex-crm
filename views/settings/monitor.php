@@ -149,7 +149,7 @@ $asaasMonitorSecurity = $asaasMonitorCi->security;
                 <select id="asaas-monitor-log-level" class="form-control input-sm"><option value="all">Todos</option><option value="error">Erro</option><option value="warning">Aviso</option><option value="info">Informação</option><option value="debug">Diagnóstico</option></select>
             </div>
             <div class="form-group"><label for="asaas-monitor-log-source">Origem</label>
-                <select id="asaas-monitor-log-source" class="form-control input-sm"><option value="all">Todas</option><option value="api">API</option><option value="webhook">Webhook</option><option value="reconciliation">Conciliação</option></select>
+                <select id="asaas-monitor-log-source" class="form-control input-sm"><option value="all">Todas</option><option value="api">API</option><option value="webhook">Webhook</option><option value="reconciliation">Conciliação</option><option value="recurring">Recorrência</option></select>
             </div>
             <button type="button" class="btn btn-default btn-sm" data-monitor-action="filter" data-monitor-kind="logs">Filtrar</button>
         </div>

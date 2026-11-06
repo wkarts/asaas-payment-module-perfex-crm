@@ -42,6 +42,25 @@ final class AsaasCardApi
         return $this->request('card_pay_payment', 'POST', '/v3/payments/' . rawurlencode($id) . '/payWithCreditCard', $payload);
     }
 
+    /** Tokenization does not charge. Only its opaque credential leaves this method. */
+    public function tokenize(#[\SensitiveParameter] array $payload): string
+    {
+        if (!is_string($payload['customer'] ?? null) || !preg_match('/\Acus_[A-Za-z0-9_-]{1,100}\z/D', $payload['customer'])
+            || !is_array($payload['creditCard'] ?? null) || !is_array($payload['creditCardHolderInfo'] ?? null)
+            || !is_string($payload['remoteIp'] ?? null) || !filter_var($payload['remoteIp'], FILTER_VALIDATE_IP)) {
+            throw new AsaasCardRequestException('Confira o cliente, o cartão e o dispositivo do pagador.', 400, false);
+        }
+        $response = $this->request('card_tokenize', 'POST', '/v3/creditCard/tokenizeCreditCard',
+            array_intersect_key($payload, array_flip(['customer', 'creditCard', 'creditCardHolderInfo', 'remoteIp'])));
+        $token = $response['creditCardToken'] ?? null;
+        if (isset($response['errors']) || isset($response['error']) || !is_string($token)
+            || !preg_match('/\A[A-Za-z0-9._~-]{16,512}\z/D', $token) || ctype_digit($token)) {
+            throw new AsaasCardRequestException('O Asaas não confirmou o cadastro seguro do cartão. Tente novamente ou consulte o financeiro.', 0, true);
+        }
+        // Do not return brand, last digits, cardholder data or the complete API response.
+        return $token;
+    }
+
     public function getPayment(string $id): array
     {
         $this->requireIdentifier($id, true);

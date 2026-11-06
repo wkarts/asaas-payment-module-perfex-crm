@@ -1,5 +1,7 @@
 # Cartão de crédito e ambiente da página de pagamentos
 
+Este guia descreve o **pagamento avulso**, oferecido junto de Pix e boleto no checkout Asaas. O novo meio **Cartão de crédito recorrente — Asaas** tem adesão própria na tela nativa da fatura e uma política específica de autorização: conserva somente o token criptografado necessário às futuras cobranças autorizadas. Consulte [Cartão de crédito recorrente](CARTAO-RECORRENTE.md) para esse fluxo. O pagamento avulso não ativa a recorrência nem passa a reutilizar tokens.
+
 ## Configuração
 
 Em **Configurações → Meios de pagamento → Asaas**:
@@ -100,7 +102,7 @@ Para conferir a configuração, mantenha inicialmente **Não incluir**, confirme
 
 ## Privacidade dos dados do cartão
 
-O módulo não mantém um cadastro de cartões. Número completo ou mascarado, validade, CVV, nome/dados informados do titular e token reutilizável do cartão são descartados dos payloads antes de salvar o mapa da cobrança e os eventos de webhook. A sanitização também cobre campos isolados, variações de nomes e objetos JSON aninhados. Os erros de captura não incluem a resposta bruta da API nem a exceção original da SDK.
+O fluxo avulso não mantém um cadastro de cartões. Número completo ou mascarado, validade, CVV, nome/dados informados do titular e token reutilizável do cartão são descartados dos payloads antes de salvar o mapa da cobrança e os eventos de webhook. A sanitização também cobre campos isolados, variações de nomes e objetos JSON aninhados. Os erros de captura não incluem a resposta bruta da API nem a exceção original da SDK. A autorização recorrente é separada e exige adesão explícita; sua credencial criptografada não é incorporada aos mapas, eventos ou logs descritos nesta seção.
 
 | Destino | Política do módulo |
 |---|---|
@@ -111,7 +113,7 @@ O módulo não mantém um cadastro de cartões. Número completo ou mascarado, v
 | Cache e histórico | A rota de cartão envia `Cache-Control: no-store`, inclusive nos redirecionamentos/erros, desativa cache de página e profiler do CodeIgniter e usa HTTP 303 após POST. O JavaScript limpa os campos ao sair e ao restaurar a página pelo histórico; a restauração consulta o estado do pagamento por GET. |
 | Variáveis da requisição | Depois de ler o formulário, o controller retira os campos sensíveis de `$_POST` e `$_REQUEST`, antes da captura, e libera sua variável local ao terminar a tentativa. Isso não equivale a apagar de forma garantida toda a memória do processo PHP. |
 
-Os dados precisam existir temporariamente no formulário, no corpo HTTPS da requisição e em memória para serem enviados ao Asaas. O processamento e a eventual tokenização realizados pelo próprio Asaas seguem o contrato do provedor; o módulo não salva nem reutiliza o token retornado.
+Os dados precisam existir temporariamente no formulário, no corpo HTTPS da requisição e em memória para serem enviados ao Asaas. O processamento e a eventual tokenização realizados pelo próprio Asaas seguem o contrato do provedor; no pagamento avulso, o módulo não salva nem reutiliza o token retornado.
 
 `autocomplete="off"` e `no-store` são instruções ao navegador, não controle absoluto sobre extensões, gerenciadores de cartões/senhas ou decisões do usuário. Esta implementação também não audita a configuração de proxy, WAF, APM, módulos de terceiros, gravação de sessões ou logs de corpo de requisição da instalação. Esses componentes não devem capturar os campos de cartão nem o corpo do POST dessa rota. Não há limpeza retroativa de dados que outra versão ou outro componente tenha gravado.
 

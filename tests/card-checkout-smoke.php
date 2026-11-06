@@ -25,10 +25,10 @@ $GLOBALS['card_checkout_failures'] = 0;
 
 function &get_instance(): object { return $GLOBALS['card_checkout_ci']; }
 function db_prefix(): string { return 'tbl'; }
-function get_option(string $name) { return false; }
+function get_option(string $name) { return $GLOBALS['card_checkout_options'][$name] ?? false; }
 function log_message(string $level, string $message): void { $GLOBALS['card_checkout_logs'][] = $message; }
 function format_invoice_number($id): string { return 'FAT-' . $id; }
-function is_https(): bool { return true; }
+function is_https(): bool { return $GLOBALS['card_checkout_https'] ?? true; }
 function register_activation_hook(string $module, callable $callback): void {}
 function register_payment_gateway(string $gateway, string $module): void {}
 function hooks(): object
@@ -132,6 +132,7 @@ final class CardCheckoutGateway
     public array $remote = [];
     public int $mapWrites = 0;
     public ?int $failMapWrite = null;
+    public ?Closure $beforeUpdate = null;
 
     public function getSetting(string $name) { return $this->settings[$name] ?? ''; }
     public function get_charge2(string $hash): array
@@ -154,6 +155,7 @@ final class CardCheckoutGateway
     {
         $payload = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
         $GLOBALS['card_checkout_trace'][] = ['update', $id, $payload];
+        if ($this->beforeUpdate !== null) { ($this->beforeUpdate)($id, $payload); }
         return $this->remote[$id] = array_replace($this->remote[$id], $payload);
     }
     public function delete_charge(string $id): array
@@ -268,6 +270,8 @@ function cardCheckoutFixture(array $invoiceChanges = [], array $settings = []): 
     $handoffs = &asaas_atomic_payment_state(); $handoffs = [];
     $GLOBALS['card_checkout_trace'] = [];
     $GLOBALS['card_checkout_logs'] = [];
+    $GLOBALS['card_checkout_options'] = [];
+    $GLOBALS['card_checkout_https'] = true;
     $db = new CardCheckoutDatabase();
     $invoice = $db->invoice($invoiceChanges);
     $gateway = new CardCheckoutGateway();
@@ -706,6 +710,120 @@ cardCheckoutTest('settled or overpaid invoice offers no installment options', st
         cardCheckoutAssert(asaas_card_installment_options($balance, 12) === [], 'Non-positive balance cannot offer another card payment.');
     }
 });
+
+cardCheckoutTest('authorized recurring token pays the existing charge without retaining card data or a payer IP', static function (): void {
+    [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture([], ['card_only' => '0', 'card_fee_mode' => 'customer']);
+    $GLOBALS['card_checkout_options']['paymentmethod_asaas_recurring_active'] = '1';
+    $GLOBALS['card_checkout_https'] = false; // Cron has no browser request.
+    get_instance()->input = new class { public function ip_address(): string { throw new RuntimeException('No payer is present in cron.'); } };
+    cardCheckoutSeed($gateway, cardCheckoutPayment());
+    $authorizations = 0;
+    $token = 'opaque-recurring-token-fixture';
+    $payment = $service->payAuthorizedToken($invoice, $token, 'cus_fixture', static function (object $fresh) use (&$authorizations): void {
+        ++$authorizations; cardCheckoutAssert((int) $fresh->id === 42, 'Revalidate the same invoice with the authorization.');
+    });
+    cardCheckoutAssert(count($api->posts) === 1 && $api->posts[0]['operation'] === 'pay'
+        && $api->posts[0]['id'] === 'pay_old' && $api->posts[0]['payload'] === ['creditCardToken' => $token],
+        'Recurring capture must use only the token on the existing payment ID.');
+    cardCheckoutAssert($authorizations === 2 && asaas_card_is_received($payment), 'Consent must be revalidated before preparation and capture.');
+    $stored = json_encode([$db->cache(), $payment, $GLOBALS['card_checkout_logs']], JSON_THROW_ON_ERROR);
+    cardCheckoutAssert(!str_contains($stored, $token), 'The recurring token must never enter payment cache, receipt result or diagnostic.');
+    cardCheckoutAssert(asaas_card_receipt_principal($payment, $db->cache()) === 10000, 'Recurring surcharge must settle only the invoice principal.');
+});
+foreach (['missing', 'different_customer', 'installment'] as $case) {
+    cardCheckoutTest('recurring capture rejects ' . $case . ' without creating a second debt', static function () use ($case): void {
+        [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture();
+        $GLOBALS['card_checkout_options']['paymentmethod_asaas_recurring_active'] = '1';
+        if ($case !== 'missing') {
+            $change = $case === 'different_customer' ? ['customer' => 'cus_other'] : ['installment' => 'ins_existing'];
+            cardCheckoutSeed($gateway, cardCheckoutPayment('pay_old', $change));
+        }
+        cardCheckoutThrows(static fn () => $service->payAuthorizedToken($invoice, 'opaque-recurring-token-fixture', 'cus_fixture', static function (): void {}));
+        cardCheckoutAssert($api->posts === [] && !isset($db->cache()['_asaas_lifecycle']['card_attempt']),
+            'An ineligible recurring charge must not reach capture or durable card attempt.');
+    });
+}
+cardCheckoutTest('revoked recurring authorization before capture restores boleto and sends no card POST', static function (): void {
+    [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture();
+    $GLOBALS['card_checkout_options']['paymentmethod_asaas_recurring_active'] = '1';
+    cardCheckoutSeed($gateway, cardCheckoutPayment());
+    $calls = 0;
+    cardCheckoutThrows(static function () use ($service, $invoice, &$calls): void {
+        $service->payAuthorizedToken($invoice, 'opaque-recurring-token-fixture', 'cus_fixture', static function () use (&$calls): void {
+            if (++$calls === 2) { throw new RuntimeException('Consent changed.'); }
+        });
+    });
+    cardCheckoutAssert($api->posts === [] && $gateway->remote['pay_old']['billingType'] === 'BOLETO'
+        && $db->cache()['_asaas_lifecycle']['card_attempt']['state'] === 'declined',
+        'Revocation before sending cannot capture and must preserve the previous payment option.');
+});
+cardCheckoutTest('recurring timeout keeps the same attempt and never repeats token capture', static function (): void {
+    [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture();
+    $GLOBALS['card_checkout_options']['paymentmethod_asaas_recurring_active'] = '1';
+    cardCheckoutSeed($gateway, cardCheckoutPayment());
+    $api->postFailure = new RuntimeException('Timeout');
+    cardCheckoutThrows(static fn () => $service->payAuthorizedToken($invoice, 'opaque-recurring-token-fixture', 'cus_fixture', static function (): void {}));
+    $api->postFailure = null;
+    $service->payAuthorizedToken($invoice, 'opaque-recurring-token-fixture', 'cus_fixture', static function (): void {});
+    cardCheckoutAssert(count($api->posts) === 1 && !asaas_card_is_received($db->cache())
+        && asaas_card_attempt_blocks($db->cache()), 'An inconclusive token capture can only be inspected, never automatically repeated.');
+});
+
+foreach (['one-time', 'recurring'] as $mode) {
+    cardCheckoutTest('declined ' . $mode . ' card restores overdue boleto without resubmitting its expired due date', static function () use ($mode): void {
+        $dueDate = date('Y-m-d', strtotime('-2 days'));
+        [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture(['status' => 4, 'duedate' => $dueDate], ['card_fee_mode' => 'customer']);
+        $GLOBALS['card_checkout_options']['paymentmethod_asaas_recurring_active'] = '1';
+        $previous = cardCheckoutPayment('pay_old', ['status' => 'OVERDUE', 'dueDate' => $dueDate,
+            'canBePaidAfterDueDate' => true, 'discount' => ['type' => 'FIXED', 'value' => 0, 'dueDateLimitDays' => 0],
+            'fine' => ['value' => 2], 'interest' => ['value' => 1]]);
+        cardCheckoutSeed($gateway, $previous);
+        $gateway->beforeUpdate = static function (string $id, array $payload): void {
+            // Model the provider's minimum-date validation only when a date is sent.
+            if (isset($payload['dueDate']) && $payload['dueDate'] < date('Y-m-d')) {
+                throw new RuntimeException('The submitted due date is earlier than the provider minimum.', 400);
+            }
+        };
+        $api->postFailure = new RuntimeException('Card refused', 400);
+        $quote = $service->installmentOptions($invoice)[0]['quote'];
+        $pay = static fn () => $mode === 'recurring'
+            ? $service->payAuthorizedToken($invoice, 'opaque-recurring-token-fixture', 'cus_fixture', static function (): void {})
+            : $service->pay(cardCheckoutData($invoice, ['quote' => $quote]));
+        $error = cardCheckoutThrows($pay, 'não foi autorizado');
+        $cache = $db->cache();
+        cardCheckoutAssert($error->getCode() === 400 && count($api->posts) === 1 && $api->posts[0]['id'] === 'pay_old',
+            'A definitive refusal must remain a single attempted capture on the existing charge.');
+        cardCheckoutAssert($gateway->remote['pay_old'] === $previous,
+            'Rollback must restore boleto, original value and charge conditions while preserving the past due date and overdue status.');
+        cardCheckoutAssert(($cache['_asaas_lifecycle']['card_attempt']['state'] ?? '') === 'declined'
+            && !asaas_card_attempt_blocks($cache), 'Successful rollback must keep the refusal definitive and allow the original payment alternatives.');
+        cardCheckoutAssert(!isset($cache['_asaas_lifecycle']['card_attempt']['pricing']) && $cache['dueDate'] === $dueDate,
+            'The restored boleto cannot inherit the card surcharge or a new due date.');
+    });
+
+    cardCheckoutTest('failed ' . $mode . ' boleto restoration keeps confirmation pending and never repeats capture', static function () use ($mode): void {
+        $dueDate = date('Y-m-d', strtotime('-2 days'));
+        [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture(['status' => 4, 'duedate' => $dueDate]);
+        $GLOBALS['card_checkout_options']['paymentmethod_asaas_recurring_active'] = '1';
+        cardCheckoutSeed($gateway, cardCheckoutPayment('pay_old', ['status' => 'OVERDUE', 'dueDate' => $dueDate]));
+        $gateway->beforeUpdate = static function (string $id, array $payload): void {
+            if (($payload['billingType'] ?? '') === 'BOLETO') { throw new RuntimeException('Provider unavailable during rollback.', 503); }
+        };
+        $api->postFailure = new RuntimeException('Card refused', 400);
+        $pay = static fn () => $mode === 'recurring'
+            ? $service->payAuthorizedToken($invoice, 'opaque-recurring-token-fixture', 'cus_fixture', static function (): void {})
+            : $service->pay(cardCheckoutData($invoice));
+        cardCheckoutThrows($pay, 'aguardando confirmação');
+        cardCheckoutAssert(in_array(['map', 'ambiguous'], $GLOBALS['card_checkout_trace'], true),
+            'An actual restoration failure must durably record ambiguity before any recovery GET.');
+        cardCheckoutAssert(asaas_card_attempt_blocks($db->cache()) && $gateway->remote['pay_old']['billingType'] === 'CREDIT_CARD',
+            'A GET that still finds the prepared card debt cannot release another payment.');
+        $pay(); // A later invocation may only inspect the known charge.
+        cardCheckoutAssert(count($api->posts) === 1 && asaas_card_attempt_blocks($db->cache())
+            && $gateway->remote['pay_old']['dueDate'] === $dueDate,
+            'Unsuccessful restoration must not cause another capture or silently postpone the existing charge.');
+    });
+}
 
 register_shutdown_function(static function (): void {
     foreach ($GLOBALS['card_checkout_files'] as $path) { if (is_file($path)) { unlink($path); } }

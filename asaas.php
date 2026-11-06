@@ -27,6 +27,7 @@ require_once __DIR__ . '/helpers/asaas_webhook_helper.php';
 require_once __DIR__ . '/helpers/asaas_diagnostics_helper.php';
 require_once __DIR__ . '/helpers/asaas_lifecycle_helper.php';
 require_once __DIR__ . '/helpers/asaas_settings_helper.php';
+require_once __DIR__ . '/helpers/asaas_recurring_hooks_helper.php';
 
 hooks()->add_action('before_render_payment_gateway_settings', 'asaas_before_render_payment_gateway_settings');
 hooks()->add_action('app_admin_footer', 'asaas_settings_tab_footer');
@@ -34,8 +35,11 @@ hooks()->add_filter('before_settings_updated', 'asaas_validate_webhook_settings'
 hooks()->add_filter('before_settings_updated', 'asaas_validate_environment_settings');
 hooks()->add_filter('before_settings_updated', 'asaas_validate_card_settings');
 hooks()->add_action('admin_init', 'asaas_admin_invoice_transaction');
+hooks()->add_filter('before_invoice_added', 'asaas_recurring_before_invoice_added', 5);
 hooks()->add_filter('before_invoice_added', 'asaas_before_invoice_added');
 hooks()->add_action('after_invoice_added', 'asaas_after_invoice_added');
+hooks()->add_action('after_invoice_added', 'asaas_recurring_invoice_added', 20);
+hooks()->add_action('after_total_summary_invoicehtml', 'asaas_recurring_invoice_option');
 if (function_exists('do_action_deprecated')) {
     hooks()->add_filter('before_update_invoice', 'asaas_before_update_invoice', 10, 2);
     hooks()->add_action('invoice_updated', 'asaas_after_invoice_updated');
@@ -51,6 +55,7 @@ hooks()->add_action('invoice_unmarked_as_cancelled', 'asaas_invoice_unmarked_as_
 hooks()->add_filter('before_payment_recorded', 'asaas_before_payment_recorded');
 hooks()->add_action('after_payment_added', 'asaas_after_payment_added');
 hooks()->add_action('after_cron_run', 'asaas_reconcile_after_cron');
+hooks()->add_action('after_cron_run', 'asaas_recurring_after_cron', 20);
 
 $CI = &get_instance();
 
@@ -68,22 +73,25 @@ function asaas_module_activation_hook() {
     require_once(__DIR__ . '/install.php');
 }
 
-if (function_exists('app_payment_gateways')) {
-    $gateways = app_payment_gateways();
-    if (is_object($gateways)) {
-        if (method_exists($gateways, 'add_gateway')) {
-            $gateways->add_gateway('asaas_gateway');
-        } elseif (method_exists($gateways, 'addGateway')) {
-            $gateways->addGateway('asaas_gateway');
+foreach (['asaas_gateway', 'asaas_recurring_gateway'] as $asaasGatewayClass) {
+    if (function_exists('app_payment_gateways')) {
+        $gateways = app_payment_gateways();
+        if (is_object($gateways)) {
+            if (method_exists($gateways, 'add_gateway')) {
+                $gateways->add_gateway($asaasGatewayClass);
+            } elseif (method_exists($gateways, 'addGateway')) {
+                $gateways->addGateway($asaasGatewayClass);
+            } else {
+                register_payment_gateway($asaasGatewayClass, ASAAS_MODULE_NAME);
+            }
         } else {
-            register_payment_gateway('asaas_gateway', ASAAS_MODULE_NAME);
+            register_payment_gateway($asaasGatewayClass, ASAAS_MODULE_NAME);
         }
     } else {
-        register_payment_gateway('asaas_gateway', ASAAS_MODULE_NAME);
+        register_payment_gateway($asaasGatewayClass, ASAAS_MODULE_NAME);
     }
-} else {
-    register_payment_gateway('asaas_gateway', ASAAS_MODULE_NAME);
 }
+unset($asaasGatewayClass);
 
 function asaas_before_render_payment_gateway_settings($gateway)
 {
