@@ -2,6 +2,14 @@
 
 Esta atualização mantém o gateway, os payloads de clientes, os critérios de envio de telefone/email e o POST de atualização já utilizado pelo módulo. Acrescenta controle das operações locais que dependem da confirmação da API, sincronização do ciclo da fatura e opções de quitação manual.
 
+## Abertura de pagamento de cobrança existente
+
+Ao clicar em **Pagar agora**, uma cobrança já existente é reutilizada. Esse acesso não equivale a editar a fatura: não recalcula o total/ajuste/vencimento no CRM nem envia `POST /payments/{id}` ao Asaas. A abertura do boleto consulta e utiliza seu `bankSlipUrl` original.
+
+Um boleto `OVERDUE` que continua pagável no Asaas permanece acessível. Os juros, a multa e as regras de pagamento após vencimento são os da cobrança no Asaas; o módulo não desloca o vencimento para hoje ao abrir o pagamento. Se não houver cobrança, permanece o fluxo de criação e sua validação. A edição efetiva de uma fatura continua sujeita à resposta da API e ao rollback quando houver rejeição.
+
+As informações de debug não são impressas na página pública. O diagnóstico sanitizado fica em **Meios de pagamento → Asaas → Logs**.
+
 ## Comportamento
 
 | Ação no CRM | Resultado no Asaas | Tratamento de falha |

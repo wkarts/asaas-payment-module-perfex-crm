@@ -2,14 +2,18 @@
 
 ## Onde consultar
 
-Abra **Configurações → Meios de pagamento → Asaas → Ver logs da integração** com um usuário administrador. A tela mostra os registros mais recentes, o estado do armazenamento e a localização do arquivo de diagnóstico. O endereço é gerado pelo `admin_url()` do Perfex; o caminho da ação é `asaas/asaas/logs`.
+Abra **Configurações → Meios de pagamento → Asaas → Logs** com um usuário administrador. O visualizador aparece na própria subguia, abaixo das opções de diagnóstico, com os últimos 100 registros, o estado do armazenamento e a localização do arquivo de diagnóstico. Use **Atualizar registros de log** dentro do painel para consultar novamente, sem sair das configurações.
+
+O painel é carregado somente ao abrir Logs, por um `GET` administrativo a `asaas/asaas/logs_data`, com resposta sem cache. Ele usa o relatório sanitizado já existente; não aceita um caminho de arquivo informado pelo navegador. Quando o banco está indisponível, preserva a leitura dos últimos 256 KiB do arquivo Asaas do dia, limitada a 100 registros. Os valores e o botão Salvar do formulário nativo permanecem independentes da consulta.
+
+A rota anterior `asaas/asaas/logs` continua disponível por compatibilidade, inclusive pelo link de fallback quando o JavaScript ou a organização por subguias não estão disponíveis. Os endereços são gerados pelo `admin_url()` do Perfex.
 
 Essa consulta não envia faturas, não faz tentativas automáticas e não altera configurações. A tela pode abrir mesmo quando o carregamento da SDK falha. Não é necessário expor mensagens PHP no navegador.
 
 Os destinos dos registros são:
 
 - **Banco:** tabela `<prefixo>asaas_logs`, com suporte às colunas de contexto atuais e legadas.
-- **Arquivo próprio do módulo:** habilite **Habilitar log em arquivo (debug integração Asaas)** e salve. O padrão é `application/logs/asaas-AAAA-MM-DD.php`. Se o Perfex configurar outro `log_path`, o módulo acompanha esse diretório. A tela informa o caminho efetivo e a permissão de escrita.
+- **Arquivo próprio do módulo:** habilite **Habilitar log em arquivo** e salve. O padrão é `application/logs/asaas-AAAA-MM-DD.php`. Se o Perfex configurar outro `log_path`, o módulo acompanha esse diretório. A tela informa o caminho efetivo e a permissão de escrita.
 - **Log padrão do Perfex/CodeIgniter:** normalmente `application/logs/log-AAAA-MM-DD.php`, conforme `log_path`, `log_file_extension` e `log_threshold` da instalação.
 - **Contingência do PHP:** se o armazenamento do diagnóstico falhar, erros são encaminhados ao `error_log` do servidor. A localização depende do PHP-FPM/Apache/hospedagem.
 
@@ -56,6 +60,7 @@ php tests/provider-autoload-smoke.php
 php tests/payment-api-smoke.php
 php tests/invoice-dispatch-smoke.php
 php tests/diagnostics-smoke.php
+node tests/logs-ui-smoke.js
 php tests/webhook-token-smoke.php
 php tests/webhook-api-smoke.php
 ```
@@ -64,6 +69,6 @@ O teste do fluxo de faturas usa os hooks, gateway, adapter e cliente da SDK reai
 
 ## Atualização e rollback
 
-Aplique a atualização dos arquivos do módulo preservando as dependências instaladas e as configurações. Não há mudança de esquema, limpeza de históricos ou troca de API Key/token nesta correção. Reabra as configurações para encontrar o link dos logs.
+Aplique a atualização dos arquivos do módulo preservando as dependências instaladas e as configurações. Não há mudança de esquema, limpeza de históricos ou troca de API Key/token neste ajuste de apresentação. Reabra as configurações para carregar os assets atualizados e consultar o painel na subguia Logs.
 
 O rollback consiste em restaurar os arquivos anteriores do módulo. Ele também restaura os defeitos de carregamento/caminho e as limitações anteriores de diagnóstico. Antes de repetir uma cobrança após qualquer incidente, confira sua existência no Asaas para evitar duplicidade.

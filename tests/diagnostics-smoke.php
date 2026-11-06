@@ -71,15 +71,47 @@ final class DiagnosticLoader
     }
     public function view(string $name, array $data): void { $this->views[] = [$name, $data]; }
 }
+final class DiagnosticInput
+{
+    public string $requestMethod = 'GET';
+    public array $query = [];
+    public function method(bool $uppercase = false): string { return $uppercase ? strtoupper($this->requestMethod) : strtolower($this->requestMethod); }
+    public function get($key = null) { throw new RuntimeException('The diagnostic endpoint must not read a request-supplied path.'); }
+}
+final class DiagnosticOutput
+{
+    public array $headers = [];
+    public int $status = 200;
+    public string $contentType = '';
+    public string $content = '';
+    public bool $profiler = true;
+    public function enable_profiler(bool $enabled): self { $this->profiler = $enabled; return $this; }
+    public function set_header(string $header): self { $this->headers[] = $header; return $this; }
+    public function set_status_header(int $status): self { $this->status = $status; return $this; }
+    public function set_content_type(string $type, string $charset = ''): self { $this->contentType = $type; return $this; }
+    public function set_output(string $content): self { $this->content = $content; return $this; }
+}
+final class DiagnosticSecurity
+{
+    public string $hash = 'csrf-diagnostics-current';
+    public function get_csrf_token_name(): string { return 'csrf_diagnostics'; }
+    public function get_csrf_hash(): string { return $this->hash; }
+}
 class AdminController
 {
     public DiagnosticLoader $load;
     public DiagnosticRouter $router;
+    public DiagnosticInput $input;
+    public DiagnosticOutput $output;
+    public DiagnosticSecurity $security;
     public $asaas_gateway;
     public function __construct()
     {
         $this->load = $GLOBALS['diagLoader'];
         $this->router = $GLOBALS['diagRouter'];
+        $this->input = $GLOBALS['diagInput'];
+        $this->output = $GLOBALS['diagOutput'];
+        $this->security = $GLOBALS['diagSecurity'];
         $this->asaas_gateway = new class {
             public function getApiKey(): string { ++$GLOBALS['diagGatewayCalls']; return 'fixture-api-key'; }
         };
@@ -124,6 +156,8 @@ function resetDiagnostics(): void
     foreach (['diagHeadCalls', 'diagTailCalls', 'diagGatewayCalls'] as $counter) { $GLOBALS[$counter] = 0; }
     $GLOBALS['diagIsAdmin'] = true;
     $GLOBALS['diagLoader'] = new DiagnosticLoader(); $GLOBALS['diagRouter'] = new DiagnosticRouter();
+    $GLOBALS['diagInput'] = new DiagnosticInput(); $GLOBALS['diagOutput'] = new DiagnosticOutput();
+    $GLOBALS['diagSecurity'] = new DiagnosticSecurity();
     $path = APPPATH . 'logs/asaas-' . date('Y-m-d') . '.php';
     if (is_file($path) || is_link($path)) { unlink($path); }
     if (is_file(APPPATH . 'php-error.log')) { unlink(APPPATH . 'php-error.log'); }
@@ -348,6 +382,76 @@ try {
         $GLOBALS['diagIsAdmin'] = false; $controller = new Asaas(); $controller->logs();
         same(['Asaas'], $GLOBALS['diagDenied'], 'Permission denied'); same([], $GLOBALS['diagCi']->db->calls, 'No diagnostic query');
         same([], $GLOBALS['diagLoader']->views, 'No view render'); same([], $GLOBALS['diagLoader']->libraries, 'Denial needs no SDK');
+    });
+    scenario('embedded logs return bounded redacted JSON without the SDK or request paths', static function (): void {
+        $GLOBALS['diagRouter']->method = 'logs_data';
+        $GLOBALS['diagInput']->query = ['path' => '/etc/passwd', 'file' => '../../private.php'];
+        $record = fixtureRecord();
+        $record['message'] = 'Falha ' . DIAGNOSTIC_SECRET . ' ' . DIAGNOSTIC_API_KEY;
+        $record['context_json'] = json_encode(['invoice_id' => 42, 'api_key' => DIAGNOSTIC_API_KEY,
+            'creditCard' => ['number' => '4111111111111111', 'ccv' => '123'], 'email' => 'person@example.test']);
+        $GLOBALS['diagCi']->db->records = array_fill(0, 120, $record);
+        $controller = new Asaas(); $controller->logs_data();
+        $output = $GLOBALS['diagOutput']; $payload = json_decode($output->content, true, 512, JSON_THROW_ON_ERROR);
+        same(200, $output->status, 'Success status'); same('application/json', $output->contentType, 'JSON response');
+        same(false, $output->profiler, 'No profiler appended to the diagnostic response');
+        check(in_array('Cache-Control: no-store, private, max-age=0', $output->headers, true), 'No browser cache');
+        check(in_array('X-Content-Type-Options: nosniff', $output->headers, true), 'No MIME sniffing');
+        same(true, $payload['ok'], 'Response contract'); same('ok', $payload['report']['database_state'], 'Database state');
+        same(['name' => 'csrf_diagnostics', 'hash' => 'csrf-diagnostics-current'], $payload['csrf'], 'Native CSRF returned for form renewal');
+        same(100, count($payload['report']['rows']), 'Existing record bound preserved');
+        same(42, $payload['report']['rows'][0]['context']['invoice_id'], 'Useful correlation retained');
+        assertNoSecret($output->content); check(strpos($output->content, '4111111111111111') === false, 'Card number redacted');
+        same([], $GLOBALS['diagLoader']->libraries, 'Endpoint needs no SDK'); same(0, $GLOBALS['diagGatewayCalls'], 'No API-key fetch');
+        same([], $GLOBALS['diagLoader']->views, 'No full page or nested form rendered');
+    });
+    scenario('embedded logs deny non-admin without reading data', static function (): void {
+        $GLOBALS['diagRouter']->method = 'logs_data'; $GLOBALS['diagIsAdmin'] = false;
+        $controller = new Asaas(); $controller->logs_data();
+        $output = $GLOBALS['diagOutput']; $payload = json_decode($output->content, true, 512, JSON_THROW_ON_ERROR);
+        same(403, $output->status, 'Forbidden'); same(false, $payload['ok'], 'Error contract');
+        same([], $GLOBALS['diagCi']->db->calls, 'No diagnostic reads'); same([], $GLOBALS['diagLoader']->libraries, 'No SDK');
+        check(!isset($payload['report']), 'No private report in denial');
+        same(['name' => 'csrf_diagnostics', 'hash' => 'csrf-diagnostics-current'], $payload['csrf'], 'CSRF returned even with authorization error');
+        check(in_array('Cache-Control: no-store, private, max-age=0', $output->headers, true), 'Denied response not cached');
+    });
+    foreach (['POST', 'DELETE', 'HEAD'] as $requestMethod) {
+        scenario('embedded logs reject ' . $requestMethod . ' before reading data', static function () use ($requestMethod): void {
+            $GLOBALS['diagRouter']->method = 'logs_data'; $GLOBALS['diagInput']->requestMethod = $requestMethod;
+            $controller = new Asaas(); $controller->logs_data(); $output = $GLOBALS['diagOutput'];
+            same(405, $output->status, 'Method rejected'); check(in_array('Allow: GET', $output->headers, true), 'Allowed method advertised');
+            same([], $GLOBALS['diagCi']->db->calls, 'No diagnostic reads'); same([], $GLOBALS['diagLoader']->libraries, 'No SDK');
+            same('csrf-diagnostics-current', json_decode($output->content, true, 512, JSON_THROW_ON_ERROR)['csrf']['hash'], 'Error response can renew CSRF');
+        });
+    }
+    scenario('embedded logs return the current native CSRF after a GET cookie refresh', static function (): void {
+        $GLOBALS['diagRouter']->method = 'logs_data';
+        $GLOBALS['diagSecurity']->hash = 'csrf-refreshed-before-controller';
+        $controller = new Asaas(); $controller->logs_data();
+        $payload = json_decode($GLOBALS['diagOutput']->content, true, 512, JSON_THROW_ON_ERROR);
+        same('csrf-refreshed-before-controller', $payload['csrf']['hash'], 'Uses the current security state, not a cached view token');
+        same('csrf_diagnostics', $payload['csrf']['name'], 'Preserves the configured native name');
+        same([], $GLOBALS['diagLoader']->libraries, 'Token refresh still needs no SDK');
+    });
+    scenario('embedded logs retain file fallback and directory diagnostics', static function (): void {
+        $GLOBALS['diagRouter']->method = 'logs_data'; $GLOBALS['diagCi']->db->exists = false;
+        $GLOBALS['diagOptions']['paymentmethod_asaas_file_log_enabled'] = '1';
+        asaas_diagnostic_log('error', 'File fallback ' . DIAGNOSTIC_SECRET, ['invoice_id' => 42], true);
+        $controller = new Asaas(); $controller->logs_data();
+        $output = $GLOBALS['diagOutput']; $payload = json_decode($output->content, true, 512, JSON_THROW_ON_ERROR);
+        same(200, $output->status, 'Fallback is usable'); same('missing', $payload['report']['database_state'], 'Missing DB explicit');
+        same('file', $payload['report']['source'], 'File source visible'); same(true, $payload['report']['file_enabled'], 'Saved setting visible');
+        same(true, $payload['report']['file_exists'], 'File existence visible'); same(true, $payload['report']['directory_writable'], 'Directory permission visible');
+        same(asaas_diagnostic_file_path(), $payload['report']['file_path'], 'Only module-owned daily file');
+        same(42, $payload['report']['rows'][0]['context']['invoice_id'], 'Fallback details retained'); assertNoSecret($output->content);
+    });
+    scenario('embedded logs report unavailable storage without leaking database failures', static function (): void {
+        $GLOBALS['diagRouter']->method = 'logs_data'; $GLOBALS['diagCi']->db->throwAt = 'get';
+        $controller = new Asaas(); $controller->logs_data();
+        $output = $GLOBALS['diagOutput']; $payload = json_decode($output->content, true, 512, JSON_THROW_ON_ERROR);
+        same(200, $output->status, 'Diagnostics remain accessible'); same('unavailable', $payload['report']['database_state'], 'Unavailable storage explicit');
+        same('none', $payload['report']['source'], 'No source invented'); same([], $payload['report']['rows'], 'No rows invented');
+        assertNoSecret($output->content); check(strpos($output->content, 'Unsafe DB detail') === false, 'Private database exception omitted');
     });
     scenario('view escapes HTML and blocks direct unauthorized inclusion', static function (): void {
         $data = asaas_diagnostic_report(); $data['title'] = '<script>alert(1)</script>';

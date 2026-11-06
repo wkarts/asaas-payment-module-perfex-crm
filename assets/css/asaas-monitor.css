@@ -25,6 +25,7 @@
 .asaas-monitor .asaas-monitor-table td.asaas-monitor-check { min-width: 32px; width: 32px; }
 .asaas-monitor .asaas-monitor-table input[type=checkbox] { margin-top: 3px; }
 .asaas-monitor .asaas-monitor-secondary { display: block; color: #64748b; font-size: 11px; margin-top: 4px; line-height: 1.5; }
+.asaas-monitor .asaas-monitor-payment-evidence { display: inline-block; max-width: 170px; white-space: normal; text-align: left; line-height: 1.4; }
 .asaas-monitor .asaas-monitor-invoice { font-weight: 600; }
 .asaas-monitor .asaas-monitor-row-actions { display: flex; flex-wrap: wrap; gap: 4px; min-width: 140px; }
 .asaas-monitor .asaas-monitor-row-actions .btn { font-size: 11px; }

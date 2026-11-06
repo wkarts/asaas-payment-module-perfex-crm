@@ -89,6 +89,20 @@ class App_gateway
     public array $nativeTransactionDepths = [];
     public array $apiResponses = [];
     public array $apiCalls = [];
+    public int $cardReconcileCalls = 0;
+    public ?Closure $onCardReconcile = null;
+
+    public function card_checkout(): object
+    {
+        return new class($this) {
+            public function __construct(private App_gateway $gateway) {}
+            public function reconcile(object $invoice): ?array
+            {
+                ++$this->gateway->cardReconcileCalls;
+                return $this->gateway->onCardReconcile === null ? null : ($this->gateway->onCardReconcile)($invoice);
+            }
+        };
+    }
 
     public function getSetting(string $name): mixed
     {
@@ -227,7 +241,7 @@ final class WebhookSmokeDb
     {
         $this->hit('field_exists:' . $table . ':' . $field);
         return $table === 'tblinvoicepaymentrecords' && $this->paymentFieldsExist
-            && in_array($field, ['invoiceid', 'transactionid'], true);
+            && in_array($field, ['invoiceid', 'transactionid', 'amount'], true);
     }
 
     public function get_where(string $table, array $where): WebhookSmokeResult
@@ -240,6 +254,10 @@ final class WebhookSmokeDb
             return new WebhookSmokeResult($this->paymentMaps[$where['invoice_id']] ?? []);
         }
         if ($table === 'tblinvoicepaymentrecords') {
+            if (!isset($where['invoiceid'])) {
+                return new WebhookSmokeResult(array_values(array_filter($this->paymentRecords,
+                    static fn (array $payment): bool => $payment['transactionid'] === $where['transactionid'])));
+            }
             foreach ($this->paymentRecords as $payment) {
                 if ((int) $payment['invoiceid'] === (int) $where['invoiceid'] && $payment['transactionid'] === $where['transactionid']) {
                     return new WebhookSmokeResult($payment);
@@ -1326,6 +1344,84 @@ foreach ([5, 6] as $invoiceStatus) {
         $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], json_encode($event));
         $suite->same(200, $result['http_status'], 'Evento conhecido é aceito sem forçar a fatura.');
         $suite->same([], $gateway->payments, 'Não alterar fatura cancelada ou rascunho.');
+    });
+}
+
+function webhook_smoke_priced(WebhookSmokeDb $db, bool $allocated = true): array
+{
+    $payments = [];
+    foreach ([1, 2] as $number) {
+        $payments[] = ['id' => 'pay_smoke_' . $number, 'customer' => 'cus_priced_fixture',
+            'externalReference' => 'invoice-smoke-42', 'status' => 'CONFIRMED', 'billingType' => 'CREDIT_CARD',
+            'value' => '65.00', 'installment' => 'ins_priced_fixture', 'installmentNumber' => $number];
+    }
+    $pricing = ['version' => 1, 'principal_cents' => 12550, 'charged_cents' => 13000, 'fee_cents' => 450, 'installment_count' => 2];
+    if ($allocated) { $pricing = asaas_card_allocate_pricing($pricing, $payments); }
+    $cache = $payments[0];
+    $cache['_asaas_lifecycle'] = ['state' => 'active', 'card_attempt' => ['state' => 'processing',
+        'amount' => '130.00', 'customer_id' => 'cus_priced_fixture', 'installment_count' => 2, 'pricing' => $pricing]];
+    $db->mapTableExists = true;
+    $db->paymentMaps[42] = ['asaas_payment_id' => $payments[0]['id'], 'payload_cache' => json_encode($cache)];
+    return $payments;
+}
+
+$suite->run('repasse por parcela baixa apenas o principal e preserva nota e idempotência', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $payments = webhook_smoke_priced($db);
+    foreach (array_reverse($payments) as $index => $payment) {
+        $body = json_encode(['id' => 'evt_priced_' . $index, 'event' => 'PAYMENT_CONFIRMED', 'payment' => $payment]);
+        $suite->same(200, $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], $body)['http_status'], 'Parcela validada deve registrar o principal.');
+        $suite->same('62.75', $gateway->payments[$index]['amount'], 'Encargo de 2,25 não integra o recibo da parcela.');
+        $suite->truth(str_contains($gateway->payments[$index]['note'], '65,00') && str_contains($gateway->payments[$index]['note'], '2,25'), 'Nota distingue bruto nominal e encargo.');
+    }
+    $suite->same('0.00', get_invoice_total_left_to_pay(42, $db->invoice->total), 'Somente as duas parcelas juntas quitam a fatura.');
+    $duplicate = json_encode(['id' => 'evt_priced_received_again', 'event' => 'PAYMENT_RECEIVED', 'payment' => $payments[0]]);
+    $suite->same(200, $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], $duplicate)['http_status'], 'Recibo de principal já persistido permanece idempotente.');
+    $suite->same(2, count($gateway->payments), 'Novo evento do mesmo pagamento não duplica o recibo.');
+    $suite->same(0, $gateway->cardReconcileCalls, 'Mapa validado não necessita chamada ao Asaas.');
+});
+
+$suite->run('webhook precoce recupera mapa antes do lock e da transação', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $payments = webhook_smoke_priced($db, false);
+    $gateway->onCardReconcile = static function (object $invoice) use ($suite, $db, $payments): array {
+        $suite->same(0, $db->transactionDepth(), 'Recuperação GET não pode executar dentro da transação de recebimento.');
+        $suite->truth(!array_filter($db->calls, static fn (string $call): bool => str_contains($call, 'GET_LOCK(')), 'Recuperação assume seu próprio lock antes do lock do webhook.');
+        webhook_smoke_priced($db, true);
+        return $payments[0];
+    };
+    $body = json_encode(['id' => 'evt_priced_early', 'event' => 'PAYMENT_CONFIRMED', 'payment' => $payments[1]]);
+    $suite->same(200, $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], $body)['http_status'], 'Mapa recuperado deve permitir baixa no mesmo webhook.');
+    $suite->same(1, $gateway->cardReconcileCalls, 'Apenas uma recuperação é necessária.');
+    $suite->same('62.75', $gateway->payments[0]['amount'], 'Webhook relê o mapa confirmado depois da recuperação.');
+});
+
+$suite->run('webhook sem mapa permanece retryable e não depende de cron para recuperar', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $payments = webhook_smoke_priced($db, false);
+    $body = json_encode(['id' => 'evt_priced_missing', 'event' => 'PAYMENT_CONFIRMED', 'payment' => $payments[0]]);
+    $suite->same(500, $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], $body)['http_status'], 'Grupo ainda inconclusivo solicita retry.');
+    $suite->same([], $db->paymentRecords, 'Sem mapa não há baixa pelo bruto.');
+    $suite->same([], $db->events, 'Falha não marca evento como processado.');
+    $gateway->onCardReconcile = static function () use ($db, $payments): array { webhook_smoke_priced($db, true); return $payments[0]; };
+    $suite->same(200, $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], $body)['http_status'], 'Retry recupera mapa sem execução de cron.');
+    $suite->same(2, $gateway->cardReconcileCalls, 'Somente tentativas sem mapa fazem recuperação.');
+    $suite->same(1, count($db->paymentRecords), 'Retry produz exatamente um recibo de principal.');
+});
+
+foreach (['balance', 'gross_receipt', 'foreign_customer', 'unknown_payment'] as $failure) {
+    $suite->run('repasse bloqueia inconsistência financeira: ' . $failure, function () use ($suite, $failure): void {
+        [$adapter, $gateway, $db] = webhook_smoke_fixture();
+        $payments = webhook_smoke_priced($db);
+        if ($failure === 'balance') { $db->balance = '62.74'; }
+        if ($failure === 'gross_receipt') { $db->paymentRecords[] = ['invoiceid' => 42, 'transactionid' => 'pay_smoke_1', 'amount' => '65.00']; }
+        if ($failure === 'foreign_customer') { $payments[0]['customer'] = 'cus_other'; }
+        if ($failure === 'unknown_payment') { $payments[0]['id'] = 'pay_unmapped'; }
+        $before = $db->paymentRecords;
+        $body = json_encode(['id' => 'evt_priced_invalid', 'event' => 'PAYMENT_CONFIRMED', 'payment' => $payments[0]]);
+        $suite->same(500, $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], $body)['http_status'], 'Inconsistência não pode ser confirmada como processada.');
+        $suite->same([], $gateway->payments, 'Não completar, reduzir ou compensar automaticamente o principal.');
+        $suite->same($before, $db->paymentRecords, 'Recibos existentes permanecem intactos.');
     });
 }
 

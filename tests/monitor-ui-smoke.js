@@ -156,7 +156,7 @@ function fixture(options = {}) {
         setTimeout: (callback, delay) => { timers.set(++timerId, {callback, delay}); return timerId; },
         clearTimeout: id => { timers.delete(id); }, XMLHttpRequest: forbidden, AbortController: forbidden,
         navigator: {sendBeacon: forbidden}};
-    const context = {document, window, URL, URLSearchParams, Set, Intl, console: {log: forbidden, error: forbidden, warn: forbidden},
+    const context = {document, window, URL, URLSearchParams, Set, Intl, CustomEvent: function (type, options) { return event(type, options); }, console: {log: forbidden, error: forbidden, warn: forbidden},
         fetch: forbidden, XMLHttpRequest: forbidden, AbortController: forbidden};
     for (const target of [window, context]) {
         for (const property of ['localStorage', 'sessionStorage', 'indexedDB', 'caches']) { Object.defineProperty(target, property, {get: forbidden}); }
@@ -210,6 +210,58 @@ async function main() {
     check(lazy.get('[data-monitor-metric="cron_last_run"]').textContent.includes('2 conciliadas'), 'The last cron outcome is shown without an extra Asaas call.');
     check(lazy.get('[data-monitor-metric="cron_last_run"]').textContent.includes('5 aguardando a próxima rodada'), 'A partial cron run explains its remaining workload.');
     assertSecretsPreserved(lazy);
+
+    scenarios++;
+    const evidence = fixture();
+    await evidence.open([
+        invoice(201, {asaas_status: 'PENDING', webhook_status: 'processed', last_webhook_at: '2026-11-06 08:00:00'}),
+        invoice(202, {asaas_status: 'RECEIVED', crm_status: 3, balance: '10.00'}),
+        invoice(203, {asaas_status: 'CONFIRMED'}), invoice(204, {asaas_status: 'RECEIVED_IN_CASH'}),
+        invoice(205, {asaas_status: 'AUTHORIZED'}), invoice(206, {asaas_status: 'REFUNDED'}),
+        invoice(207, {asaas_status: 'AWAITING_RISK_ANALYSIS'}), invoice(208, {asaas_status: null})
+    ]);
+    const evidenceRows = evidence.body('invoices').children;
+    check(evidenceRows[0].textContent.includes('Sem confirmação de pagamento') && evidenceRows[0].textContent.includes('Evento: Processado'), 'A processed webhook cannot turn a pending charge into a confirmed payment.');
+    check(!evidenceRows[0].querySelector('[data-monitor-payment-evidence]').className.includes('label-success'), 'Pending payment evidence never receives the confirmation styling.');
+    check(evidenceRows[1].textContent.includes('Recebimento confirmado') && evidenceRows[1].textContent.includes('Parcial') && !evidenceRows[1].textContent.includes('Quitada'), 'A confirmed installment does not claim the entire invoice is settled.');
+    check([1, 2, 3].every(index => evidenceRows[index].querySelector('[data-monitor-payment-evidence]').className.includes('label-success')), 'Only the existing eligible received states are highlighted as confirmed.');
+    check([4, 5, 6, 7].every(index => !evidenceRows[index].querySelector('[data-monitor-payment-evidence]').className.includes('label-success')), 'Authorization, refund, risk analysis and missing status are never shown as confirmed receipts.');
+    check(evidenceRows[4].textContent.includes('Somente autorizado') && evidenceRows[7].textContent.includes('Situação a conferir'), 'Authorization and absent evidence retain explicit, distinct meanings.');
+    check(evidence.calls.length === 2 && evidence.calls.every(call => call.settings.method === 'GET'), 'Payment evidence uses the existing local snapshot without adding a remote call or receipt request.');
+
+    scenarios++;
+    const unpaid = fixture(); await unpaid.open([invoice(301)]);
+    const unpaidResult = result(301, 'pending');
+    Object.assign(unpaidResult.data[0], {crm_status: 1, remote_status: 'PENDING', balance: '21.45', remote_paid_amount: '0.00', payment_ids: [], message: 'O Asaas ainda não confirmou um recebimento elegível para esta fatura.'});
+    unpaid.queue(unpaidResult); unpaid.get('[data-monitor-invoice-action="compare"]').click(); await settle();
+    check(unpaid.get('[data-monitor-results]').textContent.includes('ainda não confirmou') && unpaid.get('[data-monitor-results]').textContent.includes('0 registrado(s)'), 'A fresh pending comparison explains that there is no confirmed payment and no receipt was added.');
+    check(unpaid.calls.length === 3 && unpaid.calls[2].url.pathname.endsWith('/compare'), 'Checking payment does not silently trigger reconciliation.');
+
+    scenarios++;
+    const logsCoordination = fixture();
+    logsCoordination.form.setAttribute('data-asaas-logs-loading', '1');
+    logsCoordination.queue(overview()); logsCoordination.queue(listing([invoice(302)]));
+    logsCoordination.shown(); await settle();
+    check(logsCoordination.calls.length === 0 && logsCoordination.action('refresh').disabled, 'A pending Logs GET defers monitor reads instead of racing their CSRF cookies.');
+    logsCoordination.form.setAttribute('data-asaas-logs-loading', '0');
+    logsCoordination.document.dispatchEvent(event('asaas:logs:idle')); await settle();
+    check(logsCoordination.calls.length === 2 && !logsCoordination.action('refresh').disabled, 'Deferred monitor reads resume only after Logs finishes.');
+    logsCoordination.form.setAttribute('data-asaas-logs-loading', '1');
+    logsCoordination.document.dispatchEvent(event('asaas:logs:busy'));
+    logsCoordination.get('[data-monitor-invoice-action="compare"]').dispatchEvent(event('click'));
+    check(logsCoordination.calls.length === 2, 'Neither a regular nor a synthetic action can start POST while Logs GET is active.');
+    logsCoordination.form.setAttribute('data-asaas-logs-loading', '0');
+    logsCoordination.form.setAttribute('data-asaas-logs-csrf-uncertain', '1');
+    logsCoordination.document.dispatchEvent(event('asaas:logs:idle'));
+    check(logsCoordination.get('[data-monitor-invoice-action="compare"]').disabled && !logsCoordination.action('refresh').disabled, 'An unknown CSRF response blocks POST but leaves the read-only recovery action available.');
+    logsCoordination.queue(overview('recovered_overview')); logsCoordination.queue(listing([invoice(302)], 'recovered_hash'));
+    logsCoordination.action('refresh').click(); await settle();
+    check(logsCoordination.form.getAttribute('data-asaas-logs-csrf-uncertain') === '0' && logsCoordination.token.value === 'recovered_hash', 'A valid monitor GET repairs the form token after an uncertain Logs read.');
+    const coordinatedPost = deferred(); logsCoordination.queued.push(coordinatedPost.promise);
+    logsCoordination.get('[data-monitor-invoice-action="compare"]').click(); await settle();
+    check(logsCoordination.form.getAttribute('data-asaas-monitor-busy') === '1' && new URLSearchParams(logsCoordination.calls[4].settings.body).get('csrf_fixture') === 'recovered_hash', 'Monitor publishes its busy state before POST and uses the token renewed by the preceding read.');
+    coordinatedPost.resolve(response(result(302, 'pending'))); await settle();
+    check(logsCoordination.form.getAttribute('data-asaas-monitor-busy') === '0', 'The busy marker is released after the entire operation settles.');
 
     scenarios++;
     const filters = fixture(); await filters.open();

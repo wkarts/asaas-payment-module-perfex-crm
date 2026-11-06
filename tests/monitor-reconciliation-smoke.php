@@ -295,6 +295,16 @@ function monitorSetCache(MonitorDatabase $db, array $changes): void
     $db->query('UPDATE tblasaas_payments_map SET payload_cache = ? WHERE invoice_id = 42', [json_encode($cache)]);
 }
 
+function monitorPricedCache(MonitorDatabase $db, array $payments, bool $allocated = true): void
+{
+    $pricing = ['version' => 1, 'principal_cents' => 10000, 'charged_cents' => 10460, 'fee_cents' => 460, 'installment_count' => count($payments)];
+    if ($allocated) { $pricing = asaas_card_allocate_pricing($pricing, $payments); }
+    $cache = $payments[0];
+    $cache['_asaas_lifecycle'] = ['state' => 'active', 'card_attempt' => ['state' => 'confirmed',
+        'customer_id' => 'cus_fixture', 'amount' => '104.60', 'installment_count' => count($payments), 'replaced_ids' => [], 'pricing' => $pricing]];
+    monitorSetCache($db, $cache);
+}
+
 monitorTest('compare, reconcile and retry use authoritative GET and the real gateway receipt path', static function (): void {
     [$service, $gateway, $db] = monitorFixture(array_fill(0, 3, monitorResponse(monitorPayment())), $history);
     $compared = $service->process([42]);
@@ -427,6 +437,86 @@ monitorTest('an ambiguous card attempt with empty remote id remains reachable an
     monitorCheck($service->process([42], true)['data'][0]['result'] === 'reconciled', 'GET-only checkout recovery must locate and validate the charge.');
     monitorCheck(count($gateway->nativeCalls) === 1 && count($history) === 2, 'Subsequent reconciliation must record exactly one receipt after rechecking the provider.');
     monitorAllGets($history);
+});
+
+monitorTest('priced card compares provider gross but registers only principal and a transparent note', static function (): void {
+    $payment = monitorPayment(42, ['billingType' => 'CREDIT_CARD', 'value' => '104.60']);
+    [$service, $gateway, $db] = monitorFixture(array_fill(0, 3, monitorResponse($payment)), $history);
+    monitorPricedCache($db, [$payment], false);
+    $comparison = $service->process([42])['data'][0];
+    monitorCheck($comparison['result'] === 'divergent' && $comparison['remote_paid_amount'] === '104.60', 'Remote gross must remain visible without being treated as invoice principal.');
+    monitorCheck($gateway->nativeCalls === [], 'Compare validates allocation without financial receipt.');
+    $cache = asaas_lifecycle_cached_payment(asaas_lifecycle_map(42));
+    monitorCheck($cache['_asaas_lifecycle']['card_attempt']['pricing']['allocations']['pay_42']['principal_cents'] === 10000, 'GET recovery must durably map principal before receipts.');
+    $done = $service->process([42], true)['data'][0];
+    monitorCheck($done['result'] === 'reconciled' && $done['balance'] === '0.00', 'Principal must settle the unchanged invoice total.');
+    monitorCheck($gateway->nativeCalls[0]['amount'] === '100.00', 'Provider fee must never become local principal.');
+    monitorCheck(str_contains($gateway->nativeCalls[0]['note'], '4,60') && str_contains($gateway->nativeCalls[0]['note'], '104,60'), 'Receipt note must retain nominal fee and gross.');
+    monitorCheck($service->process([42], true)['data'][0]['result'] === 'already_reconciled' && count($gateway->nativeCalls) === 1, 'Exact principal receipt must remain idempotent.');
+    monitorCheck($db->get_where('tblinvoices', ['id' => 42])->row()->total === '100.00', 'Fee passthrough must never rewrite invoice totals.');
+    monitorAllGets($history);
+});
+
+monitorTest('priced installments reconcile principal individually without premature settlement', static function (): void {
+    $first = monitorPayment(42, ['billingType' => 'CREDIT_CARD', 'value' => '52.30', 'installment' => 'ins_fee', 'installmentNumber' => 1]);
+    $second = array_replace($first, ['id' => 'pay_second_fee', 'installmentNumber' => 2, 'status' => 'PENDING']);
+    $receivedSecond = array_replace($second, ['status' => 'CONFIRMED']);
+    [$service, $gateway, $db] = monitorFixture([
+        monitorResponse($first), monitorResponse(['data' => [$second, $first], 'hasMore' => false]),
+        monitorResponse($first), monitorResponse(['data' => [$first, $receivedSecond], 'hasMore' => false]),
+        monitorResponse($first), monitorResponse(['data' => [$receivedSecond, $first], 'hasMore' => false]),
+    ], $history);
+    monitorPricedCache($db, [$first, $second]);
+    $one = $service->process([42], true)['data'][0];
+    monitorCheck($one['result'] === 'reconciled' && $one['balance'] === '50.00' && $one['remote_paid_amount'] === '52.30', 'One confirmed installment must credit 50 principal, not 52.30 gross.');
+    $two = $service->process([42], true)['data'][0];
+    monitorCheck($two['result'] === 'reconciled' && $two['balance'] === '0.00' && $two['receipts_added'] === 1, 'Second installment must credit only remaining principal.');
+    monitorCheck(array_column($gateway->nativeCalls, 'amount') === ['50.00', '50.00'], 'All principal receipts must sum to the invoice total.');
+    monitorCheck($two['remote_paid_amount'] === '104.60', 'Provider total remains nominal gross for diagnostics.');
+    monitorCheck($service->process([42], true)['data'][0]['result'] === 'already_reconciled', 'Reordered provider list cannot change allocations or duplicate receipts.');
+    monitorAllGets($history);
+});
+
+monitorTest('priced reconciliation detects wrong local gross receipts and changed balances', static function (): void {
+    foreach (['gross_receipt', 'lower_balance', 'invalid_snapshot'] as $case) {
+        $first = monitorPayment(42, ['billingType' => 'CREDIT_CARD', 'value' => '52.30', 'installment' => 'ins_fee', 'installmentNumber' => 1]);
+        $second = array_replace($first, ['id' => 'pay_second_fee', 'installmentNumber' => 2, 'status' => 'PENDING']);
+        [$service, $gateway, $db] = monitorFixture([monitorResponse($first), monitorResponse(['data' => [$first, $second], 'hasMore' => false])], $history);
+        monitorPricedCache($db, [$first, $second]);
+        if ($case === 'gross_receipt') { $db->insert('tblinvoicepaymentrecords', ['invoiceid' => 42, 'transactionid' => 'pay_42', 'amount' => '52.30']); }
+        if ($case === 'lower_balance') { $db->insert('tblcredits', ['invoice_id' => 42, 'amount' => '60.00']); }
+        if ($case === 'invalid_snapshot') {
+            $cache = asaas_lifecycle_cached_payment(asaas_lifecycle_map(42));
+            $cache['_asaas_lifecycle']['card_attempt']['amount'] = '104.61';
+            monitorSetCache($db, $cache);
+        }
+        $before = $db->query('SELECT * FROM tblinvoicepaymentrecords')->result_array();
+        $result = $service->process([42], true)['data'][0];
+        monitorCheck($result['result'] === ($case === 'invalid_snapshot' ? 'error' : 'amount_mismatch'), 'Inconsistent principal must not be accepted or clipped.');
+        monitorCheck($gateway->nativeCalls === [] && $before === $db->query('SELECT * FROM tblinvoicepaymentrecords')->result_array(), 'No automatic corrective payment is allowed.');
+        if ($case === 'invalid_snapshot') { monitorCheck($result['error_code'] === 'card_pricing_invalid' && $history === [], 'Invalid snapshot must fail before the API request.'); }
+        monitorAllGets($history);
+    }
+});
+
+monitorTest('gateway repeats exact principal validation under its receipt lock', static function (): void {
+    $first = monitorPayment(42, ['billingType' => 'CREDIT_CARD', 'value' => '52.30', 'installment' => 'ins_fee', 'installmentNumber' => 1]);
+    $second = array_replace($first, ['id' => 'pay_second_fee', 'installmentNumber' => 2]);
+    foreach (['credit_race', 'posted_gross', 'wrong_existing', 'duplicate_existing', 'right_existing', 'valid'] as $case) {
+        [$service, $gateway, $db] = monitorFixture([], $history);
+        monitorPricedCache($db, [$first, $second]);
+        if ($case === 'credit_race') { $db->onLock = static function () use ($db): void { $db->insert('tblcredits', ['invoice_id' => 42, 'amount' => '60.00']); }; }
+        if (in_array($case, ['wrong_existing', 'duplicate_existing', 'right_existing'], true)) {
+            $db->insert('tblinvoicepaymentrecords', ['invoiceid' => 42, 'transactionid' => 'pay_42', 'amount' => $case === 'wrong_existing' ? '52.30' : '50.00']);
+        }
+        if ($case === 'duplicate_existing') { $db->insert('tblinvoicepaymentrecords', ['invoiceid' => 42, 'transactionid' => 'pay_42', 'amount' => '50.00']); }
+        $ok = $gateway->addPayment(['invoiceid' => 42, 'transactionid' => 'pay_42', 'amount' => $case === 'posted_gross' ? '52.30' : '50.00',
+            'paymentmode' => 'Asaas', 'paymentmethod' => 'CREDIT_CARD']);
+        monitorCheck($ok === in_array($case, ['right_existing', 'valid'], true), 'Only exact principal with a consistent locked balance is accepted.');
+        monitorCheck(count($gateway->nativeCalls) === ($case === 'valid' ? 1 : 0), 'A race or duplicate must not issue another native receipt.');
+        monitorCheck($history === [], 'Validating locked allocation must not call the provider.');
+        if ($case === 'valid') { monitorCheck($gateway->nativeCalls[0]['amount'] === '50.00', 'Principal must stay unchanged through the native gateway writer.'); }
+    }
 });
 
 monitorTest('reverted cash receipt is checked again before applying any local receipt', static function (): void {

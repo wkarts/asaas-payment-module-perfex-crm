@@ -20,7 +20,7 @@ $asaasMonitorSecurity = $asaasMonitorCi->security;
         </div>
         <button type="button" class="btn btn-default btn-sm" data-monitor-action="refresh">Atualizar registros</button>
     </div>
-    <p class="help-block mtop10">Comparar consulta a situação no Asaas. Conciliar registra no CRM somente os recebimentos confirmados, com verificação de duplicidade.</p>
+    <p class="help-block mtop10"><strong>Comparar</strong> consulta agora o pagamento no Asaas, sem dar baixa. <strong>Conciliar</strong> consulta novamente e registra no CRM somente os recebimentos confirmados que faltam, com verificação de duplicidade.</p>
     <div data-monitor-feedback class="alert alert-info" role="status" aria-live="polite" hidden></div>
 
     <div class="asaas-monitor-summary" aria-label="Resumo da integração">
@@ -33,6 +33,7 @@ $asaasMonitorSecurity = $asaasMonitorCi->security;
         <p><strong>Último webhook:</strong> <span data-monitor-metric="last_webhook_at">—</span></p>
         <p><strong>Última sincronização:</strong> <span data-monitor-metric="cron_last_run">—</span></p>
         <p data-monitor-metric="cron_configuration">Abra esta guia para consultar os registros.</p>
+        <p>Quando habilitada, a conciliação automática consulta as cobranças elegíveis e registra os recebimentos confirmados que faltam no CRM. Pagamentos pendentes continuam abertos; falhas são registradas para conferência.</p>
     </div>
 
     <div class="asaas-monitor-tabs" role="tablist" aria-label="Registros da integração">
@@ -48,7 +49,7 @@ $asaasMonitorSecurity = $asaasMonitorCi->security;
                 <input id="asaas-monitor-query" type="search" class="form-control input-sm" maxlength="100" autocomplete="off" placeholder="Número da fatura ou nome do cliente">
             </div>
             <div class="form-group">
-                <label for="asaas-monitor-invoice-status">Situação</label>
+                <label for="asaas-monitor-invoice-status">Situação no CRM</label>
                 <select id="asaas-monitor-invoice-status" class="form-control input-sm">
                     <option value="open">Em aberto</option>
                     <option value="suspected">Possíveis divergências</option>
@@ -57,16 +58,17 @@ $asaasMonitorSecurity = $asaasMonitorCi->security;
             </div>
             <button type="button" class="btn btn-default btn-sm" data-monitor-action="filter" data-monitor-kind="invoices">Filtrar</button>
         </div>
+        <p id="asaas-monitor-payment-help" class="help-block">O pagamento no Asaas mostra o <strong>último estado conhecido</strong>; use <strong>Comparar</strong> para consultar agora. Um webhook processado não comprova pagamento. Um recebimento confirmado pode corresponder a uma parcela; confira o saldo da fatura.</p>
         <div class="asaas-monitor-batch-actions">
             <span data-monitor-selected-count class="text-muted">Nenhuma fatura selecionada.</span>
             <button type="button" class="btn btn-default btn-sm" data-monitor-action="compare-selected" disabled>Comparar selecionadas</button>
             <button type="button" class="btn btn-info btn-sm" data-monitor-action="reconcile-selected" disabled>Conciliar selecionadas</button>
         </div>
         <div class="table-responsive asaas-monitor-table">
-            <table class="table table-striped table-hover">
+            <table class="table table-striped table-hover" aria-describedby="asaas-monitor-payment-help">
                 <thead><tr>
                     <th class="asaas-monitor-check"><input id="asaas-monitor-select-all" type="checkbox" aria-label="Selecionar faturas desta página"></th>
-                    <th>Fatura / cliente</th><th>CRM</th><th>Asaas</th><th>Valor / saldo</th><th>Últimos registros</th><th>Ações</th>
+                    <th>Fatura / cliente</th><th>CRM</th><th>Pagamento no Asaas</th><th>Valor / saldo</th><th>Últimos registros</th><th>Ações</th>
                 </tr></thead>
                 <tbody data-monitor-list="invoices"><tr><td colspan="7" class="text-muted">Abra Monitoramento para consultar as faturas.</td></tr></tbody>
             </table>
@@ -78,7 +80,7 @@ $asaasMonitorSecurity = $asaasMonitorCi->security;
     </div>
 
     <div id="asaas-monitor-events" data-monitor-panel="events" role="tabpanel" aria-labelledby="asaas-monitor-tab-events" hidden>
-        <p class="help-block">Esta lista mostra os eventos recebidos. Falhas de entrega, como token recusado, podem ser consultadas em API e conciliações, com origem Webhook.</p>
+        <p class="help-block">Esta lista mostra as notificações recebidas; processar um evento não significa que houve pagamento. Falhas de entrega, como token recusado, podem ser consultadas em API e conciliações, com origem Webhook.</p>
         <div class="asaas-monitor-filters">
             <div class="form-group">
                 <label for="asaas-monitor-event-status">Processamento</label>

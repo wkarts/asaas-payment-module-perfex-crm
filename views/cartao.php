@@ -173,6 +173,37 @@ $cardHolderValue = static function (string $name) use ($cardHolderDefaults): str
                         <?php if (!$cardCheckoutBlocked) { ?>
                         <form id="asaas-card-checkout" action="" method="post" autocomplete="off">
                         <input type="hidden" name="<?php echo html_escape($this->security->get_csrf_token_name()); ?>" value="<?php echo html_escape($this->security->get_csrf_hash()); ?>">
+                        <div class="form-group">
+                            <label class="control-label" for="installmentCount">Como deseja pagar?</label>
+                            <select id="installmentCount" class="form-control" name="installmentCount" aria-describedby="asaas-card-price-summary asaas-card-installment-help" required>
+                                <?php foreach ($cardInstallmentOptions as $cardInstallmentOption) { ?>
+                                    <option value="<?php echo (int) $cardInstallmentOption['count']; ?>"
+                                            data-card-principal="<?php echo html_escape($cardInstallmentOption['principal'] ?? ''); ?>"
+                                            data-card-fee="<?php echo html_escape($cardInstallmentOption['fee'] ?? '0.00'); ?>"
+                                            data-card-total="<?php echo html_escape($cardInstallmentOption['total'] ?? ''); ?>"
+                                            data-card-schedule="<?php echo html_escape($cardInstallmentOption['schedule'] ?? ''); ?>"><?php echo html_escape($cardInstallmentOption['label']); ?></option>
+                                <?php } ?>
+                            </select>
+                            <?php foreach ($cardInstallmentOptions as $cardInstallmentOption) { ?>
+                                <input type="hidden" name="cardQuote[<?php echo (int) $cardInstallmentOption['count']; ?>]" value="<?php echo html_escape($cardInstallmentOption['quote'] ?? ''); ?>">
+                            <?php } ?>
+                        </div>
+                        <div id="asaas-card-price-summary" class="well well-sm" aria-live="polite" hidden>
+                            <p class="no-mbot">Saldo da fatura: <strong data-card-price-principal></strong></p>
+                            <p class="no-mbot">Encargos do cartão: <strong data-card-price-fee></strong></p>
+                            <p class="mtop5 no-mbot">Total no cartão: <strong data-card-price-total></strong></p>
+                            <p class="text-muted mtop5 no-mbot" data-card-price-schedule></p>
+                        </div>
+                        <p id="asaas-card-installment-help" class="text-muted">De 13 a 21 parcelas, somente Visa e Mastercard. As opções respeitam o valor mínimo por parcela. Descontos adicionais da cobrança, quando elegíveis, continuam sujeitos às condições do Asaas.</p>
+                        <noscript>
+                            <table class="table table-condensed">
+                                <caption>Confira os encargos e o total da opção selecionada antes de confirmar.</caption>
+                                <thead><tr><th>Parcelas</th><th>Encargos</th><th>Total</th></tr></thead>
+                                <tbody><?php foreach ($cardInstallmentOptions as $cardInstallmentOption) { ?>
+                                    <tr><td><?php echo (int) $cardInstallmentOption['count']; ?></td><td>R$ <?php echo html_escape(number_format((float) ($cardInstallmentOption['fee'] ?? 0), 2, ',', '.')); ?></td><td>R$ <?php echo html_escape(number_format((float) ($cardInstallmentOption['total'] ?? $invoice->total_left_to_pay), 2, ',', '.')); ?></td></tr>
+                                <?php } ?></tbody>
+                            </table>
+                        </noscript>
                         <h3 class="text-center">Informe os dados do cartão</h3>
                         <div class="form-group">
                             <label class="control-label" for="holderName">Nome do titular</label>
@@ -200,16 +231,6 @@ $cardHolderValue = static function (string $name) use ($cardHolderDefaults): str
                                 <div class="form-group">
                                     <label class="control-label" for="securityCode">CVV</label>
                                     <input id="securityCode" name="securityCode" type="password" placeholder="CVV" class="form-control" autocomplete="off" inputmode="numeric" pattern="[0-9]{3,4}" minlength="3" maxlength="4" required>
-                                </div>
-                            </div>
-                            <div class="col-xs-4 col-md-4 pull-right">
-                                <div class="form-group">
-                                    <label class="control-label" for="installmentCount">Número de parcelas</label>
-                                    <select id="installmentCount" class="form-control" name="installmentCount" required>
-                                        <?php foreach ($cardInstallmentOptions as $cardInstallmentOption) { ?>
-                                            <option value="<?php echo (int) $cardInstallmentOption['count']; ?>"><?php echo html_escape($cardInstallmentOption['label']); ?></option>
-                                        <?php } ?>
-                                    </select>
                                 </div>
                             </div>
                         </div>
@@ -242,7 +263,7 @@ $cardHolderValue = static function (string $name) use ($cardHolderDefaults): str
                         </div>
                         <p id="asaas-card-checkout-status" class="alert alert-info hidden" role="status" aria-live="polite" aria-atomic="true"></p>
                         <div class="form-group">
-                            <button id="payment" class="subscribe btn btn-success btn-lg btn-block" type="submit">Confirmar</button>
+                            <button id="payment" class="subscribe btn btn-success btn-lg btn-block" type="submit">Confirmar pagamento</button>
                         </div>
                         </form>
                         <?php } ?>

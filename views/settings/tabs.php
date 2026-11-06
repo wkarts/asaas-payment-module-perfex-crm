@@ -4,8 +4,8 @@ defined('BASEPATH') or exit('No direct script access allowed');
 $asaasSettingsGroups = [
     'general' => ['Geral', 'Identificação do meio de pagamento e informações exibidas na fatura.'],
     'environment' => ['Ambiente', 'Selecione o ambiente das operações e configure as credenciais correspondentes.'],
-    'payments' => ['Pagamentos', 'Formas de pagamento disponíveis e limite de parcelas no cartão.'],
-    'charges' => ['Cobranças', 'Vencimento, encargos, descontos e notificações de cobrança.'],
+    'payments' => ['Pagamentos', 'Formas de pagamento disponíveis para o cliente.'],
+    'charges' => ['Cobranças', 'Vencimento, encargos, descontos e opções de parcelamento do cartão.'],
     'webhook' => ['Webhook', 'Autenticação e endereço de recebimento dos eventos do Asaas.'],
     'sync' => ['Sincronização', 'Atualizações das faturas, recebimentos manuais e conciliação automática.'],
     'logs' => ['Logs', 'Histórico e diagnóstico da integração.'],
@@ -45,8 +45,12 @@ $asaasSettingsGroups = [
              aria-labelledby="asaas-settings-tab-<?php echo html_escape($asaasGroupId); ?>"
              <?php echo $asaasGroupId === 'general' ? '' : 'hidden'; ?>>
             <p class="help-block asaas-settings-description"><?php echo html_escape($asaasGroupDescription); ?></p>
-            <?php if ($asaasGroupId === 'monitoring' && is_file(__DIR__ . '/monitor.php')) {
+            <?php if ($asaasGroupId === 'charges' && is_file(__DIR__ . '/charges.php')) {
+                require __DIR__ . '/charges.php';
+            } elseif ($asaasGroupId === 'monitoring' && is_file(__DIR__ . '/monitor.php')) {
                 require __DIR__ . '/monitor.php';
+            } elseif ($asaasGroupId === 'logs' && is_file(__DIR__ . '/logs.php')) {
+                require __DIR__ . '/logs.php';
             } ?>
         </div>
         <?php } ?>

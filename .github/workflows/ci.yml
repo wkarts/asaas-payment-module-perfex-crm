@@ -64,18 +64,23 @@ jobs:
       - name: Configurações, monitoramento e conciliação
         run: |
           php tests/settings-environment-smoke.php
+          php tests/settings-card-smoke.php
           php tests/monitor-reconciliation-smoke.php
           php tests/module-version-smoke.php
           node --check assets/js/asaas-settings.js
           node --check assets/js/asaas-monitor.js
+          node --check assets/js/asaas-logs.js
           node tests/settings-ui-smoke.js
           node tests/monitor-ui-smoke.js
+          node tests/logs-ui-smoke.js
 
       - name: Cartão de crédito e apresentação do ambiente
         run: |
           php tests/checkout-environment-smoke.php
           php tests/card-view-smoke.php
           php tests/card-api-smoke.php
+          php tests/card-pricing-smoke.php
+          php tests/card-receipts-smoke.php
           php tests/card-checkout-smoke.php
           php tests/card-controller-smoke.php
           node --check assets/js/asaas-card-checkout.js

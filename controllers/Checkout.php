@@ -133,11 +133,14 @@ class Checkout extends ClientsController
                 : 'O pagamento por cartão não está disponível para uma nova tentativa. Consulte o financeiro ou acompanhe a fatura.';
         }
         $client = $invoice->client ?? (object) [];
-        $options = asaas_card_installment_options($invoice->total_left_to_pay,
-            $this->asaas_gateway->getSetting('installmentCount'), $checkout->discount());
-        if (!empty($cached['installment']) && isset($cached['_asaas_lifecycle']['card_attempt']['installment_count'])) {
-            $existingCount = (int) $cached['_asaas_lifecycle']['card_attempt']['installment_count'];
-            $options = array_values(array_filter($options, static fn (array $option): bool => $option['count'] === $existingCount));
+        $options = [];
+        if (!$blocked) {
+            try {
+                $options = $checkout->installmentOptions($invoice);
+            } catch (Throwable $error) {
+                asaas_diagnostic_log('error', 'Configuração de parcelas ou taxas de cartão inválida.', ['invoice_id' => (int) $invoice->id]);
+                $info = 'As condições do cartão precisam ser conferidas pelo financeiro antes do pagamento.';
+            }
         }
         $this->data([
             'hash' => $hash, 'invoice' => $invoice, 'title' => 'Asaas',
@@ -174,7 +177,7 @@ class Checkout extends ClientsController
             'expiryYear' => 'expirationYear', 'cvv' => 'securityCode', 'installmentCount' => 'installmentCount',
             'holderEmail' => 'holderEmail', 'holderDocument' => 'holderDocument',
             'holderPostalCode' => 'holderPostalCode', 'holderAddressNumber' => 'holderAddressNumber',
-            'holderPhone' => 'holderPhone',
+            'holderPhone' => 'holderPhone', 'quote' => 'cardQuote',
         ];
         $card = [];
         foreach ($fields as $field => $posted) {
@@ -183,11 +186,17 @@ class Checkout extends ClientsController
                 unset($_POST[$posted], $_REQUEST[$posted]);
             }
         }
+        if (is_array($card['quote'])) {
+            // Each rendered offer carries its own price acknowledgement, including without JavaScript.
+            $count = is_scalar($card['installmentCount']) ? (string) $card['installmentCount'] : '';
+            $card['quote'] = $card['quote'][$count] ?? '';
+        }
         return $card;
     }
 
     private function recordCardResult(object $invoice, array $payment): void
     {
+        $cache = asaas_lifecycle_cached_payment(asaas_lifecycle_map((int) $invoice->id));
         foreach ($payment['_asaas_card_receipts'] ?? [] as $receipt) {
             if (!asaas_card_is_received($receipt) || ($receipt['externalReference'] ?? null) !== (string) $invoice->hash) {
                 continue;
@@ -196,10 +205,15 @@ class Checkout extends ClientsController
             if (asaas_payment_amount_to_cents($balance) === 0) {
                 break;
             }
+            // The gateway checks an existing transaction ID before validating the
+            // current balance under its receipt lock. A repeated priced parcel
+            // can exceed the remaining balance without being a new receipt.
+            $principal = asaas_card_receipt_principal($receipt, $cache);
             if (!$this->asaas_gateway->addPayment([
-                'amount' => asaas_card_receipt_amount($receipt, $balance),
+                'amount' => $principal === null ? asaas_card_receipt_amount($receipt, $balance) : asaas_card_money($principal),
                 'invoiceid' => $invoice->id, 'paymentmode' => 'Asaas',
                 'paymentmethod' => 'CREDIT_CARD', 'transactionid' => $receipt['id'],
+                'note' => asaas_card_receipt_note($receipt, $cache),
             ])) {
                 throw new \Asaas\AsaasCardCheckoutException('Pagamento confirmado no Asaas, mas a baixa no CRM está pendente de conciliação. Não repita o pagamento; consulte o financeiro.');
             }
