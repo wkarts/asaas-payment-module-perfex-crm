@@ -29,10 +29,11 @@ function renderFixture(mode, origin = defaultOrigin) {
 const fixtures = Object.fromEntries(modes.map(mode => [mode, renderFixture(mode)]));
 let scenarios = 0;
 async function scenario(name, work) { currentScenario = name; await work(); scenarios++; console.log('OK  ' + name); }
-function deadline(promise, description) {
+function deadline(promise, description, diagnostic = null) {
     let timer;
     return Promise.race([promise, new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error('Timed out waiting for ' + description + ' in: ' + currentScenario)), 10000);
+        timer = setTimeout(() => reject(new Error('Timed out waiting for ' + description + ' in: ' + currentScenario
+            + (diagnostic ? ' | ' + JSON.stringify(diagnostic()) : ''))), 10000);
     })]).finally(() => clearTimeout(timer));
 }
 
@@ -201,9 +202,20 @@ async function main() {
         page.on('pageerror', error => errors.push(error.message));
         let recordSubmit;
         let recordDeparture;
+        let observedResultView = null;
+        const observationKinds = [];
+        const observationPrefix = '__ASAAS_RECURRING_BROWSER_EVENT__:';
         const submitted = new Promise(resolve => { recordSubmit = resolve; });
         const departed = new Promise(resolve => { recordDeparture = resolve; });
-        await page.exposeFunction('__asaasRecurringTestEvent', snapshot => {
+        // Primitive console text is carried by CDP with the event itself. An exposed
+        // async binding can lose its call when the pagehide context is destroyed.
+        page.on('console', message => {
+            const text = message.text();
+            if (!text.startsWith(observationPrefix)) { return; }
+            let snapshot;
+            try { snapshot = JSON.parse(text.slice(observationPrefix.length)); }
+            catch (_) { errors.push('Invalid recurring test observation.'); return; }
+            observationKinds.push(snapshot.type);
             if (snapshot.type === 'submit') { recordSubmit(snapshot); }
             if (snapshot.type === 'pagehide') { recordDeparture(snapshot); }
         });
@@ -217,7 +229,7 @@ async function main() {
         // Install after the actual script, before the click. Browser-native form navigation
         // can suspend later DOM RPCs while its response is held. Observe submit/pagehide
         // synchronously inside their natural dispatch instead of evaluating a departing page.
-        await page.evaluate(() => {
+        await page.evaluate(marker => {
             const root = document.getElementById('asaas-recurring');
             if (!root) { return; }
             const forms = [...root.querySelectorAll('[data-asaas-recurring-form]')];
@@ -232,7 +244,7 @@ async function main() {
                 consentDefaultUnchecked: !document.getElementById('recurring-consent')?.defaultChecked,
                 privacy: window.__recurringPrivacyAccesses.slice()
             });
-            const emit = snapshot => { void window.__asaasRecurringTestEvent(snapshot).catch(() => {}); };
+            const emit = snapshot => console.debug(marker + JSON.stringify(snapshot));
             let probing = false;
             root.addEventListener('submit', event => {
                 if (probing || !event.target.matches('[data-asaas-recurring-form]')) { return; }
@@ -246,17 +258,21 @@ async function main() {
                     clearance: clearance()
                 };
                 // Bubble runs after the real form handler. Attempt both repeats while its
-                // pending flag is active; only booleans/IDs leave the page through the binding.
+                // pending flag is active; only booleans/IDs leave through primitive console text.
                 probing = true;
                 try { snapshot.replays = forms.map(form => form.dispatchEvent(new Event('submit', {bubbles: true, cancelable: true}))); }
                 finally { probing = false; }
                 emit(snapshot);
             });
             window.addEventListener('pagehide', () => emit({type: 'pagehide', clearance: clearance()}));
-        });
+        }, observationPrefix);
         return {...transport, page,
             waitForSubmit() { return deadline(submitted, 'the synchronous submit observation'); },
-            waitForDeparture() { return deadline(departed, 'the natural pagehide observation'); }};
+            markResultView(state) { observedResultView = state; },
+            waitForDeparture() { return deadline(departed, 'the natural pagehide observation', () => ({
+                finalPath: new URL(page.url()).pathname, observedResultView,
+                requests: transport.requests, observations: observationKinds, pageErrors: errors
+            })); }};
     }
     async function fillCard(page) {
         for (const [field, value] of Object.entries({holderName: 'Titular de teste', cardNumber: '4111111111111111', expirationMonth: '12', expirationYear: '2030', securityCode: '123'})) {
@@ -343,10 +359,11 @@ async function main() {
             const navigation = page.waitForURL(fixture.origin + recurringPath);
             fixture.release();
             await navigation;
-            assertCleared(await fixture.waitForDeparture());
             await page.locator('.asaas-recurring-state').waitFor();
             assert.equal(await page.locator('#asaas-recurring-enroll').count(), 0, 'PRG renders current paid state without the earlier input.');
             assert.equal(await page.locator('#asaas-recurring-revoke').count(), 1);
+            fixture.markResultView('paid');
+            assertCleared(await fixture.waitForDeparture());
             assert.equal(fixture.submissions.length, 1);
             assert.deepEqual(await page.evaluate(() => window.__recurringPrivacyAccesses), []);
         });
@@ -367,10 +384,11 @@ async function main() {
             const navigation = fixture.page.waitForURL(fixture.origin + recurringPath);
             fixture.release();
             await navigation;
-            assertCleared(await fixture.waitForDeparture());
             await fixture.page.locator('#asaas-recurring-enroll').waitFor();
             assert.equal(await fixture.page.locator('#asaas-recurring-revoke').count(), 0);
             assert.equal(await fixture.page.locator('#recurring-consent').isChecked(), false);
+            fixture.markResultView('inactive');
+            assertCleared(await fixture.waitForDeparture());
         });
         await scenario('texto e dados do titular são escapados sem injeção HTML ou chamadas extras', async () => {
             const {page} = await fixturePage('hostile');
