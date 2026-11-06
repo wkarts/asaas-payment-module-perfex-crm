@@ -28,7 +28,10 @@ jobs:
           php-version: "8.2"
           tools: composer
 
-      - name: Bump patch + garantir migration
+      - name: Validar sequência de versões
+        run: php tests/module-version-smoke.php
+
+      - name: Avançar versão + garantir migration
         id: bump
         run: |
           OUT=$(php scripts/bump-patch.php)
