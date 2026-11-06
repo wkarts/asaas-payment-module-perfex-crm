@@ -88,10 +88,20 @@ function asaas_card_validate_input(array $input, int $maximum): array
 function asaas_card_safe_payload(array $payload): array
 {
     foreach ($payload as $key => $value) {
-        if (preg_match('/^(?:creditCard|creditCardHolderInfo|creditCardToken|card|cardToken|cardNumber|ccv|cvv|securityCode)$/iD', (string) $key)) {
+        $normalizedKey = strtolower((string) preg_replace('/[^a-zA-Z0-9]/', '', (string) $key));
+        if (in_array($normalizedKey, [
+            'creditcard', 'creditcardholderinfo', 'creditcardtoken', 'creditcardnumber', 'creditcardbrand',
+            'card', 'cardtoken', 'cardnumber', 'cardbrand', 'cardholder', 'cardholderinfo', 'cardholdername',
+            'holdername', 'holderemail', 'holderdocument', 'holderpostalcode', 'holderaddressnumber', 'holderphone',
+            'expirymonth', 'expiryyear', 'expirationmonth', 'expirationyear', 'ccv', 'cvv', 'securitycode',
+        ], true)) {
             unset($payload[$key]);
         } elseif (is_array($value)) {
             $payload[$key] = asaas_card_safe_payload($value);
+        } elseif (is_object($value) && get_class($value) === stdClass::class) {
+            // JSON objects must remain objects (including {}), without mutating the input.
+            // Leave application objects untouched; do not invoke serialization or magic methods.
+            $payload[$key] = (object) asaas_card_safe_payload(get_object_vars($value));
         }
     }
     return $payload;

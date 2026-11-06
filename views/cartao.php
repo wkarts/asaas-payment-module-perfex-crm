@@ -171,35 +171,35 @@ $cardHolderValue = static function (string $name) use ($cardHolderDefaults): str
                             <div class="alert alert-info text-center" role="status">O pagamento por cartão não está disponível para esta cobrança. Volte à fatura para consultar a situação do pagamento.</div>
                         <?php } ?>
                         <?php if (!$cardCheckoutBlocked) { ?>
-                        <form id="asaas-card-checkout" action="" method="post">
+                        <form id="asaas-card-checkout" action="" method="post" autocomplete="off">
                         <input type="hidden" name="<?php echo html_escape($this->security->get_csrf_token_name()); ?>" value="<?php echo html_escape($this->security->get_csrf_hash()); ?>">
                         <h3 class="text-center">Informe os dados do cartão</h3>
                         <div class="form-group">
                             <label class="control-label" for="holderName">Nome do titular</label>
-                            <input id="holderName" name="holderName" type="text" placeholder="NOME DO TITULAR" class="form-control" autocomplete="cc-name" maxlength="100" value="<?php echo $cardHolderValue('holderName'); ?>" required>
+                            <input id="holderName" name="holderName" type="text" placeholder="NOME DO TITULAR" class="form-control" autocomplete="off" maxlength="100" value="<?php echo $cardHolderValue('holderName'); ?>" required>
                         </div>
                         <div class="form-group">
                             <label class="control-label" for="cardNumber">Número do cartão</label>
                             <input id="cardNumber" name="cardNumber" type="text" placeholder="NUMERO DO CARTÃO" class="form-control"
-                                   autocomplete="cc-number" inputmode="numeric" pattern="[ ]*(?:[0-9][ ]*){13,19}" maxlength="37" required>
+                                   autocomplete="off" inputmode="numeric" pattern="[ ]*(?:[0-9][ ]*){13,19}" maxlength="37" required>
                         </div>
                         <div class="row">
                             <div class="col-xs-6 col-md-3">
                                 <div class="form-group">
                                     <label class="control-label" for="expirationMonth">Validade: mês</label>
-                                    <input id="expirationMonth" name="expirationMonth" type="text" placeholder="MM" class="form-control" autocomplete="cc-exp-month" inputmode="numeric" pattern="(?:0?[1-9]|1[0-2])" maxlength="2" required>
+                                    <input id="expirationMonth" name="expirationMonth" type="text" placeholder="MM" class="form-control" autocomplete="off" inputmode="numeric" pattern="(?:0?[1-9]|1[0-2])" maxlength="2" required>
                                 </div>
                             </div>
                             <div class="col-xs-6 col-md-3">
                                 <div class="form-group">
                                     <label class="control-label" for="expirationYear">Validade: ano</label>
-                                    <input id="expirationYear" name="expirationYear" type="text" placeholder="AAAA" class="form-control" autocomplete="cc-exp-year" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required>
+                                    <input id="expirationYear" name="expirationYear" type="text" placeholder="AAAA" class="form-control" autocomplete="off" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required>
                                 </div>
                             </div>
                             <div class="col-xs-2 col-md-2">
                                 <div class="form-group">
                                     <label class="control-label" for="securityCode">CVV</label>
-                                    <input id="securityCode" name="securityCode" type="password" placeholder="CVV" class="form-control" autocomplete="cc-csc" inputmode="numeric" pattern="[0-9]{3,4}" minlength="3" maxlength="4" required>
+                                    <input id="securityCode" name="securityCode" type="password" placeholder="CVV" class="form-control" autocomplete="off" inputmode="numeric" pattern="[0-9]{3,4}" minlength="3" maxlength="4" required>
                                 </div>
                             </div>
                             <div class="col-xs-4 col-md-4 pull-right">
@@ -216,7 +216,7 @@ $cardHolderValue = static function (string $name) use ($cardHolderDefaults): str
                         <h4>Dados do titular do cartão</h4>
                         <div class="form-group">
                             <label class="control-label" for="holderEmail">E-mail do titular</label>
-                            <input id="holderEmail" name="holderEmail" type="email" class="form-control" autocomplete="email" maxlength="254" value="<?php echo $cardHolderValue('holderEmail'); ?>" required>
+                            <input id="holderEmail" name="holderEmail" type="email" class="form-control" autocomplete="off" maxlength="254" value="<?php echo $cardHolderValue('holderEmail'); ?>" required>
                         </div>
                         <div class="form-group">
                             <label class="control-label" for="holderDocument">CPF ou CNPJ do titular</label>
@@ -226,7 +226,7 @@ $cardHolderValue = static function (string $name) use ($cardHolderDefaults): str
                             <div class="col-sm-6">
                                 <div class="form-group">
                                     <label class="control-label" for="holderPostalCode">CEP do titular</label>
-                                    <input id="holderPostalCode" name="holderPostalCode" type="text" class="form-control" inputmode="numeric" autocomplete="postal-code" maxlength="9" value="<?php echo $cardHolderValue('holderPostalCode'); ?>" required>
+                                    <input id="holderPostalCode" name="holderPostalCode" type="text" class="form-control" inputmode="numeric" autocomplete="off" maxlength="9" value="<?php echo $cardHolderValue('holderPostalCode'); ?>" required>
                                 </div>
                             </div>
                             <div class="col-sm-6">
@@ -238,7 +238,7 @@ $cardHolderValue = static function (string $name) use ($cardHolderDefaults): str
                         </div>
                         <div class="form-group">
                             <label class="control-label" for="holderPhone">Telefone do titular com DDD</label>
-                            <input id="holderPhone" name="holderPhone" type="tel" class="form-control" autocomplete="tel" inputmode="tel" maxlength="20" value="<?php echo $cardHolderValue('holderPhone'); ?>" required>
+                            <input id="holderPhone" name="holderPhone" type="tel" class="form-control" autocomplete="off" inputmode="tel" maxlength="20" value="<?php echo $cardHolderValue('holderPhone'); ?>" required>
                         </div>
                         <p id="asaas-card-checkout-status" class="alert alert-info hidden" role="status" aria-live="polite" aria-atomic="true"></p>
                         <div class="form-group">
@@ -257,5 +257,5 @@ $cardHolderValue = static function (string $name) use ($cardHolderDefaults): str
     </div>
 </div>
 <?php if (!$cardCheckoutBlocked) { ?>
-    <script src="<?php echo html_escape(site_url('modules/asaas/assets/js/asaas-card-checkout.js')); ?>"></script>
+    <script src="<?php echo html_escape(site_url('modules/asaas/assets/js/asaas-card-checkout.js') . '?v=' . filemtime(__DIR__ . '/../assets/js/asaas-card-checkout.js')); ?>"></script>
 <?php } ?>

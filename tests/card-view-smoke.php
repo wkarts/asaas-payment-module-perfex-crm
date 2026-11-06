@@ -153,9 +153,20 @@ cardViewTest('card form keeps one escaped CSRF token and required accessible fie
         cardViewAssert($field->hasAttribute('required'), $name . ' must be required.');
         cardViewAssert($document->query('//label[@for="' . $field->getAttribute('id') . '"]')->length === 1, $name . ' must have its own label.');
     }
-    cardViewAssert(cardViewField($document, 'cardNumber')->getAttribute('autocomplete') === 'cc-number', 'Card number autocomplete must use the standard field token.');
     cardViewAssert(cardViewField($document, 'securityCode')->getAttribute('type') === 'password', 'CVV must be masked.');
-    cardViewAssert(str_contains($html, 'asaas-card-checkout.js'), 'Card submit protection must be loaded.');
+    cardViewAssert($document->query('//script[contains(@src, "asaas-card-checkout.js?v=")]')->length === 1, 'The privacy handler must load with an updated asset version.');
+});
+
+cardViewTest('card and holder fields explicitly disable browser autocomplete', static function () use ($renderer): void {
+    $document = cardViewDocument($renderer->render());
+    $form = $document->query('//form[@id="asaas-card-checkout"]')->item(0);
+    cardViewAssert($form instanceof DOMElement && $form->getAttribute('autocomplete') === 'off', 'The complete payment form must ask the browser not to store or autocomplete values.');
+    $inputs = $document->query('//form[@id="asaas-card-checkout"]//input[not(@type="hidden")]');
+    cardViewAssert($inputs->length === 10, 'Every existing card and holder input must remain present.');
+    foreach ($inputs as $input) {
+        cardViewAssert($input->getAttribute('autocomplete') === 'off', $input->getAttribute('name') . ' must disable autocomplete.');
+    }
+    cardViewAssert(!cardViewField($document, 'csrf_token')->hasAttribute('autocomplete'), 'Hidden CSRF fields must not receive invalid autocomplete on/off tokens.');
 });
 
 cardViewTest('browser constraints accept valid lengths and reject out-of-range card data', static function () use ($renderer): void {
@@ -205,13 +216,18 @@ cardViewTest('messages, safe holder defaults and installment labels are escaped'
     cardViewAssert(cardViewField($document, 'holderName')->getAttribute('value') === '"><img src=x onerror=alert(1)>', 'Safe holder defaults should remain editable text.');
 });
 
-cardViewTest('PAN and CVV are never repopulated from POST or holder defaults', static function () use ($renderer): void {
-    $_POST = ['cardNumber' => 'do-not-render-pan', 'securityCode' => 'do-not-render-cvv'];
+cardViewTest('PAN, expiration and CVV are never repopulated from POST or holder defaults', static function () use ($renderer): void {
+    $_POST = [
+        'cardNumber' => 'do-not-render-pan', 'securityCode' => 'do-not-render-cvv',
+        'expirationMonth' => 'do-not-render-month', 'expirationYear' => 'do-not-render-year',
+    ];
     try {
         $html = $renderer->render('cartao', ['card_holder_defaults' => $_POST]);
         $document = cardViewDocument($html);
         cardViewAssert(!cardViewField($document, 'cardNumber')->hasAttribute('value'), 'PAN must not be populated by the server.');
         cardViewAssert(!cardViewField($document, 'securityCode')->hasAttribute('value'), 'CVV must not be populated by the server.');
+        cardViewAssert(!cardViewField($document, 'expirationMonth')->hasAttribute('value'), 'Expiration month must not be populated by the server.');
+        cardViewAssert(!cardViewField($document, 'expirationYear')->hasAttribute('value'), 'Expiration year must not be populated by the server.');
         cardViewAssert(!str_contains($html, 'do-not-render-'), 'Submitted card data must not appear anywhere in the output.');
     } finally {
         $_POST = [];

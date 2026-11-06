@@ -10,6 +10,18 @@
     var status = document.getElementById('asaas-card-checkout-status');
     var submitting = false;
     var slowTimer = null;
+    var cardFields = ['holderName', 'cardNumber', 'expirationMonth', 'expirationYear', 'securityCode'];
+    var holderFields = ['holderEmail', 'holderDocument', 'holderPostalCode', 'holderAddressNumber', 'holderPhone'];
+
+    function clearFields(ids) {
+        ids.forEach(function (id) {
+            var field = document.getElementById(id);
+            if (field) {
+                field.value = '';
+                field.defaultValue = '';
+            }
+        });
+    }
 
     function showStatus(message) {
         status.textContent = message;
@@ -39,15 +51,30 @@
         }, 60000);
     });
 
+    window.addEventListener('pagehide', function () {
+        // Navigation happens after the browser has serialized a native form POST.
+        // Clear the departing DOM before it can be restored from page history.
+        clearFields(cardFields.concat(holderFields));
+        window.clearTimeout(slowTimer);
+    });
+
     window.addEventListener('pageshow', function (event) {
+        clearFields(cardFields);
         if (!event.persisted) {
+            // Keep only defaults rendered from the existing customer profile.
+            // Do not reuse cardholder values restored by the browser.
+            holderFields.forEach(function (id) {
+                var field = document.getElementById(id);
+                if (field) {
+                    field.value = field.defaultValue;
+                }
+            });
             return;
         }
 
         // A fresh GET lets the server verify the charge before allowing another attempt.
         window.clearTimeout(slowTimer);
-        document.getElementById('cardNumber').value = '';
-        document.getElementById('securityCode').value = '';
+        clearFields(holderFields);
         submitting = true;
         button.disabled = true;
         button.textContent = 'Atualizando pagamento...';

@@ -24,7 +24,7 @@ function db_prefix(): string { return 'tbl'; }
 function get_option(string $name) { return false; }
 function log_message(string $level, string $message): void { $GLOBALS['card_controller_logs'][] = $message; }
 function show_404(): void { ++$GLOBALS['card_controller_not_found']; }
-function redirect(string $url, string $method = 'auto'): void { $GLOBALS['card_controller_redirects'][] = [$url, $method]; }
+function redirect(string $url, string $method = 'auto', ?int $code = null): void { $GLOBALS['card_controller_redirects'][] = [$url, $method, $code]; }
 function site_url(string $path = ''): string { return 'https://crm.example.test/' . ltrim($path, '/'); }
 function set_alert(string $level, string $message): void {}
 function get_invoice_total_left_to_pay($id, $total = null): string
@@ -94,6 +94,15 @@ final class CardControllerSession
     }
     public function set_flashdata(string $key, $value): void { $this->flash[$key] = $value; }
 }
+final class CardControllerOutput
+{
+    public int $cacheMinutes = 60;
+    public bool $profilerEnabled = true;
+    public array $headers = [];
+    public function cache($minutes): self { $this->cacheMinutes = (int) $minutes; return $this; }
+    public function enable_profiler($enabled = true): self { $this->profilerEnabled = (bool) $enabled; return $this; }
+    public function set_header($header, $replace = true): self { $this->headers[] = $header; return $this; }
+}
 final class CardControllerInvoiceModel
 {
     public function get($id): ?object
@@ -131,12 +140,14 @@ final class CardControllerGateway
     public bool $receiptAccepted = true;
     public int $chargeReads = 0;
     public int $qrcodeCalls = 0;
+    public array $globalsAtCapture = [];
     public function __construct() { $this->checkout = new CardControllerCheckout(); }
     public function card_checkout(): CardControllerCheckout { return $this->checkout; }
     public function getSetting(string $name) { return $name === 'installmentCount' ? '3' : '1'; }
     public function getEnvironmentLabel(): string { return 'PRODUCTION'; }
     public function charge_credit_card(array $data): string
     {
+        $this->globalsAtCapture = ['post' => $_POST, 'request' => $_REQUEST];
         $this->charges[] = $data;
         if ($this->chargeError !== null) { throw $this->chargeError; }
         return json_encode($this->chargeResult, JSON_THROW_ON_ERROR);
@@ -163,6 +174,7 @@ class ClientsController
     public object $load;
     public object $input;
     public object $session;
+    public object $output;
     public object $asaas_gateway;
     public object $invoices_model;
     public array $viewData = [];
@@ -170,7 +182,7 @@ class ClientsController
     public int $layouts = 0;
     public function __construct()
     {
-        foreach (['db', 'load', 'input', 'session', 'asaas_gateway', 'invoices_model'] as $name) { $this->$name = get_instance()->$name; }
+        foreach (['db', 'load', 'input', 'session', 'output', 'asaas_gateway', 'invoices_model'] as $name) { $this->$name = get_instance()->$name; }
     }
     public function data(array $data): void { $this->viewData = $data; }
     public function view(string $name): void { $this->viewName = $name; }
@@ -192,6 +204,7 @@ function cardControllerTest(string $name, callable $test): void
 }
 function cardControllerFixture(): array
 {
+    $_POST = $_REQUEST = [];
     $GLOBALS['card_controller_redirects'] = [];
     $GLOBALS['card_controller_not_found'] = 0;
     $GLOBALS['card_controller_logs'] = [];
@@ -199,7 +212,7 @@ function cardControllerFixture(): array
     $db = new CardControllerDatabase();
     $GLOBALS['card_controller_ci'] = (object) [
         'db' => $db, 'asaas_gateway' => $gateway, 'input' => new CardControllerInput(), 'session' => new CardControllerSession(),
-        'invoices_model' => new CardControllerInvoiceModel(),
+        'invoices_model' => new CardControllerInvoiceModel(), 'output' => new CardControllerOutput(),
         'load' => new class { public function library(string $name): void {} public function model(string $name): void {} public function helper(string $name): void {} },
     ];
     return [new Checkout(), $gateway, $db];
@@ -230,6 +243,41 @@ cardControllerTest('unknown card invoice hash returns 404 before any capture', s
     $controller->cartao('unknown-hash');
     cardControllerAssert($GLOBALS['card_controller_not_found'] === 1 && $gateway->charges === [], 'Missing hash must be rejected before card processing.');
     cardControllerAssert($controller->viewName === null && $GLOBALS['card_controller_redirects'] === [], 'Missing invoice must not render checkout or redirect to a fabricated invoice.');
+});
+cardControllerTest('GET, POST and unknown invoice disable cache and profiler', static function (): void {
+    foreach (['get', 'post', 'missing'] as $mode) {
+        [$controller] = cardControllerFixture();
+        if ($mode !== 'get') { $controller->input->posted = cardControllerPost(); }
+        $controller->cartao($mode === 'missing' ? 'unknown-hash' : 'hash-card-controller');
+        cardControllerAssert($controller->output->cacheMinutes === 0, 'Card responses must not enter the framework page cache.');
+        cardControllerAssert(!$controller->output->profilerEnabled, 'Card responses must not render the framework POST profiler.');
+        foreach (['Cache-Control: no-store', 'Pragma: no-cache', 'Expires: 0'] as $header) {
+            cardControllerAssert(in_array($header, $controller->output->headers, true), 'Missing privacy response header: ' . $header);
+        }
+    }
+});
+cardControllerTest('credentials leave request globals before capture or rejection', static function (): void {
+    foreach (['success', 'error', 'disabled', 'missing'] as $mode) {
+        [$controller, $gateway] = cardControllerFixture();
+        $posted = cardControllerPost();
+        $controller->input->posted = $posted;
+        $_POST = $_REQUEST = $posted + ['csrf_fixture' => 'unchanged', 'unrelated_field' => 'keep'];
+        if ($mode === 'error') { $gateway->chargeError = new RuntimeException('Fixture failure'); }
+        if ($mode === 'disabled') { $gateway->checkout->enabled = false; }
+        $controller->cartao($mode === 'missing' ? 'unknown-hash' : 'hash-card-controller');
+        foreach (array_keys($posted) as $field) {
+            if ($field === 'installmentCount') { continue; }
+            cardControllerAssert(!array_key_exists($field, $_POST) && !array_key_exists($field, $_REQUEST), 'Sensitive field remains in globals after ' . $mode . ': ' . $field);
+            if ($gateway->charges !== []) {
+                cardControllerAssert(!array_key_exists($field, $gateway->globalsAtCapture['post']) && !array_key_exists($field, $gateway->globalsAtCapture['request']), 'Sensitive globals must already be gone before the HTTP gateway call.');
+            }
+        }
+        cardControllerAssert($_POST === ['installmentCount' => '2', 'csrf_fixture' => 'unchanged', 'unrelated_field' => 'keep'], 'CSRF, installments and unrelated fields must be preserved.');
+        cardControllerAssert($_REQUEST === $_POST, 'Both request globals must be purged consistently.');
+        if ($mode !== 'missing') {
+            cardControllerAssert($GLOBALS['card_controller_redirects'][0][1] === 'location' && $GLOBALS['card_controller_redirects'][0][2] === 303, 'The card POST must redirect explicitly to a GET with status 303.');
+        }
+    }
 });
 cardControllerTest('disabled card POST cannot invoke the gateway capture', static function (): void {
     [$controller, $gateway] = cardControllerFixture();

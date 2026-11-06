@@ -71,6 +71,10 @@ class Checkout extends ClientsController
 
     public function cartao($hash)
     {
+        $this->protectCardResponse();
+        $hasCardPost = (bool) $this->input->post();
+        // Keep credentials only in the local call; later hooks/profilers must not read them from globals.
+        $card = $hasCardPost ? $this->takeCardInput() : [];
         $this->db->where('hash', $hash);
         $row = $this->db->get(db_prefix() . 'invoices')->row();
         if (!$row) {
@@ -86,24 +90,12 @@ class Checkout extends ClientsController
         $checkout = $this->asaas_gateway->card_checkout();
         $message = (string) $this->session->flashdata('asaas_card_error');
         $info = (string) $this->session->flashdata('asaas_card_info');
-        if ($this->input->post()) {
+        if ($hasCardPost) {
             try {
                 if (!$checkout->available($invoice)) {
                     throw new InvalidArgumentException('O cartão de crédito não está disponível para esta fatura.');
                 }
-                $fields = [
-                    'holderName' => 'holderName', 'number' => 'cardNumber', 'expiryMonth' => 'expirationMonth',
-                    'expiryYear' => 'expirationYear', 'cvv' => 'securityCode', 'installmentCount' => 'installmentCount',
-                    'holderEmail' => 'holderEmail', 'holderDocument' => 'holderDocument',
-                    'holderPostalCode' => 'holderPostalCode', 'holderAddressNumber' => 'holderAddressNumber',
-                    'holderPhone' => 'holderPhone',
-                ];
-                $card = [];
-                foreach ($fields as $field => $posted) {
-                    $card[$field] = $this->input->post($posted, true);
-                }
                 $payment = json_decode($this->asaas_gateway->charge_credit_card(['invoice' => $invoice, 'card' => $card]), true, 512, JSON_THROW_ON_ERROR);
-                unset($card);
                 $this->recordCardResult($invoice, $payment);
                 $info = asaas_card_is_received($payment)
                     ? 'Pagamento confirmado no Asaas. Os recebimentos confirmados foram conciliados com a fatura.'
@@ -116,8 +108,10 @@ class Checkout extends ClientsController
                 asaas_diagnostic_log('error', 'Checkout de cartão precisa de atenção.', ['invoice_id' => (int) $invoice->id, 'exception' => get_class($error)]);
                 $this->session->set_flashdata('asaas_card_error', $error instanceof \Asaas\AsaasCardCheckoutException
                     ? $error->getMessage() : 'Não foi possível concluir o pagamento. Consulte o financeiro antes de repetir.');
+            } finally {
+                unset($card);
             }
-            redirect(site_url('asaas/checkout/cartao/' . $hash), 'refresh');
+            redirect(site_url('asaas/checkout/cartao/' . $hash), 'location', 303);
             return; // PRG prevents browser refresh from resubmitting card credentials.
         }
 
@@ -158,6 +152,38 @@ class Checkout extends ClientsController
         ]);
         $this->view('asaas/cartao');
         $this->layout();
+    }
+
+    private function protectCardResponse(): void
+    {
+        $this->output->cache(0);
+        $this->output->enable_profiler(false);
+        foreach (['Cache-Control: no-store', 'Pragma: no-cache', 'Expires: 0'] as $header) {
+            $this->output->set_header($header);
+            // CI redirect()/show_404() can exit before Output sends its queued headers.
+            if (!headers_sent()) {
+                header($header);
+            }
+        }
+    }
+
+    private function takeCardInput(): array
+    {
+        $fields = [
+            'holderName' => 'holderName', 'number' => 'cardNumber', 'expiryMonth' => 'expirationMonth',
+            'expiryYear' => 'expirationYear', 'cvv' => 'securityCode', 'installmentCount' => 'installmentCount',
+            'holderEmail' => 'holderEmail', 'holderDocument' => 'holderDocument',
+            'holderPostalCode' => 'holderPostalCode', 'holderAddressNumber' => 'holderAddressNumber',
+            'holderPhone' => 'holderPhone',
+        ];
+        $card = [];
+        foreach ($fields as $field => $posted) {
+            $card[$field] = $this->input->post($posted, true);
+            if ($field !== 'installmentCount') {
+                unset($_POST[$posted], $_REQUEST[$posted]);
+            }
+        }
+        return $card;
     }
 
     private function recordCardResult(object $invoice, array $payment): void
