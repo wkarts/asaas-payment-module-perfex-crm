@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Asaas;
 
 require_once __DIR__ . '/../../helpers/asaas_card_helper.php';
+require_once __DIR__ . '/../../helpers/asaas_card_pricing_helper.php';
 require_once __DIR__ . '/../../helpers/asaas_lifecycle_helper.php';
 require_once __DIR__ . '/AsaasCardApi.php';
 require_once __DIR__ . '/AsaasCardCheckoutException.php';
@@ -36,6 +37,50 @@ final class AsaasCardCheckout
             && (string) $this->gateway->getSetting('active') !== '0'
             && in_array('asaas', \asaas_invoice_payment_modes($invoice->allowed_payment_modes ?? []), true)
             && !in_array((int) ($invoice->status ?? 0), [2, 5, 6], true);
+    }
+
+    /** Render only server-calculated offers; no card credentials are involved in this GET. */
+    public function installmentOptions(object $invoice): array
+    {
+        $balance = get_invoice_total_left_to_pay((int) $invoice->id, $invoice->total);
+        if (is_numeric($balance) && (float) $balance <= 0) { return []; }
+        $settings = \asaas_card_pricing_settings($this->gateway);
+        $cached = \asaas_lifecycle_cached_payment(\asaas_lifecycle_map((int) $invoice->id));
+        $existingCount = !empty($cached['installment'])
+            ? (int) ($cached['_asaas_lifecycle']['card_attempt']['installment_count'] ?? 0) : 0;
+        $options = [];
+        for ($count = 1; $count <= $settings['installmentCount']; ++$count) {
+            if ($existingCount > 0 && $count !== $existingCount) { continue; }
+            try {
+                $price = \asaas_card_price($balance, $count, $settings, $this->discount());
+            } catch (\InvalidArgumentException | \RuntimeException $error) {
+                // The configured minimum and the Asaas minimum may remove individual offers.
+                continue;
+            }
+            $total = (int) $price['charged_cents'];
+            $parcel = intdiv($total, $count);
+            $last = $parcel + $total % $count;
+            $format = static fn (int $cents): string => 'R$ ' . number_format($cents / 100, 2, ',', '.');
+            $label = $count === 1 ? 'À vista — ' . $format($total)
+                : $count . 'x ' . ($parcel === $last ? 'de ' : 'a partir de ') . $format($parcel) . ' — total ' . $format($total);
+            if ($count > 12) { $label .= ' (Visa/Mastercard)'; }
+            $options[] = [
+                'count' => $count, 'label' => $label,
+                'principal' => \asaas_card_money($price['principal_cents']),
+                'fee' => \asaas_card_money($price['fee_cents']),
+                'total' => \asaas_card_money($total),
+                'schedule' => $count === 1 ? 'Pagamento à vista.' : ($count - 1) . ' parcela(s) de ' . $format($parcel)
+                    . ' e a última de ' . $format($last) . '.',
+                'quote' => \asaas_card_pricing_token($price, $this->pricingContext($invoice)),
+            ];
+        }
+        return $options;
+    }
+
+    private function pricingContext(object $invoice): string
+    {
+        return json_encode([(string) $invoice->hash, (string) ($invoice->currency ?? ''),
+            (string) ($invoice->clientid ?? ''), (string) ($invoice->duedate ?? ''), $this->discount()], JSON_THROW_ON_ERROR);
     }
 
     /** GETs may reconcile a known attempt, but must never start another card charge. */
@@ -116,11 +161,24 @@ final class AsaasCardCheckout
                 }
                 throw new AsaasCardCheckoutException('Existe uma tentativa de cartão aguardando confirmação. Não repita o pagamento; consulte o financeiro.');
             }
-            $card = \asaas_card_validate_input((array) ($data['card'] ?? []),
-                \asaas_card_max_installments($this->gateway->getSetting('installmentCount')));
+            $settings = \asaas_card_pricing_settings($this->gateway);
+            $card = \asaas_card_validate_input((array) ($data['card'] ?? []), $settings['installmentCount']);
             $balance = \asaas_card_money(\asaas_payment_amount_to_cents(get_invoice_total_left_to_pay($invoiceId, $invoice->total)));
             $count = $card['installmentCount'];
-            $amount = $count === 1 ? ['value' => $balance] : ['installmentCount' => $count, 'totalValue' => $balance];
+            try {
+                $price = \asaas_card_price($balance, $count, $settings, $this->discount());
+            } catch (\InvalidArgumentException $error) {
+                // Preserve the gateway's existing HTTP-400 monetary-validation exception contract.
+                if ((int) $error->getCode() === 400) { throw new \RuntimeException($error->getMessage(), 400); }
+                throw $error;
+            }
+            $quote = $data['card']['quote'] ?? '';
+            if (($price['fee_cents'] > 0 || $quote !== '') && (!is_string($quote)
+                || !hash_equals(\asaas_card_pricing_token($price, $this->pricingContext($invoice)), $quote))) {
+                throw new \InvalidArgumentException('As condições do cartão mudaram ou não foram confirmadas. Confira o total e as parcelas novamente antes de pagar.');
+            }
+            $charged = \asaas_card_money($price['charged_cents']);
+            $amount = $count === 1 ? ['value' => $charged] : ['installmentCount' => $count, 'totalValue' => $charged];
             \asaas_payment_validate_payload(['billingType' => 'CREDIT_CARD', 'discount' => $this->discount()] + $amount);
             $remoteIp = isset($ci->input) ? $ci->input->ip_address() : '';
             if (!is_string($remoteIp) || !filter_var($remoteIp, FILTER_VALIDATE_IP)) {
@@ -140,8 +198,8 @@ final class AsaasCardCheckout
                     }
                     $sum += \asaas_payment_amount_to_cents($charge['originalValue'] ?? $charge['value']);
                 }
-                if (count($charges) !== $count || $sum !== \asaas_payment_amount_to_cents($balance)) {
-                    throw new AsaasCardCheckoutException('Mantenha a quantidade de parcelas do parcelamento existente ou consulte o financeiro.');
+                if (count($charges) !== $count || $sum !== $price['charged_cents']) {
+                    throw new AsaasCardCheckoutException('O parcelamento existente possui outras condições. Consulte o financeiro para conferir o vínculo antes de pagar.');
                 }
                 usort($charges, static fn (array $a, array $b): int => ($a['installmentNumber'] ?? 1) <=> ($b['installmentNumber'] ?? 1));
                 $existingInstallment = true;
@@ -161,7 +219,11 @@ final class AsaasCardCheckout
                 throw new AsaasCardCheckoutException('Não foi possível identificar o cliente da cobrança.');
             }
             $attempt = ['id' => bin2hex(random_bytes(16)), 'state' => 'preparing', 'started_at' => date('c'),
-                'installment_count' => $count, 'amount' => $balance, 'customer_id' => $customerId, 'replaced_ids' => []];
+                'installment_count' => $count, 'amount' => $charged, 'customer_id' => $customerId, 'replaced_ids' => []];
+            if ($price['fee_cents'] > 0) {
+                // The principal/fee split is frozen before capture and never taken from the browser.
+                $attempt['pricing'] = $price;
+            }
             $payment = $previous ?? ['id' => '', 'billingType' => 'CREDIT_CARD', 'externalReference' => $invoice->hash];
             $this->save($invoiceId, $payment, $attempt);
             $removed = false;
@@ -172,11 +234,11 @@ final class AsaasCardCheckout
                 if ($previous !== null && $count === 1) {
                     // Pay the already-linked charge instead of issuing another boleto/card debt.
                     $payment = $this->gateway->update_charge($previous['id'], json_encode([
-                        'billingType' => 'CREDIT_CARD', 'value' => $balance,
+                        'billingType' => 'CREDIT_CARD', 'value' => $charged,
                     ], JSON_THROW_ON_ERROR));
                     $this->checkResponse($invoice, $payment, $customerId);
                     $prepared = true;
-                    if (\asaas_payment_amount_to_cents($payment['originalValue'] ?? $payment['value'] ?? null) !== \asaas_payment_amount_to_cents($balance)
+                    if (\asaas_payment_amount_to_cents($payment['originalValue'] ?? $payment['value'] ?? null) !== $price['charged_cents']
                         || !in_array($payment['status'], ['PENDING', 'OVERDUE'], true)) {
                         throw new AsaasCardCheckoutException('Confira o valor e o estado da cobrança antes de pagar.');
                     }
@@ -234,6 +296,17 @@ final class AsaasCardCheckout
                         $attempt['state'] = 'ambiguous';
                     }
                 }
+                if ($definitive && $attempt['state'] === 'declined' && !$existingInstallment) {
+                    // A restored boleto/Pix must not inherit the failed card's surcharge allocation.
+                    unset($attempt['pricing']);
+                    if ($previous !== null && ($cache['id'] ?? null) === $previous['id']
+                        && isset($cache['_asaas_lifecycle']['card_attempt']['pricing'])) {
+                        $priorAttempt = $cache['_asaas_lifecycle']['card_attempt'];
+                        $attempt['pricing'] = $priorAttempt['pricing'];
+                        $attempt['amount'] = $priorAttempt['amount'];
+                        $attempt['installment_count'] = $priorAttempt['installment_count'];
+                    }
+                }
                 $this->save($invoiceId, $payment, $attempt);
                 \asaas_diagnostic_log('error', 'Tentativa de cartão não concluída.', [
                     'invoice_id' => $invoiceId, 'payment_id' => $payment['id'] ?? '',
@@ -287,7 +360,9 @@ final class AsaasCardCheckout
         if (in_array($payment['status'] ?? '', ['REPROVED_BY_RISK_ANALYSIS'], true)) {
             $attempt['state'] = 'declined';
         }
-        $this->save((int) $invoice->id, $payment, $attempt);
+        if (!array_key_exists('pricing', $attempt)) {
+            $this->save((int) $invoice->id, $payment, $attempt);
+        }
         $receipts = [$payment];
         if (!empty($payment['installment'])) {
             $response = $this->api->listInstallmentPayments((string) $payment['installment']);
@@ -312,6 +387,11 @@ final class AsaasCardCheckout
             if (count($ids) !== $expectedCount || $sum !== $expectedAmount || !in_array($payment['id'], $ids, true)) {
                 throw new AsaasCardCheckoutException('A quantidade ou o total das parcelas precisa de conciliação.');
             }
+        }
+        if (array_key_exists('pricing', $attempt)) {
+            $attempt['pricing'] = \asaas_card_allocate_pricing($attempt['pricing'], $receipts);
+            // Persist the validated allocation before any caller can write a receipt.
+            $this->save((int) $invoice->id, $payment, $attempt);
         }
         $safe = \asaas_card_safe_payload($payment);
         $safe['_asaas_card_receipts'] = array_values(array_filter(array_map('asaas_card_safe_payload', $receipts), 'asaas_card_is_received'));

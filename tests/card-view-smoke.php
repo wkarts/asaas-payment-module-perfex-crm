@@ -281,6 +281,23 @@ cardViewTest('payment selection without a card block preserves all enabled metho
     }
 });
 
+cardViewTest('priced offers disclose charges and preserve acknowledgements without JavaScript', static function () use ($renderer): void {
+    $offers = [
+        ['count' => 1, 'label' => 'À vista — R$ 103,59', 'principal' => '100.00', 'fee' => '3.59', 'total' => '103.59', 'schedule' => 'Pagamento à vista.', 'quote' => str_repeat('a', 64)],
+        ['count' => 3, 'label' => '3x de R$ 34,71 — total R$ 104,13', 'principal' => '100.00', 'fee' => '4.13', 'total' => '104.13', 'schedule' => '2 parcelas de R$ 34,71 e a última de R$ 34,71.', 'quote' => str_repeat('b', 64)],
+    ];
+    $html = $renderer->render('cartao', ['installment_options' => $offers]);
+    $document = cardViewDocument($html);
+    cardViewAssert($document->query('//input[@name="cardQuote[1]" and @value="' . str_repeat('a', 64) . '"]')->length === 1
+        && $document->query('//input[@name="cardQuote[3]" and @value="' . str_repeat('b', 64) . '"]')->length === 1,
+        'Every server offer must carry its own acknowledgement in the native form.');
+    cardViewAssert($document->query('//select[@name="installmentCount"]/option[@data-card-total="104.13" and @data-card-fee="4.13"]')->length === 1,
+        'The browser can display only the server-supplied amount for the selected offer.');
+    cardViewAssert(str_contains($html, '<noscript>') && str_contains($html, 'R$ 103,59') && str_contains($html, 'R$ 3,59'),
+        'The no-JavaScript form must show the total and surcharge before confirmation.');
+    cardViewAssert(strpos($html, 'Como deseja pagar?') < strpos($html, 'id="cardNumber"'), 'The financial offer must appear before entering a card number.');
+});
+
 echo sprintf(
     'Card view: %d scenarios, %d assertions, %d failures.' . PHP_EOL,
     $GLOBALS['card_view_scenarios'],

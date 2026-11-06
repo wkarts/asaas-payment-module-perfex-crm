@@ -140,6 +140,7 @@ ob_start();
     <link rel="stylesheet" href="/_fixture/fixture.css">
     <link rel="stylesheet" href="/_fixture/asaas-settings.css">
     <link rel="stylesheet" href="/_fixture/asaas-monitor.css">
+    <link rel="stylesheet" href="/_fixture/asaas-logs.css">
 </head>
 <body>
 <main class="fixture-page">
@@ -185,7 +186,13 @@ ob_start();
         payload: Array.from(new FormData(form)).sort(function (a, b) { return a[0].localeCompare(b[0]); }),
         other: document.getElementById('online_payments_other_tab').innerHTML,
         shown: [],
+        fetches: [],
         originalListenerCalls: 0
+    };
+    var originalFetch = window.fetch.bind(window);
+    window.fetch = function (resource, options) {
+        window.__asaasFixture.fetches.push({url: String(resource), method: options && options.method || 'GET'});
+        return originalFetch(resource, options);
     };
     originalNodes.find(function (input) { return input.name === 'settings[paymentmethod_asaas_api_key]'; })
         .addEventListener('fixture-original-event', function () { window.__asaasFixture.originalListenerCalls++; });
@@ -195,6 +202,7 @@ ob_start();
 <script src="/_fixture/asaas-settings.js"></script>
 <script src="/_fixture/asaas-webhook-settings.js"></script>
 <script src="/_fixture/asaas-monitor.js"></script>
+<script src="/_fixture/asaas-logs.js"></script>
 </body>
 </html>
 <?php

@@ -1,5 +1,13 @@
 # Changelog
 
+## Não publicado
+
+- Corrige o clique em **Pagar agora** para reapresentar uma cobrança existente, inclusive boleto vencido pagável, sem alterar a fatura ou reenviar vencimento/valor ao Asaas. Remove saídas públicas de debug do gateway.
+- Acrescenta parâmetros de taxas e parcelamento em **Cobranças → Cartão de crédito**, com repasse opcional, mínimo por parcela, faixas de taxas e até 21 parcelas para Visa/Mastercard. A empresa absorve o custo por padrão.
+- Confere o preço apresentado antes da captura e distribui somente o principal entre recibos com repasse, preservando centavos, duplicidade e recuperação por webhook/conciliação.
+- Exibe o diagnóstico completo dentro da guia **Logs**, com leitura administrativa sob demanda e compatibilidade com a rota independente.
+- Diferencia estado da cobrança, confirmação de pagamento e processamento do webhook no monitoramento. Coordena consultas de Logs/Monitoramento com a renovação do CSRF nativo.
+
 ## [1.5.0](https://github.com/wkarts/asaas-payment-module-perfex-crm/compare/v1.4.1...v1.5.0) (2026-02-26)
 
 

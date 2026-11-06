@@ -32,6 +32,7 @@ hooks()->add_action('before_render_payment_gateway_settings', 'asaas_before_rend
 hooks()->add_action('app_admin_footer', 'asaas_settings_tab_footer');
 hooks()->add_filter('before_settings_updated', 'asaas_validate_webhook_settings');
 hooks()->add_filter('before_settings_updated', 'asaas_validate_environment_settings');
+hooks()->add_filter('before_settings_updated', 'asaas_validate_card_settings');
 hooks()->add_action('admin_init', 'asaas_admin_invoice_transaction');
 hooks()->add_filter('before_invoice_added', 'asaas_before_invoice_added');
 hooks()->add_action('after_invoice_added', 'asaas_after_invoice_added');
@@ -94,13 +95,13 @@ function asaas_before_render_payment_gateway_settings($gateway)
 
 function asaas_settings_tab_footer()
 {
-    foreach (['asaas-settings.css', 'asaas-monitor.css'] as $stylesheet) {
+    foreach (['asaas-settings.css', 'asaas-monitor.css', 'asaas-logs.css'] as $stylesheet) {
         $asset = 'assets/css/' . $stylesheet;
         if (is_file(__DIR__ . '/' . $asset)) {
             echo '<link rel="stylesheet" href="' . html_escape(module_dir_url(ASAAS_MODULE_NAME, $asset) . '?v=' . filemtime(__DIR__ . '/' . $asset)) . '">';
         }
     }
-    foreach (['asaas-settings.js', 'asaas-webhook-settings.js', 'asaas-monitor.js'] as $script) {
+    foreach (['asaas-settings.js', 'asaas-webhook-settings.js', 'asaas-monitor.js', 'asaas-logs.js'] as $script) {
         $asset = 'assets/js/' . $script;
         if (is_file(__DIR__ . '/' . $asset)) {
             echo '<script src="' . html_escape(module_dir_url(ASAAS_MODULE_NAME, $asset) . '?v=' . filemtime(__DIR__ . '/' . $asset)) . '"></script>';

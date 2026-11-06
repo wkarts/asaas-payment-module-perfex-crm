@@ -5,17 +5,18 @@ declare(strict_types=1);
 defined('BASEPATH') or exit('No direct script access allowed');
 
 require_once __DIR__ . '/asaas_payment_validation_helper.php';
+require_once __DIR__ . '/asaas_card_receipts_helper.php';
 
 function asaas_card_money(int $cents): string
 {
     return intdiv($cents, 100) . '.' . str_pad((string) ($cents % 100), 2, '0', STR_PAD_LEFT);
 }
 
-/** Use the common limit of all supported brands; never trust the posted select. */
+/** Asaas accepts 21 installments for Visa/Mastercard; the submitted brand is checked below. */
 function asaas_card_max_installments($configured): int
 {
     $count = filter_var($configured, FILTER_VALIDATE_INT);
-    return $count === false ? 1 : max(1, min(12, $count));
+    return $count === false ? 1 : max(1, min(21, $count));
 }
 
 function asaas_card_installment_options($balance, $configured, array $discount = []): array
@@ -56,6 +57,16 @@ function asaas_card_validate_input(array $input, int $maximum): array
     $number = preg_replace('/[ -]/', '', $input['number']);
     if (!preg_match('/^\d{13,19}$/D', $number)) {
         throw new InvalidArgumentException('Informe um número de cartão válido.');
+    }
+    if ($count > 12) {
+        $firstTwo = (int) substr($number, 0, 2);
+        $firstFour = (int) substr($number, 0, 4);
+        $visa = $number[0] === '4';
+        $mastercard = strlen($number) === 16
+            && (($firstTwo >= 51 && $firstTwo <= 55) || ($firstFour >= 2221 && $firstFour <= 2720));
+        if (!$visa && !$mastercard) {
+            throw new InvalidArgumentException('De 13 a 21 parcelas, utilize Visa ou Mastercard. Para as demais bandeiras, selecione até 12 parcelas.');
+        }
     }
     $month = filter_var(ltrim($input['expiryMonth'], '0') ?: '0', FILTER_VALIDATE_INT);
     $year = $input['expiryYear'];
@@ -112,10 +123,15 @@ function asaas_card_is_received(array $payment): bool
     return empty($payment['deleted']) && in_array($payment['status'] ?? '', ['CONFIRMED', 'RECEIVED', 'RECEIVED_IN_CASH'], true);
 }
 
-/** Each confirmed card payment settles only its gross amount, including its own discount. */
-function asaas_card_receipt_amount(array $payment, $balance): string
+/** New priced captures credit their exact principal; legacy discounts retain their original behavior. */
+function asaas_card_receipt_amount(array $payment, $balance, array $cache = []): string
 {
     $cents = asaas_payment_amount_to_cents($balance);
+    $principal = asaas_card_receipt_principal($payment, $cache);
+    if ($principal !== null) {
+        if ($principal > $cents) { throw new AsaasCardReceiptException('balance_mismatch'); }
+        return asaas_card_money($principal);
+    }
     if (($payment['billingType'] ?? '') === 'CREDIT_CARD') {
         $parcel = asaas_payment_amount_to_cents($payment['originalValue'] ?? $payment['value'] ?? null, 'Valor da parcela');
         if ($parcel <= 0) {

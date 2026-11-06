@@ -14,7 +14,7 @@
         var groups = {
             api_key: 'environment', api_key_sandbox: 'environment', sandbox: 'environment',
             show_environment_in_production: 'environment',
-            billet_only: 'payments', card_only: 'payments', pix_only: 'payments', installmentCount: 'payments',
+            billet_only: 'payments', card_only: 'payments', pix_only: 'payments',
             interest_value: 'charges', fine_value: 'charges', discount_type: 'charges', discount_value: 'charges',
             discount_days: 'charges', diasdevencimento: 'charges', disable_charge_notification: 'charges',
             webhook_secret: 'webhook',
@@ -23,6 +23,46 @@
             update_charge: 'sync', ultima_atualizacao_servicos_municipais: 'sync',
             debug: 'logs', file_log_enabled: 'logs'
         };
+        var cardSettings = {
+            installmentCount: 'installments', card_min_installment: 'installments', card_free_installments: 'installments',
+            card_fee_mode: 'fees', card_fee_fixed_mode: 'fees', card_fee_fixed: 'fees',
+            card_fee_percent_1: 'rates', card_fee_percent_2_6: 'rates', card_fee_percent_7_12: 'rates', card_fee_percent_13_21: 'rates'
+        };
+        Object.keys(cardSettings).forEach(function (name) { groups[name] = 'charges'; });
+
+        var cardMaximum = panel.querySelector('input[name="' + prefix + 'installmentCount]"]');
+        var cardFree = panel.querySelector('input[name="' + prefix + 'card_free_installments]"]');
+        var cardDecimals = panel.querySelectorAll('input[data-asaas-card-decimal]');
+        function validateCardSettings() {
+            if (cardMaximum && cardFree) {
+                var maximum = Number(cardMaximum.value);
+                var free = Number(cardFree.value);
+                cardFree.max = maximum >= 1 && maximum <= 21 ? String(maximum) : '21';
+                cardFree.setCustomValidity(free > maximum && maximum >= 1 && maximum <= 21
+                    ? 'As parcelas sem repasse não podem ultrapassar o limite de parcelas do cartão.' : '');
+            }
+            Array.prototype.forEach.call(cardDecimals, function (input) {
+                var value = input.value.trim();
+                var number = Number(value.replace(',', '.'));
+                var kind = input.getAttribute('data-asaas-card-decimal');
+                var message = '';
+                if (!/^(?:[0-9]+(?:[.,][0-9]{1,2})?|[.,][0-9]{1,2})$/.test(value) || !Number.isFinite(number)) {
+                    message = 'Informe um valor não negativo, com até duas casas decimais.';
+                } else if (kind === 'percentage' && number > 99) {
+                    message = 'O percentual deve estar entre 0% e 99%.';
+                } else if (kind === 'fixed' && number > 100000) {
+                    message = 'A taxa fixa não pode ultrapassar R$ 100.000,00.';
+                } else if (kind === 'minimum' && number < 5) {
+                    message = 'O valor mínimo da parcela deve ser de pelo menos R$ 5,00.';
+                }
+                input.setCustomValidity(message);
+            });
+        }
+        Object.keys(cardSettings).forEach(function (name) {
+            var input = panel.querySelector('input[name="' + prefix + name + ']"]');
+            if (input) { input.addEventListener('input', validateCardSettings); input.addEventListener('change', validateCardSettings); }
+        });
+        validateCardSettings();
 
         function setSecretVisible(secret, visible) {
             secret.input.type = visible ? 'text' : 'password';
@@ -104,7 +144,10 @@
         var form = panel.closest('form');
         if (form) {
             form.addEventListener('submit', maskSecrets, true);
-            form.addEventListener('reset', maskSecrets);
+            form.addEventListener('reset', function () {
+                maskSecrets();
+                window.setTimeout(validateCardSettings, 0);
+            });
         }
         if (!layout || !panel.contains(layout)) {
             return;
@@ -119,6 +162,18 @@
             return;
         }
 
+        var chargeTabs = Array.prototype.slice.call(layout.querySelectorAll('[data-asaas-charges-group]'));
+        var chargePanes = Object.create(null);
+        var cardSections = Object.create(null);
+        Array.prototype.forEach.call(layout.querySelectorAll('[data-asaas-charges-panel]'), function (pane) {
+            chargePanes[pane.getAttribute('data-asaas-charges-panel')] = pane;
+        });
+        Array.prototype.forEach.call(layout.querySelectorAll('[data-asaas-card-section]'), function (section) {
+            cardSections[section.getAttribute('data-asaas-card-section')] = section;
+        });
+        var chargeLayout = chargeTabs.length === 2 && chargePanes.general && chargePanes.card
+            && cardSections.installments && cardSections.fees && cardSections.rates;
+
         // Move the real controls and their following help blocks, never duplicate a form field.
         var roots = new Map();
         var compatible = true;
@@ -127,13 +182,15 @@
             var match = /^settings\[paymentmethod_asaas_([^\]]+)\]$/.exec(input.name);
             if (!match) { return; }
             var group = Object.prototype.hasOwnProperty.call(groups, match[1]) ? groups[match[1]] : 'general';
+            var destination = group === 'charges' && chargeLayout
+                ? (Object.prototype.hasOwnProperty.call(cardSettings, match[1]) ? match[1] : 'charges-general') : group;
             var root = input;
             while (root.parentElement && root.parentElement !== panel) { root = root.parentElement; }
-            if (root.parentElement !== panel || !panes[group] || (roots.has(root) && roots.get(root) !== group)) {
+            if (root.parentElement !== panel || !panes[group] || (roots.has(root) && roots.get(root).destination !== destination)) {
                 compatible = false;
                 return;
             }
-            roots.set(root, group);
+            roots.set(root, {group: group, destination: destination});
         });
         // An unrecognized core renderer keeps its working flat form instead of hiding controls.
         if (!compatible || roots.size === 0) {
@@ -143,12 +200,70 @@
         var target = null;
         children.forEach(function (node) {
             if (node === layout) { return; }
-            if (roots.has(node)) { target = panes[roots.get(node)]; }
+            if (roots.has(node)) {
+                var descriptor = roots.get(node);
+                target = panes[descriptor.group];
+                if (descriptor.destination === 'charges-general') {
+                    target = chargePanes.general;
+                } else if (Object.prototype.hasOwnProperty.call(cardSettings, descriptor.destination)) {
+                    target = document.createElement('div');
+                    target.className = 'asaas-card-setting';
+                    cardSections[cardSettings[descriptor.destination]].appendChild(target);
+                }
+            }
             if (target) { target.appendChild(node); }
         });
         // The native renderer places its opening separator after the pre-render hook.
         var separator = layout.nextElementSibling;
         if (separator && separator.tagName === 'HR') { panel.insertBefore(separator, layout); }
+
+        // Perfex guarantees input/yes_no/textarea settings. Enhance new enum inputs
+        // without replacing their nodes or adding another named form control.
+        var enumSelectors = [];
+        [
+            ['card_fee_mode', [['absorb', 'Absorver as taxas'], ['customer', 'Repassar as taxas ao cliente']]],
+            ['card_fee_fixed_mode', [['charge', 'Uma vez por cobrança'], ['installment', 'Em cada parcela']]]
+        ].forEach(function (definition) {
+            var input = panel.querySelector('input[name="' + prefix + definition[0] + ']"]');
+            if (!input || !input.parentElement) { return; }
+            var select = document.createElement('select');
+            var initialValue = input.defaultValue;
+            select.id = 'asaas-card-setting-' + definition[0];
+            select.className = 'form-control';
+            select.required = true;
+            select.disabled = input.disabled;
+            select.setAttribute('data-asaas-card-enum', definition[0]);
+            [['', 'Selecione uma opção']].concat(definition[1]).forEach(function (choice) {
+                var option = document.createElement('option');
+                option.value = choice[0];
+                option.textContent = choice[1];
+                select.appendChild(option);
+            });
+            select.value = input.value;
+            Array.prototype.forEach.call(panel.querySelectorAll('label[for]'), function (label) {
+                if (label.getAttribute('for') === input.id) { label.htmlFor = select.id; }
+            });
+            input.insertAdjacentElement('afterend', select);
+            input.type = 'hidden';
+            select.addEventListener('change', function () {
+                input.value = select.value;
+                input.dispatchEvent(new Event('input', {bubbles: true}));
+                input.dispatchEvent(new Event('change', {bubbles: true}));
+            });
+            var fallback = panel.querySelector('[data-asaas-card-enum-fallback="' + definition[0] + '"]');
+            if (fallback) { fallback.hidden = true; }
+            enumSelectors.push({input: input, select: select, initialValue: initialValue});
+        });
+        if (form) {
+            form.addEventListener('reset', function () {
+                window.setTimeout(function () {
+                    enumSelectors.forEach(function (field) {
+                        field.input.value = field.initialValue;
+                        field.select.value = field.input.value;
+                    });
+                }, 0);
+            });
+        }
 
         var navigation = layout.querySelector('.asaas-settings-navigation');
         var scrollArea = layout.querySelector('.asaas-settings-tab-scroll');
@@ -206,6 +321,44 @@
             return true;
         }
 
+        function activateChargesGroup(group, focusTab) {
+            if (!chargeLayout || !chargePanes[group]) { return; }
+            chargeTabs.forEach(function (tab) {
+                var selected = tab.getAttribute('data-asaas-charges-group') === group;
+                tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+                tab.setAttribute('tabindex', selected ? '0' : '-1');
+                tab.parentElement.classList.toggle('active', selected);
+                if (selected && focusTab) {
+                    tab.focus();
+                    if (typeof tab.scrollIntoView === 'function') { tab.scrollIntoView({block: 'nearest', inline: 'nearest'}); }
+                }
+            });
+            Object.keys(chargePanes).forEach(function (name) {
+                chargePanes[name].hidden = name !== group;
+                chargePanes[name].classList.toggle('active', name === group);
+            });
+        }
+
+        chargeTabs.forEach(function (tab, index) {
+            tab.addEventListener('click', function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                activateChargesGroup(tab.getAttribute('data-asaas-charges-group'), false);
+            });
+            tab.addEventListener('keydown', function (event) {
+                var targetIndex;
+                if (event.key === 'ArrowRight') { targetIndex = (index + 1) % chargeTabs.length; }
+                else if (event.key === 'ArrowLeft') { targetIndex = (index + chargeTabs.length - 1) % chargeTabs.length; }
+                else if (event.key === 'Home') { targetIndex = 0; }
+                else if (event.key === 'End') { targetIndex = chargeTabs.length - 1; }
+                else if (event.key === ' ' || event.key === 'Enter') { targetIndex = index; }
+                else { return; }
+                event.preventDefault();
+                event.stopPropagation();
+                activateChargesGroup(chargeTabs[targetIndex].getAttribute('data-asaas-charges-group'), true);
+            });
+        });
+
         tabs.forEach(function (tab, index) {
             tab.addEventListener('click', function (event) {
                 event.preventDefault();
@@ -229,6 +382,9 @@
         document.addEventListener('asaas:settings:show', function (event) {
             if (event.detail && typeof event.detail.group === 'string') {
                 activateGroup(event.detail.group, false, true);
+                if (event.detail.group === 'charges' && typeof event.detail.chargesGroup === 'string') {
+                    activateChargesGroup(event.detail.chargesGroup, false);
+                }
             }
         });
         var firstInvalid = null;
@@ -243,6 +399,8 @@
                 }
                 firstInvalid = event.target;
                 activateGroup(pane.getAttribute('data-asaas-settings-panel'), false, true);
+                var chargePane = event.target.closest('[data-asaas-charges-panel]');
+                if (chargePane) { activateChargesGroup(chargePane.getAttribute('data-asaas-charges-panel'), false); }
                 window.setTimeout(function () { firstInvalid = null; }, 0);
             }, true);
         }

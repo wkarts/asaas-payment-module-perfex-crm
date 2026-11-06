@@ -12,7 +12,7 @@ Como administrador, abra **Configurações → Meios de pagamento → Asaas**. A
 | Cobranças | Vencimento, juros, multa, descontos e notificações. |
 | Webhook | Token, geração/cópia e endereço completo do callback. |
 | Sincronização | Ciclo das faturas, quitação manual e conciliação pelo CRON. |
-| Logs | Diagnóstico detalhado, log em arquivo e acesso ao visualizador existente. |
+| Logs | Opções de diagnóstico e visualizador completo dos registros na própria subguia, incluindo estado e localização do arquivo. |
 | Monitoramento | Histórico, comparação e conciliação de recebimentos. |
 
 O botão **Salvar** continua sendo o botão do CRM. Os campos originais são movidos para as subguias; nomes, valores, eventos e regras de gravação são preservados. Campos futuros não reconhecidos ficam em Geral. Se o JavaScript não reconhecer o layout nativo, mantém o formulário plano disponível.
@@ -27,6 +27,12 @@ As chaves de API e o token do webhook iniciam mascarados. Cada botão **Exibir**
 
 Ao gerar ou alterar o token, salve no CRM e configure o mesmo `authToken` no Asaas. A geração não modifica o webhook remotamente. Consulte [WEBHOOK.md](WEBHOOK.md).
 
+## Logs dentro das configurações
+
+A subguia **Logs** carrega o relatório de diagnóstico abaixo das opções nativas, sem navegar para outra página. **Atualizar registros de log** consulta novamente os últimos 100 registros e informa a origem dos dados, o estado do banco, o caminho do arquivo do dia e a permissão de escrita. A contingência pelo arquivo do dia continua disponível quando a consulta ao banco falha. As configurações exibidas no relatório refletem o que já foi salvo; alterar um rádio ainda não enviado não muda o estado efetivo do logger.
+
+A leitura é administrativa, sob demanda, sem inicializar a SDK nem fazer chamadas ao Asaas. A rota antiga permanece disponível para links existentes e como fallback sem JavaScript. Não há formulário adicional nem alteração de credenciais para consultar o diagnóstico. Consulte [DIAGNOSTICO.md](DIAGNOSTICO.md).
+
 ## Histórico disponível
 
 Monitoramento carrega dados somente quando a subguia é aberta. As listas consultam o banco local, com paginação e filtros. Abrir a tela ou clicar em **Atualizar registros** não faz consultas ao Asaas.
@@ -35,7 +41,22 @@ Monitoramento carrega dados somente quando a subguia é aberta. As listas consul
 - **Webhooks:** identificador e tipo do evento, cobrança, fatura, recebimento, processamento e diagnóstico disponível.
 - **API e conciliações:** mensagens sanitizadas e metadados permitidos, filtrados por nível e origem.
 
-O estado exibido na coluna Asaas é o último estado local registrado. Use **Comparar** para consultar o estado atual. **Possíveis divergências** filtra faturas ainda abertas cujo histórico local indica recebimento confirmado; esse filtro não substitui uma consulta atual à API.
+O estado exibido na coluna **Pagamento no Asaas** é o último estado local registrado. Use **Comparar** para consultar o estado atual. **Possíveis divergências** filtra faturas ainda abertas cujo histórico local indica recebimento confirmado; esse filtro não substitui uma consulta atual à API.
+
+### Como saber se houve pagamento
+
+**Situação no CRM** filtra a situação local da fatura. Estar em aberto não prova, por si só, se o cliente pagou no Asaas. A coluna de pagamento distingue:
+
+| Indicação | Significado no último estado conhecido |
+| --- | --- |
+| Sem confirmação de pagamento | Cobrança pendente, vencida ou com negativação solicitada; esse estado não confirma recebimento. |
+| Recebimento confirmado | Estado `CONFIRMED`, `RECEIVED` ou `RECEIVED_IN_CASH`; pode se referir a uma parcela e não comprova quitação integral da fatura. |
+| Somente autorizado | Cartão autorizado; autorização não é recebimento confirmado. |
+| Pagamento em análise | A análise de risco ainda está pendente. |
+| Pagamento estornado / cobrança excluída | O último estado exige observar o estorno ou encerramento; não é destacado como recebimento confirmado. |
+| Situação a conferir | Ausência de informação ou estado diferente dos reconhecidos; consulte a cobrança. |
+
+**Evento: Processado** significa que uma notificação foi tratada. Eventos de criação, alteração e vencimento também podem ser processados sem pagamento. Para conferir uma fatura, clique **Comparar** e leia o resultado e o valor confirmado retornados na consulta. Se continuar pendente, nenhum recebimento é acrescentado. Os rótulos não modificam os critérios financeiros existentes, os filtros ou as ações.
 
 Entregas recusadas antes de processar o evento, como token inválido, aparecem nos diagnósticos de origem **Webhook**. O callback também registra o resultado quando a transação de processamento falha e desfaz a linha do evento. O resumo separa falhas de entrega e erros de processamento persistidos para evitar somá-los como se fossem eventos diferentes.
 
@@ -71,9 +92,15 @@ Em **Sincronização**, configure:
 
 O módulo usa o hook `after_cron_run` do CRON nativo do Perfex. Não é necessário criar outro endpoint público ou um agendamento externo para o módulo. O CRON do próprio CRM precisa estar configurado e funcionando.
 
+Habilitar essa opção executa **conciliação**, e não apenas uma listagem de possíveis divergências: a rotina consulta as cobranças elegíveis, valida os dados e registra automaticamente os recebimentos confirmados que faltam no CRM. Uma cobrança ainda pendente permanece aberta. Os recebimentos já registrados são reconhecidos pelo identificador para evitar duplicidade. O webhook continua independente dessa opção.
+
+Não há garantia de ausência de erros externos. Falhas de API, credenciais, vínculo ou valores são registradas para conferência; não são tratadas como confirmação de pagamento. Uma falha depois de iniciar a gravação pode exigir conferir o recibo efetivamente persistido, conforme o resultado indicado no histórico.
+
 A rotina processa faturas vinculadas e abertas, usa um cursor para continuar de onde parou e impede duas execuções automáticas simultâneas com um bloqueio no banco. Há intervalo mínimo de cinco minutos entre execuções automáticas e trinta minutos entre consultas bem-sucedidas da mesma fatura. O processamento respeita o limite configurado e verifica um orçamento de 45 segundos antes de iniciar a próxima fatura. Uma consulta já iniciada pode ultrapassar esse orçamento até o timeout do cliente HTTP existente; ela não é interrompida no meio.
 
 O painel mostra a última execução, suas contagens e se restaram itens para as próximas rodadas. A janela do CRON não limita a comparação manual, que pode ser usada para conferir faturas antigas. Se houver erro na rotina opcional, o diagnóstico é registrado sem interromper as demais atividades do CRON do CRM.
+
+A janela considera **emissão ou vencimento**, não a data de pagamento. Uma fatura emitida e vencida há 90 dias, paga hoje, não é selecionada pela janela de 7 dias; seu webhook e a consulta manual continuam disponíveis. O cursor continua a partir das candidatas elegíveis, sem ampliar automaticamente a janela para todo o histórico.
 
 ## Desempenho e armazenamento
 

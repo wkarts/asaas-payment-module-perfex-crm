@@ -6,7 +6,7 @@ Em **Configurações → Meios de pagamento → Asaas**:
 
 1. Configure a chave da conta e selecione o ambiente apropriado.
 2. Ative **Habilitar cartão de crédito**. As configurações já salvas de boleto, Pix e cartão são preservadas pela atualização.
-3. Informe **Limite de parcelas no cartão (1 a 12)**. A seleção apresentada ao cliente considera o saldo restante, o desconto configurado e o mínimo por parcela. À vista não envia campos de parcelamento à API; parcelado envia `installmentCount` e `totalValue`, evitando a perda de centavos por multiplicação de parcelas arredondadas.
+3. Em **Cobranças → Cartão de crédito**, configure o limite de **1 a 21 parcelas**, o mínimo por parcela, as faixas de taxas e quem absorve o custo. Acima de 12 parcelas, o servidor aceita apenas Visa e Mastercard. À vista não envia campos de parcelamento à API; parcelado envia `installmentCount` e `totalValue`, evitando perda de centavos por multiplicação de parcelas arredondadas.
 4. Configure **Exibir o ambiente em produção na área de pagamentos**. **Não** é o padrão e oculta a faixa em produção. **Sim** mostra a faixa. Em sandbox, o aviso aparece nas páginas de seleção, Pix e cartão para identificar pagamentos de teste. A opção não troca o ambiente da API.
 5. Confira a URL e o token do webhook. Mantenha pelo menos os eventos `PAYMENT_CONFIRMED` e `PAYMENT_RECEIVED` habilitados.
 
@@ -15,6 +15,38 @@ O checkout de cartão requer HTTPS. O servidor apura o IP do pagador pelo mecani
 A validação de valor mínimo também ocorre antes de salvar uma nova fatura que permite Asaas quando boleto está desabilitado e o pagamento será por cartão/Pix. Rascunhos e faturas que não usam Asaas mantêm o comportamento anterior. A criação automática de boleto continua obedecendo à sua própria configuração.
 
 O formulário solicita nome, número, validade e CVV do cartão, além de e-mail, CPF/CNPJ, CEP, número do endereço e telefone do titular. Os dados do titular atendem à autorização do cartão; não alteram as preferências nem o cadastro de e-mail/telefone do cliente no CRM ou no Asaas.
+
+### Taxas, repasse e parcelamento
+
+As novas opções são aditivas. **Absorver as taxas** é o padrão: o cliente continua pagando o valor da cobrança, sem acréscimo do módulo. As taxas efetivamente descontadas pelo Asaas dependem do contrato da conta; os campos abaixo configuram a precificação do módulo, não alteram o contrato com o Asaas.
+
+| Parâmetro | Comportamento |
+|---|---|
+| Limite de parcelas | De 1 a 21; 1 oferece somente pagamento à vista. Visa/Mastercard permitem até 21; outras bandeiras ficam limitadas a 12. |
+| Valor mínimo da parcela | Padrão R$ 5,00. O módulo verifica o mínimo líquido, considerando o desconto configurado; o limite administrativo aplica-se ao parcelamento. À vista continua sujeito ao mínimo da API. |
+| Quem absorve as taxas | Empresa: sem acréscimo. Cliente: acrescenta o encargo calculado e mostra o total antes da confirmação. |
+| Parcelas sem repasse | Até a quantidade informada, a empresa absorve o custo. Zero significa que não há faixa de isenção adicional. |
+| Percentuais por faixa | À vista, 2–6, 7–12 e 13–21 parcelas. Aceitam ponto ou vírgula, até duas casas decimais. |
+| Taxa fixa | Valor configurável, aplicado uma vez por cobrança ou por parcela, conforme a opção escolhida. |
+
+Os valores iniciais de referência são **2,99%, 3,49%, 3,99%, 4,29% e R$ 0,49**, conforme o exemplo fornecido para esta implementação. Confirme e ajuste as condições da conta antes de habilitar o repasse. A escolha inicial da taxa fixa é uma vez por cobrança; se o contrato cobra o fixo em cada parcela, selecione essa modalidade. A configuração não consulta nem promete automaticamente a tarifa vigente na conta.
+
+Para repassar, o cálculo nominal é:
+
+```text
+total no cartão = arredondar para cima em centavos((saldo da fatura + fixo total) / (1 - percentual / 100))
+encargo repassado = total no cartão - saldo da fatura
+```
+
+Exemplo: saldo **R$ 100,00**, taxa **2,99% + R$ 0,49**, uma cobrança: total **R$ 103,59**, encargo **R$ 3,59**. O cálculo usa aritmética inteira, inclusive para limites e arredondamento. As regras de desconto do Asaas são preservadas no payload: os valores apresentados são nominais, antes desses descontos adicionais quando elegíveis. Um desconto percentual incide sobre o valor enviado à cobrança, como no contrato anterior; o custo líquido final não é garantido por essa estimativa.
+
+O checkout apresenta o saldo, o encargo, o total e a distribuição das parcelas antes do cartão. O backend recalcula a oferta sob o lock da fatura; se saldo, taxa, parcelas ou condições mudarem desde a apresentação, a tentativa é recusada antes de alterar ou capturar uma cobrança. O formulário também leva o comprovante da oferta selecionada sem depender de JavaScript. Esses hashes representam somente condições financeiras, não são tokens reutilizáveis de cartão.
+
+O repasse **não altera `invoice.total`, itens, impostos, vencimento, boleto ou Pix**. Antes da captura, a tentativa guarda a composição financeira. Após validar todos os IDs, cliente, referência, quantidade e soma das parcelas, o módulo distribui o principal entre elas proporcionalmente, com ajuste determinístico dos centavos. Checkout, webhook e conciliação usam a mesma distribuição. Uma parcela confirma apenas sua parte do principal, e a nota do recibo informa principal, encargo e bruto nominal. O custo do cartão não vira principal adicional nem uma quitação antecipada da fatura. Isso não cria automaticamente um lançamento contábil de despesa; os valores da composição permanecem disponíveis na tentativa e na nota do recebimento.
+
+Configurações posteriores não recalculam uma tentativa já capturada. Uma distribuição incompleta, um valor divergente ou um saldo alterado bloqueia a baixa para conferência. Na primeira entrega de um webhook após captura incerta, se faltar a distribuição, o módulo tenta recuperá-la por consultas ao Asaas antes de iniciar a transação do recebimento. Uma falha retorna erro para nova entrega; não confirma processamento sem validar a baixa.
+
+O recebimento de cartão de débito direto não foi acrescentado ao formulário: a API documenta o débito pelo checkout hospedado do Asaas. Os parâmetros acima são de **crédito**.
 
 ## Privacidade dos dados do cartão
 
@@ -61,7 +93,7 @@ Se a raiz do Perfex tiver carregado outra SDK anteriormente, o módulo verifica 
 | Falha na preparação da SDK antes do envio | Libera a tentativa para correção da configuração; nenhuma captura foi enviada. |
 | Timeout, resposta ilegível ou resultado incerto | Guarda a tentativa e consulta seu resultado; não repete captura automaticamente nem habilita outro meio de pagamento. |
 | `AUTHORIZED`, `PENDING` ou análise de risco | Mantém acompanhamento sem dar baixa. |
-| `CONFIRMED` ou `RECEIVED` | Registra somente o valor bruto confirmado, limitado ao saldo local. Parcelas têm IDs e recebimentos próprios. |
+| `CONFIRMED` ou `RECEIVED` | Sem repasse, preserva o recebimento existente. Com repasse, registra exatamente o principal alocado à parcela, com conferência do saldo. Parcelas têm IDs e recebimentos próprios. |
 | Mesmo pagamento entregue por dois eventos | Deduplica por fatura e ID Asaas, preservando a proteção transacional existente. |
 
 Na listagem do parcelamento, o módulo exige a quantidade prevista, IDs distintos, o ID retornado na captura, o mesmo grupo/cliente/referência e a soma correspondente ao valor contratado. Uma inconsistência mantém a operação em conciliação; não presume quitação integral.
@@ -72,7 +104,7 @@ O transporte das mutações de cartão utiliza timeout de **90 segundos**, sem r
 
 Uma transação de banco não pode desfazer uma captura já realizada pelo Asaas. Por isso, antes do POST de captura, o módulo persiste o identificador da tentativa, a cobrança, o valor e o estado de acompanhamento. Essa marca permanece depois de timeout ou interrupção do PHP.
 
-Em **Ver logs da integração**, procure pelo ID da fatura, pelo ID da cobrança, pelo identificador da tentativa e pelo código HTTP. Os logs de transporte incluem um ID de correlação. Não persistimos PAN, CVV, objeto do titular ou token reutilizável de cartão no mapa, nos eventos de webhook ou no diagnóstico desse fluxo.
+Em **Meios de pagamento → Asaas → Logs**, procure pelo ID da fatura, pelo ID da cobrança, pelo identificador da tentativa e pelo código HTTP. A consulta está na própria guia; a rota independente continua disponível como alternativa. Os logs de transporte incluem um ID de correlação. Não persistimos PAN, CVV, objeto do titular ou token reutilizável de cartão no mapa, nos eventos de webhook ou no diagnóstico desse fluxo.
 
 Quando o pagador abre **Acompanhar pagamento por cartão**, são feitas consultas ao Asaas e conciliação dos recebimentos confirmados, sem reenviar o cartão. O webhook continua sendo o mecanismo assíncrono de confirmação.
 
@@ -90,11 +122,15 @@ Os testes de privacidade verificam sanitização de dados aninhados/aliases, pre
 
 Para rollback do código, restaure a pasta anterior completa, inclusive o vendor. Antes disso, concilie tentativas de cartão pendentes; versões anteriores não conhecem a marca que impede repetir uma captura incerta. Os dados e IDs das tentativas não devem ser apagados para forçar uma nova cobrança.
 
+**Rollback com repasse ativo:** desative novas ofertas com repasse e conclua a conciliação de todas as parcelas já criadas antes de voltar a uma versão sem essa distribuição de principal. Versões anteriores podem interpretar o bruto como valor da fatura. Restaurar apenas arquivos não desfaz uma captura no Asaas, e apagar o mapa não é um procedimento de rollback.
+
 ## Referências
 
 - [Criar cobrança com cartão](https://docs.asaas.com/reference/criar-cobranca-com-cartao-de-credito)
 - [Pagar cobrança existente com cartão de crédito](https://docs.asaas.com/reference/pagar-uma-cobranca-com-cartao-de-credito)
 - [Guia de cobranças por cartão](https://docs.asaas.com/docs/cobrancas-via-cartao-de-credito)
+- [Parcelamento e limites por bandeira](https://docs.asaas.com/docs/criar-uma-cobranca-parcelada)
+- [Consultar as taxas da conta](https://docs.asaas.com/reference/recuperar-taxas-da-conta)
 - [SDK 0.2.64](https://github.com/wkarts/asaas-sdk-argws/releases/tag/v0.2.64)
 - [Atributo autocomplete — MDN](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Attributes/autocomplete)
 - [Cache-Control — MDN](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control)

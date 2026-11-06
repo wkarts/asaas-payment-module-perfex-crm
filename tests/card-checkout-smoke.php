@@ -133,7 +133,7 @@ final class CardCheckoutGateway
     public int $mapWrites = 0;
     public ?int $failMapWrite = null;
 
-    public function getSetting(string $name) { return $this->settings[$name] ?? '0'; }
+    public function getSetting(string $name) { return $this->settings[$name] ?? ''; }
     public function get_charge2(string $hash): array
     {
         $GLOBALS['card_checkout_trace'][] = ['list', $hash];
@@ -327,7 +327,7 @@ foreach ([['installmentCount' => '13'], ['installmentCount' => '0'], ['number' =
 cardCheckoutTest('configured installment ceiling cannot be exceeded', static function (): void {
     [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture([], ['installmentCount' => '3']);
     cardCheckoutThrows(static fn () => $service->pay(cardCheckoutData($invoice, ['installmentCount' => '4'])), 'parcelas');
-    cardCheckoutAssert($api->posts === [] && asaas_card_max_installments(100) === 12, 'Posted count and configured maximum must remain bounded.');
+    cardCheckoutAssert($api->posts === [] && asaas_card_max_installments(100) === 21, 'Posted count and configured maximum must remain bounded.');
 });
 foreach ([['5.00', '1', true], ['10.00', '2', true], ['60.00', '12', true], ['4.99', '1', false], ['9.99', '2', false]] as [$balance, $count, $accepted]) {
     cardCheckoutTest('minimum value balance=' . $balance . ' count=' . $count, static function () use ($balance, $count, $accepted): void {
@@ -552,6 +552,77 @@ cardCheckoutTest('outer native transaction prevents a card request before any si
     try { cardCheckoutThrows(static fn () => $service->pay(cardCheckoutData($invoice)), 'Conclua a alteração'); }
     finally { $db->_trans_depth = 0; }
     cardCheckoutAssert($api->posts === [] && $db->cache() === [] && $GLOBALS['card_checkout_trace'] === [], 'Outer transaction must reject before map or remote changes.');
+});
+
+cardCheckoutTest('priced offers disclose server total and respect configured minimum', static function (): void {
+    [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture([], ['installmentCount' => '21', 'card_min_installment' => '25.00']);
+    $offers = $service->installmentOptions($invoice);
+    cardCheckoutAssert(array_column($offers, 'count') === [1, 2, 3, 4], 'The minimum must restrict offers without an API request.');
+    cardCheckoutAssert($offers[0]['total'] === '100.00' && $offers[0]['fee'] === '0.00'
+        && strlen($offers[0]['quote']) === 64, 'Absorbed fees keep the invoice amount and produce a price acknowledgement.');
+    cardCheckoutAssert($api->posts === [] && $GLOBALS['card_checkout_trace'] === [], 'Rendering prices must not create or alter a remote charge.');
+});
+foreach (['missing', 'changed', 'tampered'] as $mode) {
+    cardCheckoutTest('surcharge acknowledgement rejects ' . $mode . ' before remote changes', static function () use ($mode): void {
+        [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture([], ['card_fee_mode' => 'customer']);
+        $offer = $service->installmentOptions($invoice)[0];
+        $quote = $mode === 'missing' ? '' : ($mode === 'tampered' ? str_repeat('a', 64) : $offer['quote']);
+        if ($mode === 'changed') { $gateway->settings['card_fee_percent_1'] = '4.00'; }
+        cardCheckoutThrows(static fn () => $service->pay(cardCheckoutData($invoice, ['quote' => $quote])), 'condições');
+        cardCheckoutAssert($api->posts === [] && $db->cache() === [] && $GLOBALS['card_checkout_trace'] === [], 'Unaccepted conditions cannot reach lookup, capture or a durable attempt.');
+    });
+}
+cardCheckoutTest('accepted surcharge captures gross and allocates only the invoice principal', static function (): void {
+    [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture([], ['card_fee_mode' => 'customer']);
+    $offer = $service->installmentOptions($invoice)[0];
+    $payment = $service->pay(cardCheckoutData($invoice, ['quote' => $offer['quote']]));
+    $cache = $db->cache();
+    cardCheckoutAssert($offer['total'] === '103.59' && $offer['fee'] === '3.59', 'The configured rate and fixed fee must be included in the accepted total.');
+    cardCheckoutAssert($api->posts[0]['payload']['value'] === $offer['total'], 'The server must capture exactly the acknowledged nominal amount.');
+    cardCheckoutAssert(asaas_card_receipt_amount($payment, '100.00', $cache) === '100.00', 'Fees must never become additional invoice principal.');
+    cardCheckoutAssert(str_contains(asaas_card_receipt_note($payment, $cache), '3,59'), 'The native receipt note must explain the surcharge.');
+    cardCheckoutThrows(static fn () => asaas_card_receipt_amount($payment, '99.99', $cache), 'saldo');
+    $json = json_encode($cache, JSON_THROW_ON_ERROR);
+    cardCheckoutAssert(!str_contains($json, '4111') && !str_contains($json, 'holder@example.test') && !str_contains($json, '937'), 'The frozen pricing metadata cannot contain card or cardholder credentials.');
+});
+cardCheckoutTest('priced installments preserve cent totals and do not settle principal early', static function (): void {
+    [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture([], ['card_fee_mode' => 'customer']);
+    $offers = array_column($service->installmentOptions($invoice), null, 'count');
+    $payment = $service->pay(cardCheckoutData($invoice, ['installmentCount' => '3', 'quote' => $offers[3]['quote']]));
+    $cache = $db->cache();
+    $allocation = $cache['_asaas_lifecycle']['card_attempt']['pricing']['allocations'];
+    cardCheckoutAssert(array_sum(array_column($allocation, 'principal_cents')) === 10000, 'The complete installment allocation must equal the exact outstanding principal.');
+    cardCheckoutAssert(array_sum(array_column($allocation, 'gross_cents')) === asaas_payment_amount_to_cents($offers[3]['total']), 'The gross allocation must equal the captured total.');
+    cardCheckoutAssert(count($payment['_asaas_card_receipts']) === 1
+        && asaas_payment_amount_to_cents(asaas_card_receipt_amount($payment, '100.00', $cache)) < 3400, 'A confirmed first parcel may settle only its principal share.');
+    $gateway->settings['card_fee_percent_2_6'] = '50.00';
+    $recovered = $service->reconcile($invoice);
+    cardCheckoutAssert($db->cache()['_asaas_lifecycle']['card_attempt']['pricing']['allocations'] === $allocation,
+        'Changing settings after capture must not reprice or reallocate the existing debt.');
+    cardCheckoutAssert(count($api->posts) === 1 && $recovered !== null, 'Recovery remains GET-only.');
+});
+cardCheckoutTest('declined surcharge restores the original boleto without card pricing', static function (): void {
+    [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture([], ['card_fee_mode' => 'customer']);
+    cardCheckoutSeed($gateway, cardCheckoutPayment());
+    $offers = array_column($service->installmentOptions($invoice), null, 'count');
+    $api->postFailure = new RuntimeException('Refused', 400);
+    cardCheckoutThrows(static fn () => $service->pay(cardCheckoutData($invoice, ['installmentCount' => '2', 'quote' => $offers[2]['quote']])));
+    $cache = $db->cache();
+    cardCheckoutAssert($cache['billingType'] === 'BOLETO' && !isset($cache['_asaas_lifecycle']['card_attempt']['pricing'])
+        && !$gateway->remote['pay_old']['deleted'], 'The restored boleto must not inherit the failed card allocation.');
+    cardCheckoutAssert(asaas_card_receipt_amount($gateway->remote['pay_old'], '100.00', $cache) === '100.00', 'A later boleto receipt must continue using its established settlement path.');
+});
+foreach (['4111111111111111', '5555555555554444', '2221000000000009'] as $number) {
+    cardCheckoutTest('21 installments are accepted for eligible brand ' . substr($number, 0, 4), static function () use ($number): void {
+        [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture(['balance' => '210.00'], ['installmentCount' => '21']);
+        $service->pay(cardCheckoutData($invoice, ['number' => $number, 'installmentCount' => '21']));
+        cardCheckoutAssert($api->posts[0]['payload']['installmentCount'] === 21, 'Eligible cards may use the configured maximum.');
+    });
+}
+cardCheckoutTest('other brands cannot post more than 12 installments', static function (): void {
+    [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture(['balance' => '210.00'], ['installmentCount' => '21']);
+    cardCheckoutThrows(static fn () => $service->pay(cardCheckoutData($invoice, ['number' => '371449635398431', 'installmentCount' => '13'])), 'Visa ou Mastercard');
+    cardCheckoutAssert($api->posts === [] && $db->cache() === [], 'Unsupported brand/count must be rejected before charging.');
 });
 
 cardCheckoutTest('settled or overpaid invoice offers no installment options', static function (): void {

@@ -20,7 +20,7 @@ function forbiddenSink() {
     throw new Error('The card handler must not use cookies, storage or an extra network request.');
 }
 
-function fixture(valid = true, hasForm = true) {
+function fixture(valid = true, hasForm = true, withPrices = false) {
     const handlers = {};
     const windowHandlers = {};
     const timers = [];
@@ -53,12 +53,23 @@ function fixture(valid = true, hasForm = true) {
     };
     const csrf = {value: 'csrf-fixture', defaultValue: 'csrf-fixture'};
     const installments = {value: '2'};
+    const priceFields = Object.fromEntries(['principal', 'fee', 'total', 'schedule'].map(name => [name, {textContent: ''}]));
+    const summary = withPrices ? {hidden: true, querySelector(selector) { return priceFields[selector.replace('[data-card-price-', '').replace(']', '')]; }} : null;
+    if (withPrices) {
+        installments.options = [
+            {getAttribute(name) { return {'data-card-principal': '100.00', 'data-card-fee': '3.59', 'data-card-total': '103.59', 'data-card-schedule': 'Pagamento à vista.'}[name]; }},
+            {getAttribute(name) { return {'data-card-principal': '100.00', 'data-card-fee': '4.13', 'data-card-total': '104.13', 'data-card-schedule': '2 parcelas de R$ 34,71 e a última de R$ 34,71.'}[name]; }}
+        ];
+        installments.selectedIndex = 0;
+        installments.addEventListener = (name, callback) => { handlers['installments:' + name] = callback; };
+    }
     const elements = {
         'asaas-card-checkout': hasForm ? form : null,
         payment: button,
         'asaas-card-checkout-status': status,
         csrf_token: csrf,
         installmentCount: installments,
+        'asaas-card-price-summary': summary,
         ...fields
     };
     const document = {getElementById: id => elements[id]};
@@ -82,7 +93,7 @@ function fixture(valid = true, hasForm = true) {
         }
     }
     vm.runInNewContext(source, context);
-    return {form, button, status, fields, csrf, installments, handlers, windowHandlers, timers, redirects, cleared};
+    return {form, button, status, fields, csrf, installments, summary, priceFields, handlers, windowHandlers, timers, redirects, cleared};
 }
 
 function event() {
@@ -173,6 +184,17 @@ const postedRestoredEvent = event();
 posted.handlers.submit(postedRestoredEvent);
 check(postedRestoredEvent.prevented === 1 && posted.timers.length === 1, 'Back/forward navigation cannot dispatch a second payment.');
 
+const priced = fixture(true, true, true);
+check(!priced.summary.hidden && priced.priceFields.total.textContent.includes('103,59') && priced.priceFields.fee.textContent.includes('3,59'), 'The first server offer must disclose its total and surcharge.');
+priced.installments.selectedIndex = 1;
+priced.handlers['installments:change']();
+check(priced.priceFields.total.textContent.includes('104,13') && priced.priceFields.schedule.textContent.includes('34,71'), 'Changing installments must update the displayed server offer and exact schedule.');
+check(priced.fields.cardNumber.value === '4111111111111111' && priced.fields.securityCode.value === '123', 'Showing prices must not read or mutate card fields.');
+priced.handlers.submit(event());
+priced.installments.selectedIndex = 0;
+priced.handlers['installments:change']();
+check(priced.priceFields.total.textContent.includes('104,13'), 'The acknowledged display must not change while a payment is submitting.');
+
 check(privacySinkAccesses === 0, 'Card submit/navigation must not access cookies, local/session storage, IndexedDB, Cache API, fetch, XHR or beacon.');
 
-console.log('Card checkout UI: 10 scenarios, ' + assertions + ' assertions, 0 failures.');
+console.log('Card checkout UI: 11 scenarios, ' + assertions + ' assertions, 0 failures.');

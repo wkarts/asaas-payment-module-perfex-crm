@@ -10,7 +10,7 @@ class Asaas extends AdminController
     {
         parent::__construct();
         // Diagnostics must remain accessible when the payment SDK cannot bootstrap.
-        if (isset($this->router) && $this->router->fetch_method() === 'logs') {
+        if (isset($this->router) && in_array($this->router->fetch_method(), ['logs', 'logs_data'], true)) {
             return;
         }
         $this->load->library('asaas/asaas_gateway');
@@ -100,6 +100,44 @@ class Asaas extends AdminController
         $data = asaas_diagnostic_report();
         $data['title'] = 'Diagnóstico da integração Asaas';
         $this->load->view('asaas/logs', $data);
+    }
+
+    /** Read-only diagnostics for the Logs subtab; no SDK or remote API is needed. */
+    public function logs_data(): void
+    {
+        if (!is_admin()) {
+            $this->logs_json(['ok' => false, 'message' => 'Somente administradores podem consultar os logs da integração Asaas.'], 403);
+            return;
+        }
+        if (strtoupper((string) $this->input->method(true)) !== 'GET') {
+            $this->output->set_header('Allow: GET');
+            $this->logs_json(['ok' => false, 'message' => 'Método HTTP não permitido para consultar os logs.'], 405);
+            return;
+        }
+
+        try {
+            require_once __DIR__ . '/../helpers/asaas_diagnostics_helper.php';
+            // The existing helper owns bounded reads, redaction and the local-file fallback.
+            // No file name or path supplied by the request is accepted.
+            $this->logs_json(['ok' => true, 'report' => asaas_diagnostic_report()]);
+        } catch (Throwable $exception) {
+            $this->logs_json(['ok' => false, 'message' => 'Não foi possível consultar o diagnóstico. Atualize os registros para tentar novamente.'], 503);
+        }
+    }
+
+    private function logs_json(array $payload, int $status = 200): void
+    {
+        if (isset($this->security) && method_exists($this->security, 'get_csrf_token_name') && method_exists($this->security, 'get_csrf_hash')) {
+            $payload['csrf'] = ['name' => $this->security->get_csrf_token_name(), 'hash' => $this->security->get_csrf_hash()];
+        }
+        if (method_exists($this->output, 'enable_profiler')) {
+            $this->output->enable_profiler(false);
+        }
+        $this->output->set_header('Cache-Control: no-store, private, max-age=0')
+            ->set_header('X-Content-Type-Options: nosniff')
+            ->set_status_header($status)
+            ->set_content_type('application/json', 'utf-8')
+            ->set_output(json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE));
     }
 
     public function health()

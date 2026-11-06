@@ -259,9 +259,11 @@ final class AsaasReconciliation
             $cache = \asaas_lifecycle_cached_payment($map);
             if ($map === []) { return $this->outcome($result, 'not_linked', 'Esta fatura não possui uma cobrança Asaas vinculada.'); }
             if ($this->blocked($invoice, $cache)) { return $this->outcome($result, 'blocked', 'A fatura está cancelada, em rascunho ou sua cobrança foi encerrada pelo ciclo de vida.'); }
+            $pricing = \asaas_card_receipt_pricing($cache);
             $gateway = $this->gateway();
             if (\asaas_card_attempt_blocks($cache)) {
-                if (\asaas_payment_amount_to_cents($cache['_asaas_lifecycle']['card_attempt']['amount'] ?? null) > \asaas_payment_amount_to_cents($invoice->total)) {
+                $attemptPrincipal = $pricing['principal_cents'] ?? \asaas_payment_amount_to_cents($cache['_asaas_lifecycle']['card_attempt']['amount'] ?? null);
+                if ($attemptPrincipal > \asaas_payment_amount_to_cents($invoice->total)) {
                     return $this->outcome($result, 'amount_mismatch', 'O total da tentativa de cartão supera o total atual da fatura. Confira o vínculo antes de conciliar.');
                 }
                 // Reuse the existing GET-only recovery of ambiguous captures and installment validation.
@@ -314,6 +316,7 @@ final class AsaasReconciliation
                 $sum = 0;
                 foreach ($paid as $receipt) {
                     $this->validatePayment($fresh, $freshMap, $freshCache, $receipt);
+                    $receiptPrincipal = $this->principal($receipt, $freshCache);
                     if (\asaas_lifecycle_should_ignore_payment($id, $receipt['id'])) {
                         return $this->outcome($result, 'blocked', 'A cobrança foi substituída ou encerrada e não pode registrar este recebimento.');
                     }
@@ -324,14 +327,14 @@ final class AsaasReconciliation
                             }
                         }
                         if (count($records[$receipt['id']]) !== 1
-                            || \asaas_payment_amount_to_cents($records[$receipt['id']][0]['amount']) !== $this->amount($receipt)) {
+                            || \asaas_payment_amount_to_cents($records[$receipt['id']][0]['amount']) !== $receiptPrincipal) {
                             $result['error_code'] = 'receipt_amount';
                             return $this->outcome($result, 'amount_mismatch', 'O identificador da cobrança possui recibos duplicados ou um valor diferente no CRM. Confira os recibos existentes; nenhum ajuste automático foi realizado.');
                         }
                         continue;
                     }
                     $unrecorded[] = $receipt;
-                    $sum += $this->amount($receipt);
+                    $sum += $receiptPrincipal;
                 }
                 if ($unrecorded === []) { return $this->outcome($result, 'already_reconciled', 'Os recebimentos confirmados já estão registrados no CRM.'); }
                 if ($balance === 0 || (int) $fresh->status === 2) {
@@ -353,6 +356,7 @@ final class AsaasReconciliation
                         throw new \RuntimeException('Invoice changed during reconciliation.');
                     }
                     $this->validatePayment($fresh, $freshMap, $freshCache, $receipt);
+                    $receiptPrincipal = $this->principal($receipt, $freshCache);
                     $balance = $this->balance($fresh);
                     $result['balance'] = \asaas_card_money($balance);
                     $result['crm_status'] = (int) $fresh->status;
@@ -362,29 +366,32 @@ final class AsaasReconciliation
                             if ((int) $record['invoiceid'] !== $id) { throw new \RuntimeException('Receipt belongs to another invoice.'); }
                         }
                         if (count($existing[$receipt['id']]) !== 1
-                            || \asaas_payment_amount_to_cents($existing[$receipt['id']][0]['amount']) !== $this->amount($receipt)) {
+                            || \asaas_payment_amount_to_cents($existing[$receipt['id']][0]['amount']) !== $receiptPrincipal) {
                             $result['error_code'] = 'receipt_amount';
                             return $this->outcome($result, $result['receipts_added'] > 0 ? 'partial_reconciled' : 'amount_mismatch',
                                 'O identificador da cobrança possui recibos duplicados ou um valor diferente no CRM. Confira os recibos existentes antes de continuar.');
                         }
                         continue;
                     }
-                    if ($this->amount($receipt) > $balance || (int) $fresh->status === 2) {
+                    if ($receiptPrincipal > $balance || (int) $fresh->status === 2) {
                         return $this->outcome($result, $result['receipts_added'] > 0 ? 'partial_reconciled' : 'amount_mismatch',
                             'O saldo mudou durante a conciliação. Confira os recebimentos já registrados antes de continuar.');
                     }
                     // Do not wrap this in remote_payment_depth: addPayment must own its existing deduplication/transaction.
-                    $result['receipt_verification_pending'] = true;
-                    $success = $gateway->addPayment([
-                        'amount' => \asaas_card_money($this->amount($receipt)), 'invoiceid' => $id,
+                    $receiptData = [
+                        'amount' => \asaas_card_money($receiptPrincipal), 'invoiceid' => $id,
                         'paymentmode' => 'Asaas', 'paymentmethod' => $receipt['billingType'], 'transactionid' => $receipt['id'],
-                    ]);
+                    ];
+                    $note = \asaas_card_receipt_note($receipt, $freshCache);
+                    if ($note !== '') { $receiptData['note'] = $note; }
+                    $result['receipt_verification_pending'] = true;
+                    $success = $gateway->addPayment($receiptData);
                     $persisted = $this->receipts([$receipt['id']]);
                     $result['receipt_verification_pending'] = false;
                     if (!empty($persisted[$receipt['id']])) {
                         ++$result['receipts_added'];
                         if (count($persisted[$receipt['id']]) !== 1 || (int) $persisted[$receipt['id']][0]['invoiceid'] !== $id
-                            || \asaas_payment_amount_to_cents($persisted[$receipt['id']][0]['amount']) !== $this->amount($receipt)) {
+                            || \asaas_payment_amount_to_cents($persisted[$receipt['id']][0]['amount']) !== $receiptPrincipal) {
                             throw new \RuntimeException('Persisted receipt amount does not match.');
                         }
                     }
@@ -413,6 +420,7 @@ final class AsaasReconciliation
                 'Persisted receipt amount does not match.' => ['receipt_amount', 'O recibo local precisa de conferência antes de continuar a conciliação.'],
             ];
             $reason = $reasons[$error->getMessage()] ?? ['unconfirmed', 'Não foi possível confirmar a cobrança e sua vinculação com segurança. Nenhum recebimento foi acrescentado por esta ação.'];
+            if ($error instanceof \AsaasCardReceiptException) { $reason = ['card_' . $error->reason(), $error->getMessage()]; }
             $result['error_code'] = $reason[0];
             $status = (int) $error->getCode();
             if ($status >= 400 && $status <= 599) { $result['http_status'] = $status; }
@@ -439,6 +447,7 @@ final class AsaasReconciliation
         $groupId = (string) $payment['installment'];
         if ($this->identifier($groupId, 120) !== $groupId) { throw new \RuntimeException('Invalid installment identifier.'); }
         $attempt = $cache['_asaas_lifecycle']['card_attempt'] ?? [];
+        $pricing = \asaas_card_receipt_pricing($cache);
         if (!empty($attempt['installment_count']) && isset($attempt['amount'])) {
             $expectedCount = (int) $attempt['installment_count'];
             $expectedTotal = \asaas_payment_amount_to_cents($attempt['amount']);
@@ -449,8 +458,9 @@ final class AsaasReconciliation
             $expectedCount = (int) ($group['installmentCount'] ?? 0);
             $expectedTotal = \asaas_payment_amount_to_cents($group['value'] ?? null);
         }
+        $expectedPrincipal = $pricing['principal_cents'] ?? $expectedTotal;
         if ($expectedCount < 2 || $expectedCount > 100 || $expectedTotal <= 0
-            || $expectedTotal > \asaas_payment_amount_to_cents($invoice->total)) { throw new \RuntimeException('Invalid installment total.'); }
+            || $expectedPrincipal > \asaas_payment_amount_to_cents($invoice->total)) { throw new \RuntimeException('Invalid installment total.'); }
         $response = $this->gateway()->request('GET', '/installments/' . rawurlencode($groupId) . '/payments', ['limit' => 100]);
         if (!is_array($response['data'] ?? null) || !empty($response['hasMore']) || count($response['data']) !== $expectedCount) {
             throw new \RuntimeException('Incomplete installment list.');
@@ -602,6 +612,11 @@ final class AsaasReconciliation
     private function amount(array $payment): int
     {
         return \asaas_payment_amount_to_cents($payment['originalValue'] ?? $payment['value'] ?? null);
+    }
+
+    private function principal(array $payment, array $cache): int
+    {
+        return \asaas_card_receipt_principal($payment, $cache) ?? $this->amount($payment);
     }
 
     private function balance(object $invoice): int

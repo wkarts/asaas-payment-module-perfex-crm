@@ -1,0 +1,81 @@
+#asaas-logs [hidden] {
+    display: none !important;
+}
+
+#asaas-logs {
+    border-top: 1px solid #e5e7eb;
+    padding-top: 20px;
+    min-width: 0;
+}
+
+#asaas-logs .asaas-logs-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+#asaas-logs .asaas-logs-heading > div {
+    min-width: 0;
+}
+
+#asaas-logs .asaas-logs-heading > button {
+    flex: 0 0 auto;
+}
+
+#asaas-logs .asaas-logs-file p {
+    margin-bottom: 6px;
+}
+
+#asaas-logs .asaas-logs-file p:last-child {
+    margin-bottom: 0;
+}
+
+#asaas-logs .asaas-logs-file code,
+#asaas-logs .asaas-logs-table td {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+#asaas-logs .asaas-logs-table {
+    max-width: 100%;
+}
+
+#asaas-logs .asaas-logs-table table {
+    min-width: 640px;
+}
+
+#asaas-logs .asaas-logs-table th:nth-child(1) {
+    width: 145px;
+}
+
+#asaas-logs .asaas-logs-table th:nth-child(2) {
+    width: 100px;
+}
+
+#asaas-logs .asaas-logs-message {
+    min-width: 220px;
+    max-width: 650px;
+}
+
+#asaas-logs .asaas-logs-message p {
+    margin-bottom: 6px;
+}
+
+#asaas-logs details summary {
+    cursor: pointer;
+}
+
+#asaas-logs pre {
+    margin-top: 6px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    max-width: 100%;
+}
+
+@media (max-width: 767px) {
+    #asaas-logs .asaas-logs-heading {
+        flex-wrap: wrap;
+    }
+}

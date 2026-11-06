@@ -11,6 +11,7 @@
         var form = root.closest('form');
         var csrf = {name: root.getAttribute('data-csrf-name') || '', hash: root.getAttribute('data-csrf-hash') || ''};
         var state = {active: 'invoices', loading: false, running: false, stop: false, selected: new Set(), invoices: [], pages: {}};
+        var deferredRefresh = null;
         ['invoices', 'events', 'logs'].forEach(function (kind) {
             state.pages[kind] = {page: 1, perPage: 25, hasMore: false, total: null};
         });
@@ -86,6 +87,7 @@
             RECEIVED_IN_CASH: 'Recebido em dinheiro', AUTHORIZED: 'Autorizado', REFUNDED: 'Estornado',
             DELETED: 'Excluído', DUNNING_REQUESTED: 'Negativação solicitada', AWAITING_RISK_ANALYSIS: 'Em análise'
         };
+        var webhookLabels = {processed: 'Processado', error: 'Erro', received: 'Recebido / pendente', pending: 'Pendente', retry: 'Aguardando nova tentativa'};
         var resultLabels = {
             divergent: 'Divergência identificada', reconciled: 'Conciliada', already_reconciled: 'Já conciliada',
             pending: 'Pendente', blocked: 'Bloqueada para conciliação', not_linked: 'Sem vínculo', not_found: 'Não encontrada',
@@ -124,6 +126,10 @@
                 input.value = value.hash;
             }
             csrf = {name: value.name, hash: value.hash};
+            if (form && form.getAttribute('data-asaas-logs-csrf-uncertain') === '1') {
+                form.setAttribute('data-asaas-logs-csrf-uncertain', '0');
+                document.dispatchEvent(new CustomEvent('asaas:settings:csrf-renewed'));
+            }
             return true;
         }
         async function request(action, method, parameters) {
@@ -159,8 +165,18 @@
             return payload;
         }
 
+        function logsLoading() {
+            return form && form.getAttribute('data-asaas-logs-loading') === '1';
+        }
+        function logsCsrfUncertain() {
+            return form && form.getAttribute('data-asaas-logs-csrf-uncertain') === '1';
+        }
         function updateControls() {
-            var busy = state.loading || state.running;
+            var ownBusy = state.loading || state.running;
+            var wasBusy = form && form.getAttribute('data-asaas-monitor-busy') === '1';
+            if (form) { form.setAttribute('data-asaas-monitor-busy', ownBusy ? '1' : '0'); }
+            var busy = ownBusy || logsLoading();
+            var uncertain = logsCsrfUncertain();
             root.setAttribute('aria-busy', busy ? 'true' : 'false');
             Array.prototype.forEach.call(root.querySelectorAll('button, input, select'), function (control) {
                 var action = control.getAttribute('data-monitor-action');
@@ -170,7 +186,8 @@
                 }
                 if (control.type === 'hidden') { return; }
                 control.disabled = busy;
-                if (action === 'compare-selected' || action === 'reconcile-selected') { control.disabled = busy || state.selected.size === 0; }
+                if (action === 'compare-selected' || action === 'reconcile-selected') { control.disabled = busy || uncertain || state.selected.size === 0; }
+                if (control.getAttribute('data-monitor-invoice-action')) { control.disabled = busy || uncertain; }
                 if (action === 'previous' || action === 'next') {
                     var page = state.pages[control.getAttribute('data-monitor-kind')];
                     control.disabled = busy || (action === 'previous' ? page.page <= 1 : !page.hasMore);
@@ -183,6 +200,7 @@
             root.querySelector('[data-monitor-selected-count]').textContent = state.selected.size
                 ? state.selected.size + (state.selected.size === 1 ? ' fatura selecionada nesta página.' : ' faturas selecionadas nesta página.')
                 : 'Nenhuma fatura selecionada.';
+            if (wasBusy && !ownBusy) { document.dispatchEvent(new CustomEvent('asaas:monitor:idle')); }
         }
         function tableState(kind, message) {
             var body = root.querySelector('[data-monitor-list="' + kind + '"]');
@@ -196,8 +214,32 @@
             var button = node('button', caption, info ? 'btn btn-info btn-xs' : 'btn btn-default btn-xs');
             button.type = 'button';
             button.setAttribute('data-monitor-invoice-action', action);
+            button.setAttribute('title', action === 'compare'
+                ? 'Consultar agora o pagamento no Asaas, sem registrar recebimento.'
+                : 'Consultar o Asaas e registrar somente os recebimentos confirmados que faltam no CRM.');
             button.addEventListener('click', function () { runBatch(action, [id]); });
             group.appendChild(button);
+        }
+        function paymentEvidence(parent, status) {
+            var caption = 'Situação a conferir';
+            var tone = 'default';
+            if (['CONFIRMED', 'RECEIVED', 'RECEIVED_IN_CASH'].indexOf(status) !== -1) {
+                caption = 'Recebimento confirmado'; tone = 'success';
+            } else if (['PENDING', 'OVERDUE', 'DUNNING_REQUESTED'].indexOf(status) !== -1) {
+                caption = 'Sem confirmação de pagamento'; tone = 'warning';
+            } else if (status === 'AUTHORIZED') {
+                caption = 'Somente autorizado'; tone = 'info';
+            } else if (status === 'AWAITING_RISK_ANALYSIS') {
+                caption = 'Pagamento em análise'; tone = 'warning';
+            } else if (status === 'REFUNDED') {
+                caption = 'Pagamento estornado';
+            } else if (status === 'DELETED') {
+                caption = 'Cobrança excluída';
+            }
+            var badge = node('span', caption, 'label label-' + tone + ' asaas-monitor-payment-evidence');
+            badge.setAttribute('data-monitor-payment-evidence', '');
+            parent.appendChild(badge);
+            secondary(parent, 'Estado: ' + label(status, paymentLabels));
         }
         function renderInvoices(rows) {
             var body = root.querySelector('[data-monitor-list="invoices"]');
@@ -227,14 +269,15 @@
                     invoiceCell.appendChild(node('span', 'Possível divergência', 'label label-warning'));
                 }
                 cell(row, label(record.crm_status, crmLabels));
-                var remoteCell = cell(row, label(record.asaas_status, paymentLabels));
+                var remoteCell = cell(row);
+                paymentEvidence(remoteCell, record.asaas_status);
                 secondary(remoteCell, text(record.asaas_payment_id));
                 secondary(remoteCell, label(record.billing_type, {BOLETO: 'Boleto', PIX: 'Pix', CREDIT_CARD: 'Cartão de crédito', UNDEFINED: 'Forma a definir'}));
                 var amountCell = cell(row, money(record.total));
                 secondary(amountCell, 'Saldo: ' + money(record.balance));
-                var datesCell = cell(row, 'Consulta: ' + text(record.last_sync_at));
+                var datesCell = cell(row, 'Última atualização: ' + text(record.last_sync_at));
                 secondary(datesCell, 'Webhook: ' + text(record.last_webhook_at));
-                if (record.webhook_status) { secondary(datesCell, text(record.webhook_status)); }
+                if (record.webhook_status) { secondary(datesCell, 'Evento: ' + label(record.webhook_status, webhookLabels)); }
                 var actions = node('div', undefined, 'asaas-monitor-row-actions');
                 if (id) {
                     rowAction(actions, 'compare', id, 'Comparar', false);
@@ -257,7 +300,7 @@
                 secondary(paymentCell, text(record.payment_id));
                 var dates = cell(row, text(record.received_at));
                 secondary(dates, 'Processado: ' + text(record.processed_at));
-                cell(row, label(record.process_status, {processed: 'Processado', error: 'Erro', received: 'Recebido / pendente', pending: 'Pendente', retry: 'Aguardando nova tentativa'}));
+                cell(row, label(record.process_status, webhookLabels));
                 cell(row, text(record.error_message), 'asaas-monitor-message');
                 body.appendChild(row);
             });
@@ -338,6 +381,13 @@
         }
         async function refresh(includeOverview) {
             if (state.loading || state.running) { return; }
+            if (logsLoading()) {
+                deferredRefresh = deferredRefresh === true || includeOverview === true;
+                notify('Aguardando o diagnóstico de logs antes de atualizar o monitoramento.', false);
+                updateControls();
+                return;
+            }
+            deferredRefresh = null;
             state.loading = true;
             notify('', false);
             updateControls();
@@ -382,6 +432,11 @@
         }
         async function runBatch(action, requestedIds) {
             if (state.loading || state.running || (action !== 'compare' && action !== 'reconcile')) { return; }
+            if (logsLoading() || logsCsrfUncertain()) {
+                notify(logsLoading() ? 'Aguarde o diagnóstico de logs antes de executar a operação.'
+                    : 'Atualize os registros para renovar a proteção do formulário antes de executar a operação.', true);
+                return;
+            }
             var ids = Array.from(new Set(requestedIds.map(identifier).filter(Boolean)));
             if (ids.length === 0) { notify('Selecione uma fatura válida para executar a operação.', true); return; }
             state.running = true;
@@ -486,6 +541,12 @@
         root.querySelector('#asaas-monitor-query').addEventListener('keydown', function (event) {
             if (event.key === 'Enter') { event.preventDefault(); if (!state.running && !state.loading) { state.pages.invoices.page = 1; refresh(false); } }
         });
+        document.addEventListener('asaas:logs:busy', updateControls);
+        document.addEventListener('asaas:logs:idle', function () {
+            updateControls();
+            if (deferredRefresh !== null) { refresh(deferredRefresh); }
+        });
+        document.addEventListener('asaas:settings:csrf-renewed', updateControls);
         if (form) {
             form.addEventListener('submit', function (event) {
                 if (state.running || state.loading) {

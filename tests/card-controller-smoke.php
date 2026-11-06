@@ -122,6 +122,10 @@ final class CardControllerCheckout
     public ?Throwable $reconcileError = null;
     public function available(object $invoice): bool { return $this->enabled; }
     public function discount(): array { return ['type' => 'FIXED', 'value' => 0, 'dueDateLimitDays' => 0]; }
+    public function installmentOptions(object $invoice): array
+    {
+        return asaas_card_installment_options($invoice->total_left_to_pay, '3', $this->discount());
+    }
     public function reconcile(object $invoice): ?array
     {
         ++$this->reconciles;
@@ -342,6 +346,42 @@ cardControllerTest('confirmed parcels settle only their own amount and delegate 
     cardControllerAssert(count($gateway->receipts) === 2 && get_invoice_total_left_to_pay(42) === '0.00', 'The existing gateway persistence contract should leave one record per parcel ID.');
     cardControllerAssert($gateway->charges === [] && $controller->viewData['invoice']->status === 2, 'Reconciliation must refresh the invoice after the receipt.');
 });
+cardControllerTest('priced duplicate above the remaining balance does not block the last new receipt', static function (): void {
+    [$controller, $gateway, $db] = cardControllerFixture();
+    $pricing = asaas_card_price('100.00', 3, ['installmentCount' => 3, 'card_fee_mode' => 'customer']);
+    $payments = [];
+    for ($number = 1; $number <= 3; ++$number) {
+        $payments[] = array_replace(cardControllerPayment('pay_priced_' . $number), [
+            'value' => asaas_card_money(intdiv($pricing['charged_cents'], 3)
+                + ($number === 1 ? $pricing['charged_cents'] % 3 : 0)),
+            'installmentNumber' => $number,
+        ]);
+    }
+    $pricing = asaas_card_allocate_pricing($pricing, $payments);
+    cardControllerAssert(array_column($pricing['allocations'], 'principal_cents') === [3334, 3333, 3333],
+        'The fixture must exercise an earlier principal larger than the final balance.');
+    $cache = $payments[0] + ['_asaas_lifecycle' => ['state' => 'active', 'card_attempt' => [
+        'state' => 'confirmed', 'customer_id' => 'cus_fixture', 'amount' => asaas_card_money($pricing['charged_cents']),
+        'installment_count' => 3, 'pricing' => $pricing,
+    ]]];
+    $db->map = ['invoice_id' => 42, 'asaas_payment_id' => $payments[0]['id'], 'payload_cache' => json_encode($cache, JSON_THROW_ON_ERROR)];
+    // These two payments were already recorded by the webhook before the customer returned.
+    foreach (array_slice($payments, 0, 2) as $payment) {
+        $gateway->receipts['42:' . $payment['id']] = ['invoiceid' => 42, 'transactionid' => $payment['id'],
+            'amount' => asaas_card_money($pricing['allocations'][$payment['id']]['principal_cents'])];
+    }
+    cardControllerAssert(get_invoice_total_left_to_pay(42) === '33.33', 'Only the last principal must remain outstanding.');
+    $gateway->checkout->reconcileResult = $payments[0] + ['_asaas_card_receipts' => $payments];
+    $controller->cartao('hash-card-controller');
+    cardControllerAssert(array_column($gateway->receiptCalls, 'transactionid') === ['pay_priced_1', 'pay_priced_2', 'pay_priced_3'],
+        'The repeated larger parcel must reach the gateway idempotency boundary before the new receipt.');
+    cardControllerAssert(array_column($gateway->receiptCalls, 'amount') === ['33.34', '33.33', '33.33'],
+        'Controller must forward exact allocated principal, without truncating it to the remaining balance.');
+    cardControllerAssert(count($gateway->receipts) === 3 && get_invoice_total_left_to_pay(42) === '0.00',
+        'The missing receipt must close the balance once, without duplicating previous webhooks.');
+    cardControllerAssert($controller->viewData['invoice']->status === 2 && $gateway->charges === [],
+        'GET recovery must show the paid invoice without another capture.');
+});
 cardControllerTest('receipt persistence failure gives a controlled reconciliation message', static function (): void {
     [$controller, $gateway] = cardControllerFixture();
     $controller->input->posted = cardControllerPost();
@@ -367,6 +407,16 @@ cardControllerTest('payment selection receives the block flag for an in-flight c
     $controller->index('hash-card-controller');
     cardControllerAssert($controller->viewData['card_checkout_blocked'] === true && $controller->viewName === 'asaas/payment', 'The selection view must hide enabled methods while card confirmation is pending.');
     cardControllerAssert($controller->viewData['mensagem_info'] !== '' && $gateway->charges === [], 'The selection needs a payment-state explanation and no capture.');
+});
+
+cardControllerTest('selected server price acknowledgement is forwarded without retaining the offer map', static function (): void {
+    [$controller, $gateway] = cardControllerFixture();
+    $_POST = $_REQUEST = cardControllerPost() + ['cardQuote' => ['1' => str_repeat('a', 64), '2' => str_repeat('b', 64)]];
+    $controller->input->posted = $_POST;
+    $gateway->chargeResult = cardControllerPayment('pay_quote', 'PENDING');
+    $controller->cartao('hash-card-controller');
+    cardControllerAssert($gateway->charges[0]['card']['quote'] === str_repeat('b', 64), 'Only the acknowledged quote matching the selected installment count reaches the service.');
+    cardControllerAssert(!isset($_POST['cardQuote'], $_REQUEST['cardQuote']) && !isset($gateway->globalsAtCapture['post']['cardQuote']), 'The offer map is removed from request globals before capture.');
 });
 
 echo sprintf('Card controller: %d scenarios, %d assertions, %d failures.' . PHP_EOL,

@@ -12,6 +12,28 @@
     var slowTimer = null;
     var cardFields = ['holderName', 'cardNumber', 'expirationMonth', 'expirationYear', 'securityCode'];
     var holderFields = ['holderEmail', 'holderDocument', 'holderPostalCode', 'holderAddressNumber', 'holderPhone'];
+    var installments = document.getElementById('installmentCount');
+    var summary = document.getElementById('asaas-card-price-summary');
+
+    function showPrice() {
+        if (!installments || !summary || submitting) { return; }
+        var option = installments.options[installments.selectedIndex];
+        if (!option) { return; }
+        ['principal', 'fee', 'total'].forEach(function (name) {
+            var output = summary.querySelector('[data-card-price-' + name + ']');
+            var value = option.getAttribute('data-card-' + name);
+            if (output && value && /^\d+\.\d{2}$/.test(value)) {
+                output.textContent = Number(value).toLocaleString('pt-BR', {style: 'currency', currency: 'BRL'});
+            }
+        });
+        var schedule = summary.querySelector('[data-card-price-schedule]');
+        if (schedule) { schedule.textContent = option.getAttribute('data-card-schedule') || ''; }
+        summary.hidden = false;
+    }
+    if (installments && summary) {
+        installments.addEventListener('change', showPrice);
+        showPrice();
+    }
 
     function clearFields(ids) {
         ids.forEach(function (id) {

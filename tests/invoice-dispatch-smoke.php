@@ -76,6 +76,15 @@ class App_gateway
     }
 }
 
+// The boleto GET uses only the gateway and database; no card/renderer path is run.
+class ClientsController
+{
+    public $db;
+    public $asaas_gateway;
+}
+
+require_once __DIR__ . '/../controllers/Checkout.php';
+
 final class InvoiceSmokeResult
 {
     public function __construct(private array $rows = []) {}
@@ -577,6 +586,87 @@ $tests['checkout process_payment usa os mesmos endpoints e preserva redirecionam
     invoiceSmokeCheck($GLOBALS['invoice_smoke_redirects'] === [site_url('asaas/checkout/index/' . INVOICE_SMOKE_HASH)], 'O redirecionamento original do checkout deve ser mantido.');
 };
 
+foreach (['process_payment', 'charge_billet', 'charge_pix'] as $method) {
+    $tests['diagnóstico habilitado não expõe cadastro ou cobrança em ' . $method] = static function () use ($method, $payment): void {
+        $responses = [['totalCount' => 0, 'data' => []], ['id' => 'cus_new_checkout'], $payment];
+        if ($method === 'process_payment') {
+            array_unshift($responses, ['data' => []]);
+        }
+        $history = [];
+        $ci = invoiceSmokeFixture($responses, $history);
+        $GLOBALS['invoice_smoke_options']['paymentmethod_asaas_debug'] = '1';
+        ob_start();
+        try {
+            $ci->asaas_gateway->$method($method === 'charge_billet' ? $ci->invoice : ['invoice' => $ci->invoice]);
+        } finally {
+            $output = ob_get_clean();
+        }
+        $requests = invoiceSmokeRequests($history);
+        invoiceSmokeCheck(in_array('POST /v3/customers', $requests, true) && in_array('POST /v3/payments', $requests, true), 'Exercer o cadastro real do cliente e criação da cobrança pelo gateway/SDK.');
+        invoiceSmokeCheck($output === '', 'O diagnóstico não pode imprimir cadastro do cliente, retorno da API ou dados financeiros na resposta pública.');
+        invoiceSmokeCheck($ci->db->_trans_depth === 0, 'Criação deve finalizar a transação normalmente.');
+    };
+}
+
+foreach ([['vencida', 4, 0, 'OVERDUE'], ['vencida recorrente', 4, 1, 'OVERDUE'], ['aberta', 1, 0, 'PENDING']] as [$label, $invoiceStatus, $recurring, $paymentStatus]) {
+    $tests['Pagar agora preserva boleto existente de fatura ' . $label . ' e GET abre URL original'] = static function () use ($payment, $invoiceStatus, $recurring, $paymentStatus): void {
+        $existing = array_replace($payment, [
+            'id' => 'pay_checkout_existing', 'status' => $paymentStatus,
+            'dueDate' => date('Y-m-d', strtotime($invoiceStatus === 4 ? '-2 days' : '+2 days')),
+            'customer' => 'cus_existing', 'externalReference' => INVOICE_SMOKE_HASH,
+            'canBePaidAfterDueDate' => true,
+            'fine' => ['value' => 2], 'interest' => ['value' => 1],
+            'bankSlipUrl' => 'https://www.asaas.com/b/pdf/pay_checkout_existing',
+        ]);
+        $history = [];
+        $ci = invoiceSmokeFixture([['data' => [$existing]], ['data' => [$existing]]], $history);
+        $ci->invoice->status = $invoiceStatus;
+        $ci->invoice->recurring = $recurring;
+        $ci->invoice->duedate = $existing['dueDate'];
+        $GLOBALS['invoice_smoke_options']['paymentmethod_asaas_debug'] = '1';
+        $GLOBALS['invoice_smoke_options']['paymentmethod_asaas_fine_value'] = '2';
+        $GLOBALS['invoice_smoke_options']['paymentmethod_asaas_interest_value'] = '1';
+        $before = serialize($ci->invoice);
+        $clientBefore = serialize($ci->client);
+
+        ob_start();
+        try {
+            $ci->asaas_gateway->process_payment(['invoice' => $ci->invoice]);
+            invoiceSmokeCheck($GLOBALS['invoice_smoke_redirects'] === [site_url('asaas/checkout/index/' . INVOICE_SMOKE_HASH)], 'Pagar agora deve abrir a escolha de pagamento com a cobrança já existente.');
+            $controller = (new ReflectionClass(Checkout::class))->newInstanceWithoutConstructor();
+            $controller->db = $ci->db;
+            $controller->asaas_gateway = $ci->asaas_gateway;
+            $controller->boleto(INVOICE_SMOKE_HASH);
+        } finally {
+            $output = ob_get_clean();
+        }
+
+        invoiceSmokeCheck(invoiceSmokeRequests($history) === ['GET /v3/payments', 'GET /v3/payments'], 'Pagar agora e abrir boleto existente só consultam; não devem fazer POST, DELETE, mudar vencimento ou recriar cobrança.');
+        invoiceSmokeCheck($GLOBALS['invoice_smoke_redirects'][1] === $existing['bankSlipUrl'], 'O boleto vencido pagável deve usar a URL original do Asaas, mantendo os juros/multa remotos.');
+        invoiceSmokeCheck(serialize($ci->invoice) === $before, 'Abrir pagamento preserva vencimento, subtotal, total, ajuste e status da fatura.');
+        invoiceSmokeCheck(serialize($ci->client) === $clientBefore, 'Abrir cobrança existente não altera cliente ou contato.');
+        invoiceSmokeCheck(!array_filter($ci->db->writes, static fn (array $write): bool => $write['table'] === 'tblinvoices'), 'A apresentação do boleto não deve escrever na fatura.');
+        invoiceSmokeCheck($ci->db->_trans_depth === 0 && empty(asaas_lifecycle_state()['checkout_invoice']), 'A abertura deve liberar a transação e o contexto do checkout.');
+        invoiceSmokeCheck($output === '', 'Debug habilitado não pode imprimir SQL, valor, payload ou dados pessoais no pagamento.');
+    };
+}
+
+$tests['edição legítima mantém erro HTTP 400 de vencimento e não o transforma em sucesso'] = static function () use ($customer, $payment): void {
+    $existing = array_replace($payment, ['externalReference' => INVOICE_SMOKE_HASH]);
+    $error = new Response(400, ['Content-Type' => 'application/json'], json_encode([
+        'errors' => [['code' => 'invalid_dueDate', 'description' => 'A data mínima de vencimento para novas cobranças é hoje.']],
+    ], JSON_THROW_ON_ERROR));
+    $history = [];
+    $ci = invoiceSmokeFixture([$customer, ['data' => [$existing]], $error], $history);
+    $GLOBALS['invoice_smoke_options']['paymentmethod_asaas_update_charge'] = '1';
+    $before = serialize($ci->invoice);
+    invoiceSmokeReject(static fn () => asaas_after_invoice_updated(42), 400);
+    invoiceSmokeCheck(invoiceSmokeRequests($history) === ['GET /v3/customers', 'GET /v3/payments', 'POST /v3/payments/pay_created'], 'Uma edição real continua enviando um único POST para a cobrança e respeitando sua recusa.');
+    invoiceSmokeCheck(serialize($ci->invoice) === $before && $ci->db->_trans_depth === 0, 'Recusa de edição deve preservar a fatura e fechar a transação.');
+    invoiceSmokeCheck($GLOBALS['invoice_smoke_redirects'] === [], 'Erro em edição não pode redirecionar como sucesso.');
+    invoiceSmokeCheck(str_contains(invoiceSmokeLogs($ci), 'data mínima de vencimento'), 'O motivo da recusa deve permanecer disponível no diagnóstico.');
+};
+
 foreach (['process_payment', 'charge_pix', 'charge_credit_card'] as $method) {
     $tests['checkout ' . $method . ($method === 'charge_credit_card' ? ' preserva' : ' restaura') . ' fatura vencida após HTTP 400'] = static function () use ($customer, $payment, $method): void {
         $existing = array_replace($payment, ['id' => 'pay_checkout_existing', 'status' => 'OVERDUE',
@@ -585,7 +675,7 @@ foreach (['process_payment', 'charge_pix', 'charge_credit_card'] as $method) {
             'errors' => [['code' => 'invalid_value', 'description' => 'Cobrança recusada no transporte de teste.']],
         ], JSON_THROW_ON_ERROR));
         $responses = $method === 'process_payment'
-            ? [['data' => [$existing]], $customer, $error]
+            ? [['data' => []], $customer, $error]
             : [$customer, ['data' => [$existing]], $error];
         if ($method === 'charge_credit_card') {
             $responses = [['data' => [$existing]], array_replace($existing, ['billingType' => 'CREDIT_CARD']), $error, $existing];
@@ -615,7 +705,8 @@ foreach (['process_payment', 'charge_pix', 'charge_credit_card'] as $method) {
         } else {
             invoiceSmokeCheck(count($writes) === 1 && $writes[0]['depth'] > 0, 'O teste deve exercer uma atualização real da fixture dentro da transação.');
             invoiceSmokeCheck($writes[0]['payload']['total'] > 149.90 && $writes[0]['payload']['duedate'] !== $ci->invoice->duedate, 'A atualização tentada deve alterar valor e vencimento antes de ser revertida.');
-            invoiceSmokeCheck(count($history) === 3 && invoiceSmokeRequests($history)[2] === 'POST /v3/payments/pay_checkout_existing', 'Executar a requisição real do SDK e não repetir POST recusado.');
+            $expectedPost = $method === 'process_payment' ? 'POST /v3/payments' : 'POST /v3/payments/pay_checkout_existing';
+            invoiceSmokeCheck(count($history) === 3 && invoiceSmokeRequests($history)[2] === $expectedPost, 'Executar a requisição real do SDK e não repetir POST recusado.');
             invoiceSmokeCheck($ci->db->_trans_depth === 0 && $ci->db->payments === [], 'Recusa remota não deixa transação nem vínculo novo.');
         }
         invoiceSmokeCheck($GLOBALS['invoice_smoke_redirects'] === [], 'Não redirecionar como sucesso após erro da cobrança.');

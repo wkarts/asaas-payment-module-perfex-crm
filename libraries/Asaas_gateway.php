@@ -68,7 +68,7 @@ class Asaas_gateway extends App_gateway
                 'type' => 'yes_no',
                 'default_value' => 0,
                 'after' => '<p class="help-block">Consulte o resultado do envio de faturas, os erros da API e a localização dos arquivos de log.</p>'
-                    . '<p class="mbot15"><a class="btn btn-default btn-sm" href="' . html_escape(admin_url('asaas/asaas/logs')) . '">Ver logs da integração</a></p>',
+                    . '<p class="mbot15"><a class="btn btn-default btn-sm" data-asaas-logs-open href="' . html_escape(admin_url('asaas/asaas/logs')) . '">Ver logs da integração</a></p>',
             ),
             array(
                 'name' => 'webhook_secret',
@@ -167,12 +167,83 @@ class Asaas_gateway extends App_gateway
             ),
             array(
                 'name' => 'installmentCount',
-                'label' => 'Limite de parcelas no cartão (1 a 12)',
+                'label' => 'Limite de parcelas no cartão (1 a 21)',
                 'type' => 'input',
                 'input_type' => 'number',
-                'field_attributes' => ['min' => '1', 'max' => '12', 'step' => '1'],
+                'field_attributes' => ['min' => '1', 'max' => '21', 'step' => '1', 'required' => 'required'],
                 'default_value' => 1,
-                'after' => '<p class="help-block">As opções respeitam o saldo da fatura e o valor mínimo de cada parcela.</p>',
+                'after' => '<p class="help-block">Até 12 parcelas nas demais bandeiras e até 21 em Visa/Mastercard, conforme disponibilidade da conta Asaas. As opções também respeitam o saldo e o valor mínimo da parcela.</p>',
+            ),
+            array(
+                'name' => 'card_min_installment',
+                'label' => 'Valor mínimo da parcela (R$)',
+                'type' => 'input',
+                'field_attributes' => ['inputmode' => 'decimal', 'pattern' => '([0-9]+([.,][0-9]{1,2})?|[.,][0-9]{1,2})', 'maxlength' => '128', 'required' => 'required', 'data-asaas-card-decimal' => 'minimum'],
+                'default_value' => '5.00',
+                'after' => '<p class="help-block">Mínimo de R$ 5,00 por parcela, após descontos. Este limite administrativo vale para pagamentos parcelados.</p>',
+            ),
+            array(
+                'name' => 'card_free_installments',
+                'label' => 'Absorver as taxas até esta quantidade de parcelas',
+                'type' => 'input',
+                'input_type' => 'number',
+                'field_attributes' => ['min' => '0', 'max' => '21', 'step' => '1', 'required' => 'required'],
+                'default_value' => 0,
+                'after' => '<p class="help-block">Usado quando o repasse está habilitado. 0: sem faixa de isenção; 1: absorve no pagamento à vista. Não pode ultrapassar o limite de parcelas.</p>',
+            ),
+            array(
+                'name' => 'card_fee_mode',
+                'label' => 'Tratamento das taxas do cartão',
+                'type' => 'input',
+                'field_attributes' => ['pattern' => 'absorb|customer', 'required' => 'required'],
+                'default_value' => 'absorb',
+                'after' => '<p class="help-block">Absorver mantém o valor da fatura. Repassar inclui as taxas configuradas no total do cartão, apresentado antes da confirmação. Os valores iniciais das taxas são referências: ajuste conforme o contrato da sua conta Asaas.'
+                    . ' <span data-asaas-card-enum-fallback="card_fee_mode">Valores: <code>absorb</code> para absorver ou <code>customer</code> para repassar ao cliente.</span></p>',
+            ),
+            array(
+                'name' => 'card_fee_fixed_mode',
+                'label' => 'Incidência da taxa fixa',
+                'type' => 'input',
+                'field_attributes' => ['pattern' => 'charge|installment', 'required' => 'required'],
+                'default_value' => 'charge',
+                'after' => '<p class="help-block">A taxa fixa é somada à taxa percentual da faixa selecionada. Configure a incidência conforme o contrato da sua conta.'
+                    . ' <span data-asaas-card-enum-fallback="card_fee_fixed_mode">Valores: <code>charge</code> por cobrança ou <code>installment</code> por parcela.</span></p>',
+            ),
+            array(
+                'name' => 'card_fee_fixed',
+                'label' => 'Taxa fixa do cartão (R$)',
+                'type' => 'input',
+                'field_attributes' => ['inputmode' => 'decimal', 'pattern' => '([0-9]+([.,][0-9]{1,2})?|[.,][0-9]{1,2})', 'maxlength' => '128', 'required' => 'required', 'data-asaas-card-decimal' => 'fixed'],
+                'default_value' => '0.49',
+            ),
+            array(
+                'name' => 'card_fee_percent_1',
+                'label' => 'Taxa em 1 parcela (%)',
+                'type' => 'input',
+                'field_attributes' => ['inputmode' => 'decimal', 'pattern' => '([0-9]+([.,][0-9]{1,2})?|[.,][0-9]{1,2})', 'maxlength' => '128', 'required' => 'required', 'data-asaas-card-decimal' => 'percentage'],
+                'default_value' => '2.99',
+            ),
+            array(
+                'name' => 'card_fee_percent_2_6',
+                'label' => 'Taxa de 2 a 6 parcelas (%)',
+                'type' => 'input',
+                'field_attributes' => ['inputmode' => 'decimal', 'pattern' => '([0-9]+([.,][0-9]{1,2})?|[.,][0-9]{1,2})', 'maxlength' => '128', 'required' => 'required', 'data-asaas-card-decimal' => 'percentage'],
+                'default_value' => '3.49',
+            ),
+            array(
+                'name' => 'card_fee_percent_7_12',
+                'label' => 'Taxa de 7 a 12 parcelas (%)',
+                'type' => 'input',
+                'field_attributes' => ['inputmode' => 'decimal', 'pattern' => '([0-9]+([.,][0-9]{1,2})?|[.,][0-9]{1,2})', 'maxlength' => '128', 'required' => 'required', 'data-asaas-card-decimal' => 'percentage'],
+                'default_value' => '3.99',
+            ),
+            array(
+                'name' => 'card_fee_percent_13_21',
+                'label' => 'Taxa de 13 a 21 parcelas (%)',
+                'type' => 'input',
+                'field_attributes' => ['inputmode' => 'decimal', 'pattern' => '([0-9]+([.,][0-9]{1,2})?|[.,][0-9]{1,2})', 'maxlength' => '128', 'required' => 'required', 'data-asaas-card-decimal' => 'percentage'],
+                'default_value' => '4.29',
+                'after' => '<p class="help-block">Faixa disponível para Visa/Mastercard. Percentuais de 0% a 99%, com até duas casas decimais.</p>',
             ),
             array(
                 'name' => 'diasdevencimento',
@@ -325,8 +396,6 @@ class Asaas_gateway extends App_gateway
         $ci->db->where('c.userid', $row['clientid']);
         $client = $ci->db->get()->row_array();
 
-        $debug = $this->getSetting('debug');
-
         $api_key = $this->getApiKey();
         $api_url = $this->getUrlBase();
 
@@ -342,177 +411,113 @@ class Asaas_gateway extends App_gateway
 
         $search_charge = $this->search_charge($api_url, $api_key, $row["hash"]);
 
-        if ($row['status'] == '4') {
-            $row['total'] = $this->calculate_invoice($invoice, $row, $fine, $interest);
-            if ($this->debug_enable()) {
-                echo $row['total'];
-                echo "<br>";
-                echo $ci->db->last_query();
-                echo "<br>";
-                echo "<pre>";
-                var_dump($search_charge);
-                echo "</pre>";
-            }
-        }
-
-        $ci->db->where('id', $invoice);
-        $row = $ci->db->get(db_prefix() . 'invoices')->row_array();
-
-        $disable_charge_notification = $this->getSetting('disable_charge_notification');
-
-        if ($disable_charge_notification == '1') {
-            $notificationDisabled = true;
-        } else {
-            $notificationDisabled = false;
-        }
-
-        $invoice_number = $row['prefix'] . str_pad($row['number'], 6, "0", STR_PAD_LEFT);
-        $description = utf8_encode(str_replace("{invoice_number}", $invoice_number, $description));
-
-        $document = str_replace('/', '', str_replace('-', '', str_replace('.', '', $client['vat'])));
-        $postalCode = str_replace('-', '', str_replace('.', '', $client['zip']));
-
-        $customer = $this->search_customer($api_url, $api_key, $document);
-        if ($customer['totalCount'] == "0") {
-            $post_data = json_encode([
-                "name" => $client['company'],
-                "email" => $client['email'],
-                "cpfCnpj" => $document,
-                "postalCode" => $postalCode,
-                "address" => $client['address'],
-                "addressNumber" => $client['numero'],
-                "complement" => "",
-                "phone" => $client['phonenumber'],
-                "mobilePhone" => $client['phonenumber'],
-                "externalReference" => (string) $row['clientid'],
-                "notificationDisabled" => $notificationDisabled,
-            ]);
-
-            $cliente_create = $this->create_customer($api_url, $api_key, $post_data);
-            $cliente_id = $cliente_create['id'];
-
-            $this->logAsaasActivity('Cliente cadastrado no Asaas [Cliente ID: ' . $cliente_id . ']');
-
-            if ($this->debug_enable()) {
-                echo "Campos cadastro";
-                echo "<br>";
-                echo "<pre>";
-                var_dump($post_data);
-                echo "</pre>";
-                echo "Cliente cadastrado no Asaas ID" . $cliente_id;
-                echo "<hr>";
-            }
-        } else {
-            // se existir recupera os dados para cobranca
-            $cliente_id = $customer['data'][0]['id'];
-            if ($this->debug_enable()) {
-                echo "Cliente já existente ID " . $cliente_id;
-                echo "<hr>";
-            }
-        }
-
-        $discount = NULL;
-
-        $sem_desconto = strpos($row['adminnote'], "{sem_desconto}", 0);
-
-        if ($discount_type == 1) {
-
-            $type = 'FIXED';
-
-            $discount = [
-                'type' => 'FIXED',
-                "value" => $discount_value,
-                "dueDateLimitDays" => $dueDateLimitDays,
-            ];
-        }
-
-        if ($discount_type == 0) {
-
-            $type = 'PERCENTAGE';
-
-            $discount = [
-                'type' => 'PERCENTAGE',
-                "value" => $discount_value,
-                "dueDateLimitDays" => $dueDateLimitDays,
-            ];
-        }
-
-        if (is_bool($sem_desconto)) {
-            $discount = [
-                'type' => $type,
-                "value" => $discount_value,
-                "dueDateLimitDays" => $dueDateLimitDays,
-            ];
-        }
-
-        if ($this->debug_enable()) {
-            echo "Tipo desconto config " . $discount_type;
-            echo "<br>";
-            echo "Tipo desconto " . $type;
-            echo "<br>";
-            echo "Campos desconto";
-            echo "<br>";
-            echo "<pre>";
-            var_dump($discount);
-            echo "</pre>";
-            echo "<hr>";
-            echo "Sem desconto " .   var_dump($sem_desconto);
-            echo "<br>";
-        }
-
-        $post_data = [
-            "customer" => $cliente_id,
-            "billingType" => "BOLETO",
-            "dueDate" => $row['duedate'],
-            "value" => $row['total'],
-            "description" => $description,
-            "externalReference" => $row['hash'],
-            "discount" => $discount,
-            "fine" => [
-                "value" => $fine,
-            ],
-            "interest" => [
-                "value" => $interest,
-            ],
-            "postalService" => false
-        ];
-
-        if ($search_charge) {
-            unset($post_data["discount"]);
-            unset($post_data["fine"]);
-            unset($post_data["interest"]);
-        }
-
-        $post_data = json_encode($post_data);
-
-        if ($this->debug_enable()) {
-
-            echo "Campos cobranca asaas";
-            echo "<br>";
-            echo "<pre>";
-            var_dump($post_data);
-            echo "</pre>";
-            echo "<hr>";
-
-            //	die();
-        }
-
-        // não tem cobrança no asaas
+        // Opening an existing charge must not renew its due date or recalculate
+        // interest locally. Boleto validity and late fees remain under Asaas,
+        // including an OVERDUE charge with canBePaidAfterDueDate enabled.
         if (!$search_charge) {
+            if ($row['status'] == '4') {
+                $row['total'] = $this->calculate_invoice($invoice, $row, $fine, $interest);
+            }
+
+            $ci->db->where('id', $invoice);
+            $row = $ci->db->get(db_prefix() . 'invoices')->row_array();
+
+            $disable_charge_notification = $this->getSetting('disable_charge_notification');
+
+            if ($disable_charge_notification == '1') {
+                $notificationDisabled = true;
+            } else {
+                $notificationDisabled = false;
+            }
+
+            $invoice_number = $row['prefix'] . str_pad($row['number'], 6, "0", STR_PAD_LEFT);
+            $description = utf8_encode(str_replace("{invoice_number}", $invoice_number, $description));
+
+            $document = str_replace('/', '', str_replace('-', '', str_replace('.', '', $client['vat'])));
+            $postalCode = str_replace('-', '', str_replace('.', '', $client['zip']));
+
+            $customer = $this->search_customer($api_url, $api_key, $document);
+            if ($customer['totalCount'] == "0") {
+                $post_data = json_encode([
+                    "name" => $client['company'],
+                    "email" => $client['email'],
+                    "cpfCnpj" => $document,
+                    "postalCode" => $postalCode,
+                    "address" => $client['address'],
+                    "addressNumber" => $client['numero'],
+                    "complement" => "",
+                    "phone" => $client['phonenumber'],
+                    "mobilePhone" => $client['phonenumber'],
+                    "externalReference" => (string) $row['clientid'],
+                    "notificationDisabled" => $notificationDisabled,
+                ]);
+
+                $cliente_create = $this->create_customer($api_url, $api_key, $post_data);
+                $cliente_id = $cliente_create['id'];
+
+                $this->logAsaasActivity('Cliente cadastrado no Asaas [Cliente ID: ' . $cliente_id . ']');
+            } else {
+                // se existir recupera os dados para cobranca
+                $cliente_id = $customer['data'][0]['id'];
+            }
+
+            $discount = NULL;
+
+            $sem_desconto = strpos($row['adminnote'], "{sem_desconto}", 0);
+
+            if ($discount_type == 1) {
+
+                $type = 'FIXED';
+
+                $discount = [
+                    'type' => 'FIXED',
+                    "value" => $discount_value,
+                    "dueDateLimitDays" => $dueDateLimitDays,
+                ];
+            }
+
+            if ($discount_type == 0) {
+
+                $type = 'PERCENTAGE';
+
+                $discount = [
+                    'type' => 'PERCENTAGE',
+                    "value" => $discount_value,
+                    "dueDateLimitDays" => $dueDateLimitDays,
+                ];
+            }
+
+            if (is_bool($sem_desconto)) {
+                $discount = [
+                    'type' => $type,
+                    "value" => $discount_value,
+                    "dueDateLimitDays" => $dueDateLimitDays,
+                ];
+            }
+
+            $post_data = [
+                "customer" => $cliente_id,
+                "billingType" => "BOLETO",
+                "dueDate" => $row['duedate'],
+                "value" => $row['total'],
+                "description" => $description,
+                "externalReference" => $row['hash'],
+                "discount" => $discount,
+                "fine" => [
+                    "value" => $fine,
+                ],
+                "interest" => [
+                    "value" => $interest,
+                ],
+                "postalService" => false
+            ];
+
+            $post_data = json_encode($post_data);
+
             $charge = $this->create_charge($api_url, $api_key, $post_data);
 
             $this->logAsaasActivity('Cobrança Boleto/Pix Asaas [Fatura ID: ' . $invoice . ']');
-        } else {
-            $charge = $this->update_charge($search_charge->id, $post_data);
-
-            $this->logAsaasActivity('Cobrança atualizada Asaas [Fatura ID: ' . $invoice . ']');
         }
-
-
-        //	echo "<hr>";
-
-        //		die();
-
         } catch (Throwable $error) {
             asaas_lifecycle_reject($error, $asaasInvoiceId);
         }
@@ -704,23 +709,9 @@ class Asaas_gateway extends App_gateway
             $cliente_id = $cliente_create['id'];
 
             $this->logAsaasActivity('Cliente cadastrado no Asaas [Cliente ID: ' . $cliente_id . ']');
-
-            if ($this->debug_enable()) {
-                echo "Campos cadastro";
-                echo "<br>";
-                echo "<pre>";
-                var_dump($post_data);
-                echo "</pre>";
-                echo "Cliente cadastrado no Asaas ID " . $cliente_id;
-                echo "<hr>";
-            }
         } else {
             // se existir recupera os dados para cobranca
             $cliente_id = $customer['data'][0]['id'];
-            if ($this->debug_enable()) {
-                echo "Cliente já existente ID " . $cliente_id;
-                echo "<hr>";
-            }
         }
 
         $discount = NULL;
@@ -757,23 +748,6 @@ class Asaas_gateway extends App_gateway
             ];
         }
 
-        if ($this->debug_enable()) {
-            echo "Tipo desconto" . $discount_type;
-            echo "<br>";
-            echo "Campos desconto";
-            echo "<br>";
-            echo "<pre>";
-            var_dump($discount);
-            echo "</pre>";
-            echo "<hr>";
-            echo "Sem desconto" . $sem_desconto;
-            echo "<br>";
-            echo "<pre>";
-            var_dump($discount);
-            echo "</pre>";
-            echo "<hr>";
-        }
-
         $post_data = json_encode([
             "customer"          => $cliente_id,
             "billingType"       => "BOLETO",
@@ -797,16 +771,6 @@ class Asaas_gateway extends App_gateway
 
         if (!empty($charge['id']) && empty($charge['errors']) && empty($charge['error'])) {
             $this->logAsaasActivity('Cobrança Boleto Criada no Asaas [Fatura ID: ' . $invoice->id . ']');
-        }
-
-        if ($this->debug_enable()) {
-
-            echo "Cobrança Boleto";
-            echo "<br>";
-            echo "<pre>";
-            var_dump($charge);
-            echo "</pre>";
-            echo "<hr>";
         }
 
         return $charge;
@@ -887,23 +851,9 @@ class Asaas_gateway extends App_gateway
             $cliente_create = $this->create_customer($api_url, $api_key, $post_data);
             $cliente_id = $cliente_create['id'];
             $this->logAsaasActivity('Cliente cadastrado no Asaas [Cliente ID: ' . $cliente_id . ']');
-
-            if ($this->debug_enable()) {
-                echo "Campos cadastro";
-                echo "<br>";
-                echo "<pre>";
-                var_dump($post_data);
-                echo "</pre>";
-                echo "Cliente cadastrado no Asaas ID" . $cliente_id;
-                echo "<hr>";
-            }
         } else {
             // se existir recupera os dados para cobranca
             $cliente_id = $customer['data'][0]['id'];
-            if ($this->debug_enable()) {
-                echo "Cliente já existente ID" . $cliente_id;
-                echo "<hr>";
-            }
         }
 
 
@@ -1239,7 +1189,29 @@ class Asaas_gateway extends App_gateway
             if (asaas_lifecycle_should_ignore_payment($invoiceId, $paymentId)) {
                 throw new RuntimeException('A cobrança foi encerrada ou substituída; o recebimento do checkout precisa de conciliação.');
             }
-            $recorded = static function () use ($ci, $invoiceId, $paymentId): bool {
+            $pricing = asaas_card_receipt_allocations(asaas_lifecycle_cached_payment(asaas_lifecycle_map($invoiceId)));
+            $expectedPrincipal = null;
+            if ($pricing !== null) {
+                $expectedPrincipal = $pricing['allocations'][$paymentId]['principal_cents'] ?? null;
+                if ($expectedPrincipal === null || asaas_payment_amount_to_cents($data['amount'] ?? null) !== $expectedPrincipal) {
+                    throw new AsaasCardReceiptException('payment_mismatch');
+                }
+            }
+            $recorded = static function () use ($ci, $invoiceId, $paymentId, $expectedPrincipal): bool {
+                if ($expectedPrincipal !== null) {
+                    $query = asaas_diagnostic_quiet_db($ci->db, static fn () => $ci->db->get_where(
+                        db_prefix() . 'invoicepaymentrecords', ['transactionid' => $paymentId]
+                    ));
+                    if (!is_object($query) || !method_exists($query, 'result_array') || !is_array($rows = $query->result_array())) {
+                        throw new RuntimeException('Não foi possível conferir o recibo existente da cobrança.');
+                    }
+                    if ($rows === []) { return false; }
+                    if (count($rows) !== 1 || (int) ($rows[0]['invoiceid'] ?? 0) !== $invoiceId
+                        || asaas_payment_amount_to_cents($rows[0]['amount'] ?? null) !== $expectedPrincipal) {
+                        throw new AsaasCardReceiptException('allocation_invalid');
+                    }
+                    return true;
+                }
                 $query = asaas_diagnostic_quiet_db($ci->db, static fn () => $ci->db->get_where(
                     db_prefix() . 'invoicepaymentrecords', ['invoiceid' => $invoiceId, 'transactionid' => $paymentId], 1
                 ));
@@ -1254,10 +1226,13 @@ class Asaas_gateway extends App_gateway
                 throw new RuntimeException('A fatura está cancelada ou em rascunho; o recebimento precisa de conciliação.');
             } else {
                 $balance = asaas_payment_amount_to_cents(get_invoice_total_left_to_pay($invoiceId, $invoice->total));
+                if ($expectedPrincipal !== null && ($expectedPrincipal > $balance || (int) $invoice->status === 2)) {
+                    throw new AsaasCardReceiptException('balance_mismatch');
+                }
                 if ((int) $invoice->status === 2 || $balance === 0) {
                     $success = true;
                 } else {
-                    $amount = min(asaas_payment_amount_to_cents($data['amount'] ?? null), $balance);
+                    $amount = $expectedPrincipal ?? min(asaas_payment_amount_to_cents($data['amount'] ?? null), $balance);
                     if ($amount <= 0) {
                         throw new RuntimeException('O recebimento do checkout precisa informar um valor positivo.');
                     }
@@ -1294,6 +1269,7 @@ class Asaas_gateway extends App_gateway
                 ? 'Recibo do checkout já gravado; houve falha em uma etapa posterior do núcleo.'
                 : 'Recebimento do checkout não confirmado; conferir o recibo local e a cobrança Asaas.', [
                     'invoice_id' => $invoiceId, 'payment_id' => $paymentId, 'exception' => get_class($error),
+                    'reason' => $error instanceof AsaasCardReceiptException ? $error->reason() : 'receipt_failed',
                 ]);
         } finally {
             if ($locked) {

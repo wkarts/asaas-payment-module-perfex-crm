@@ -671,6 +671,7 @@ final class AsaasAdapter
             $externalReference = is_string($payment['externalReference'] ?? null) ? $payment['externalReference'] : null;
             $paymentId = is_string($payment['id'] ?? null) ? $payment['id'] : null;
             $status = $payment['status'] ?? null;
+            $receiptEvent = !isset($payload['event']) || in_array($payload['event'], ['PAYMENT_RECEIVED', 'PAYMENT_CONFIRMED', 'PAYMENT_DUNNING_RECEIVED'], true);
             $invoice = null;
             if ($externalReference !== null && $externalReference !== '') {
                 $this->ci->db->where('hash', $externalReference);
@@ -678,6 +679,19 @@ final class AsaasAdapter
             }
 
             if ($invoice) {
+                // A timeout can leave the quote persisted before its validated allocation map.
+                // Recover via GET before acquiring our own lock/transaction; the checkout owns
+                // its recovery lock and still cannot repeat a capture. Already mapped events do no HTTP.
+                if ($receiptEvent && empty($payment['deleted']) && in_array($status, ['RECEIVED', 'CONFIRMED', 'RECEIVED_IN_CASH'], true)
+                    && $paymentId !== null && ($payment['billingType'] ?? null) === 'CREDIT_CARD') {
+                    $cache = \asaas_lifecycle_cached_payment(\asaas_lifecycle_map((int) $invoice->id));
+                    $pricing = \asaas_card_receipt_pricing($cache);
+                    if ($pricing !== null && !array_key_exists('allocations', $pricing)
+                        && !\asaas_lifecycle_should_ignore_payment((int) $invoice->id, $paymentId)) {
+                        if ($this->gateway === null) { throw new \AsaasCardReceiptException('allocation_missing'); }
+                        $this->gateway->card_checkout()->reconcile($invoice);
+                    }
+                }
                 \asaas_receipt_lock((int) $invoice->id);
                 $receiptLockInvoiceId = (int) $invoice->id;
             }
@@ -721,14 +735,18 @@ final class AsaasAdapter
                 }
             }
 
-            $receiptEvent = !isset($payload['event']) || in_array($payload['event'], ['PAYMENT_RECEIVED', 'PAYMENT_CONFIRMED', 'PAYMENT_DUNNING_RECEIVED'], true);
             if ($invoice && $receiptEvent && empty($payment['deleted'])
                 && in_array($status, ['RECEIVED', 'CONFIRMED', 'RECEIVED_IN_CASH'], true)) {
                 if ($paymentId === null || $paymentId === '') {
                     throw new RuntimeException('O evento de recebimento não informou o identificador da cobrança.');
                 }
                 $ignored = \asaas_lifecycle_should_ignore_payment((int) $invoice->id, $paymentId);
-                $alreadyRecorded = $this->hasRecordedPayment((int) $invoice->id, $paymentId);
+                $cache = $ignored ? [] : \asaas_lifecycle_cached_payment(\asaas_lifecycle_map((int) $invoice->id));
+                $principal = $ignored ? null : \asaas_card_receipt_principal($payment, $cache);
+                $alreadyRecorded = $this->hasRecordedPayment((int) $invoice->id, $paymentId, $principal);
+                if (!$ignored && !$alreadyRecorded && $principal !== null && (int) $invoice->status === 2) {
+                    throw new \AsaasCardReceiptException('balance_mismatch');
+                }
                 if (!$ignored && !$alreadyRecorded && !in_array((int) $invoice->status, [2, 5, 6], true)) {
                     if ($this->gateway === null) {
                         throw new RuntimeException('O gateway Asaas não está disponível para registrar o recebimento.');
@@ -738,16 +756,21 @@ final class AsaasAdapter
                         throw new RuntimeException('Não foi possível apurar o saldo da fatura para registrar o recebimento.');
                     }
                     if ((float) $balance > 0) {
-                        $added = \asaas_lifecycle_remote_payment(fn () => $this->gateway->addPayment([
-                            'amount' => \asaas_card_receipt_amount($payment, $balance),
+                        $receipt = [
+                            'amount' => \asaas_card_receipt_amount($payment, $balance, $cache),
                             'invoiceid' => $invoice->id,
                             'paymentmode' => 'Asaas',
                             'paymentmethod' => is_string($payment['billingType'] ?? null) ? $payment['billingType'] : 'Asaas',
                             'transactionid' => $paymentId,
-                        ]));
+                        ];
+                        $note = \asaas_card_receipt_note($payment, $cache);
+                        if ($note !== '') { $receipt['note'] = $note; }
+                        $added = \asaas_lifecycle_remote_payment(fn () => $this->gateway->addPayment($receipt));
                         if ($added !== true) {
                             throw new RuntimeException('O Perfex não confirmou o registro do recebimento da cobrança.');
                         }
+                    } elseif ($principal !== null) {
+                        throw new \AsaasCardReceiptException('balance_mismatch');
                     }
                 }
             }
@@ -780,6 +803,8 @@ final class AsaasAdapter
             $this->log('error', 'Não foi possível concluir o recebimento pelo webhook Asaas.', [
                 'event_id' => $eventId,
                 'exception' => get_class($exception),
+                'reason' => $exception instanceof \AsaasCardReceiptException ? $exception->reason() : 'receipt_failed',
+                'detail' => $exception instanceof \AsaasCardReceiptException ? $exception->getMessage() : null,
             ]);
             return $this->webhookResult(false, false, 'Falha interna ao processar webhook.', 500);
         } finally {
@@ -801,13 +826,23 @@ final class AsaasAdapter
         return ['processed' => $processed, 'duplicated' => $duplicated, 'message' => $message, 'http_status' => $httpStatus];
     }
 
-    private function hasRecordedPayment(int $invoiceId, string $paymentId): bool
+    private function hasRecordedPayment(int $invoiceId, string $paymentId, ?int $expectedPrincipal = null): bool
     {
         $table = db_prefix() . 'invoicepaymentrecords';
         if (!$this->ci->db->table_exists($table)
             || !$this->ci->db->field_exists('invoiceid', $table)
             || !$this->ci->db->field_exists('transactionid', $table)) {
             return false;
+        }
+        if ($expectedPrincipal !== null) {
+            if (!$this->ci->db->field_exists('amount', $table)) { throw new \AsaasCardReceiptException('allocation_invalid'); }
+            $records = $this->ci->db->get_where($table, ['transactionid' => $paymentId])->result_array();
+            if ($records === []) { return false; }
+            if (count($records) !== 1 || (int) ($records[0]['invoiceid'] ?? 0) !== $invoiceId
+                || \asaas_payment_amount_to_cents($records[0]['amount'] ?? null) !== $expectedPrincipal) {
+                throw new \AsaasCardReceiptException('allocation_invalid');
+            }
+            return true;
         }
         return (bool) $this->ci->db->get_where($table, ['invoiceid' => $invoiceId, 'transactionid' => $paymentId])->row_array();
     }
