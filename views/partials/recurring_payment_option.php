@@ -5,9 +5,11 @@
         <div class="asaas-recurring-invoice-content">
             <h4>Cartão de crédito recorrente</h4>
             <p class="text-muted"><?php echo (int) $invoice->status === 2
-                ? 'Consulte ou cancele a autorização das próximas cobranças automáticas deste cliente.'
-                : 'Autorize o pagamento desta fatura e das próximas faturas Asaas deste cliente. Você pode cancelar a autorização pela sua conta.'; ?></p>
-            <p class="text-muted asaas-recurring-invoice-help">O cadastro da autorização exige acesso à conta do cliente. O pagamento avulso continua disponível nos meios da fatura.</p>
+                ? 'Consulte ou desative a autorização para as próximas cobranças automáticas.'
+                : 'Pague esta fatura e as próximas cobranças Asaas automaticamente no cartão.'; ?></p>
+            <p class="text-muted asaas-recurring-invoice-help"><?php echo (int) $invoice->status === 2
+                ? 'A desativação vale para cobranças futuras; os pagamentos já realizados são mantidos.'
+                : 'Entre na sua conta para autorizar. Se preferir, pague somente esta fatura pelos meios abaixo.'; ?></p>
         </div>
         <a class="btn btn-default asaas-recurring-invoice-action" href="<?php echo html_escape(site_url('asaas/recurring/index/' . rawurlencode((string) $invoice->hash))); ?>">
             <?php echo (int) $invoice->status === 2 ? 'Gerenciar autorização recorrente' : 'Cadastrar cartão recorrente'; ?>

@@ -36,7 +36,7 @@ $assetRoot = 'modules/asaas/assets/';
 <link rel="stylesheet" href="<?php echo html_escape(site_url($assetRoot . 'css/asaas-recurring.css') . '?v=' . filemtime(__DIR__ . '/../assets/css/asaas-recurring.css')); ?>">
 <div id="asaas-recurring" class="container asaas-recurring-container mtop25 mbot30">
     <div class="row"><div class="col-md-10 col-md-offset-1">
-        <div class="panel_s"><div class="panel-body">
+        <div class="panel_s asaas-recurring-panel"><div class="panel-body">
             <div class="asaas-recurring-heading">
                 <div>
                     <p class="text-muted no-mbot"><?php echo html_escape(format_invoice_number($invoice->id)); ?></p>
@@ -45,28 +45,31 @@ $assetRoot = 'modules/asaas/assets/';
                 <a href="<?php echo html_escape($invoice_url); ?>" class="btn btn-default">Voltar à fatura</a>
             </div>
             <?php if ($requiresLogin) { ?>
-                <div class="alert alert-info mtop20" role="status">
-                    <h4 class="bold">Entre na conta do cliente para autorizar a recorrência</h4>
-                    <p>Essa autorização permite cobrar automaticamente novas faturas deste cliente. Por isso, o cadastro e a desativação do cartão recorrente exigem acesso à conta do cliente com permissão para faturas.</p>
-                </div>
-                <div class="asaas-recurring-actions">
-                    <a href="<?php echo html_escape($login_url); ?>" class="btn btn-primary">Entrar e continuar</a>
-                    <a href="<?php echo html_escape($invoice_url); ?>" class="btn btn-default">Voltar para o pagamento pontual</a>
+                <div class="asaas-recurring-guest mtop20" role="status">
+                    <h3 class="bold">Entre na sua conta para ativar o pagamento automático</h3>
+                    <p>Autorize um cartão para pagar esta fatura e as próximas cobranças Asaas habilitadas, sempre em 1x.</p>
+                    <p class="text-muted">Você pode desativar as cobranças futuras pela sua conta.</p>
+                    <p class="text-muted">Entre com o acesso do cliente que tenha permissão para faturas.</p>
+                    <div class="asaas-recurring-actions">
+                        <a href="<?php echo html_escape($login_url); ?>" class="btn btn-primary">Entrar na minha conta</a>
+                        <a href="<?php echo html_escape($invoice_url); ?>" class="btn btn-default">Pagar somente esta fatura</a>
+                    </div>
+                    <p class="text-muted asaas-recurring-guest-note">O pagamento avulso continua disponível nos meios da fatura.</p>
                 </div>
             <?php } else { ?>
                 <?php $asaas_environment_hint = ''; include __DIR__ . '/partials/payment_environment.php'; ?>
                 <div class="clearfix"></div>
                 <div class="asaas-recurring-state mtop20">
                     <div>
-                        <span class="text-muted">Situação</span>
+                        <span class="text-muted">Situação atual</span>
                         <strong class="display-block"><?php echo html_escape($stateLabels[$state] ?? 'Conferência necessária'); ?></strong>
                     </div>
                     <div>
-                        <span class="text-muted">Autorização de cobranças futuras</span>
+                        <span class="text-muted">Cobranças automáticas</span>
                         <strong class="display-block"><?php echo html_escape($authorizationLabels[$authorization] ?? 'Conferência necessária'); ?></strong>
                     </div>
                     <div>
-                        <span class="text-muted">Fatura no CRM</span>
+                        <span class="text-muted">Fatura</span>
                         <div><?php echo format_invoice_status($invoice->status, '', true); ?></div>
                     </div>
                 </div>
@@ -85,9 +88,9 @@ $assetRoot = 'modules/asaas/assets/';
                 <div class="asaas-recurring-explanation mtop20">
                     <h3 class="bold">Como funciona</h3>
                     <ul>
-                        <li>Ao autorizar, esta fatura será cobrada no cartão em uma parcela.</li>
-                        <li>As próximas faturas Asaas elegíveis emitidas para este cliente terão uma tentativa automática de cobrança, conforme a autorização.</li>
-                        <li>Se o cartão for recusado, a recorrência será suspensa. Você poderá cadastrar o cartão novamente em uma fatura aberta ou usar o pagamento pontual.</li>
+                        <li>Ao autorizar, você paga esta fatura e permite cobrar as próximas faturas elegíveis deste cliente, sempre em uma parcela.</li>
+                        <li>Você pode desativar a autorização para as próximas cobranças.</li>
+                        <li>Se houver recusa, a recorrência será suspensa. Cadastre o cartão novamente em uma fatura aberta ou pague somente aquela fatura por outro meio.</li>
                     </ul>
                 </div>
                 <?php if ($canEnroll) { ?>
@@ -102,56 +105,60 @@ $assetRoot = 'modules/asaas/assets/';
                         <input type="hidden" name="action" value="enroll">
                         <input type="hidden" name="consentVersion" value="<?php echo html_escape($recurring['consent_version'] ?? ''); ?>">
                         <input type="hidden" name="cardQuote" value="<?php echo html_escape($recurring['quote'] ?? ''); ?>">
-                        <h3 class="bold">Cadastrar cartão</h3>
-                        <p class="text-muted">Informe o cartão que deseja autorizar. Para atualizar uma autorização existente, preencha os dados do novo cartão.</p>
-                        <div class="form-group">
-                            <label for="recurring-holderName" class="control-label">Nome impresso no cartão</label>
-                            <input id="recurring-holderName" name="holderName" type="text" class="form-control" autocomplete="off" maxlength="100" required>
+                        <div class="asaas-recurring-form-sections">
+                            <fieldset class="asaas-recurring-fieldset">
+                                <legend>Cartão de crédito</legend>
+                                <p class="text-muted asaas-recurring-fieldset-help">Para trocar o cartão autorizado, preencha os dados do novo cartão.</p>
+                                <div class="form-group">
+                                    <label for="recurring-holderName" class="control-label">Nome impresso no cartão</label>
+                                    <input id="recurring-holderName" name="holderName" type="text" class="form-control" autocomplete="off" maxlength="100" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="recurring-cardNumber" class="control-label">Número do cartão</label>
+                                    <input id="recurring-cardNumber" name="cardNumber" type="text" class="form-control" autocomplete="off" inputmode="numeric" pattern="[ \-]*(?:[0-9][ \-]*){13,19}" maxlength="37" required>
+                                </div>
+                                <div class="row">
+                                    <div class="col-xs-4"><div class="form-group">
+                                        <label for="recurring-expirationMonth" class="control-label">Validade: mês</label>
+                                        <input id="recurring-expirationMonth" name="expirationMonth" type="text" class="form-control" placeholder="MM" autocomplete="off" inputmode="numeric" pattern="(?:0?[1-9]|1[0-2])" maxlength="2" required>
+                                    </div></div>
+                                    <div class="col-xs-4"><div class="form-group">
+                                        <label for="recurring-expirationYear" class="control-label">Validade: ano</label>
+                                        <input id="recurring-expirationYear" name="expirationYear" type="text" class="form-control" placeholder="AAAA" autocomplete="off" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required>
+                                    </div></div>
+                                    <div class="col-xs-4"><div class="form-group">
+                                        <label for="recurring-securityCode" class="control-label">CVV</label>
+                                        <input id="recurring-securityCode" name="securityCode" type="password" class="form-control" autocomplete="off" inputmode="numeric" pattern="[0-9]{3,4}" minlength="3" maxlength="4" required>
+                                    </div></div>
+                                </div>
+                            </fieldset>
+                            <fieldset class="asaas-recurring-fieldset">
+                                <legend>Dados do titular</legend>
+                                <div class="form-group">
+                                    <label for="recurring-holderEmail" class="control-label">E-mail</label>
+                                    <input id="recurring-holderEmail" name="holderEmail" type="email" class="form-control" autocomplete="off" maxlength="254" value="<?php echo $holderValue('holderEmail'); ?>" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="recurring-holderDocument" class="control-label">CPF ou CNPJ</label>
+                                    <input id="recurring-holderDocument" name="holderDocument" type="text" class="form-control" autocomplete="off" inputmode="numeric" maxlength="18" value="<?php echo $holderValue('holderDocument'); ?>" required>
+                                </div>
+                                <div class="row">
+                                    <div class="col-sm-6"><div class="form-group">
+                                        <label for="recurring-holderPostalCode" class="control-label">CEP</label>
+                                        <input id="recurring-holderPostalCode" name="holderPostalCode" type="text" class="form-control" autocomplete="off" inputmode="numeric" maxlength="9" value="<?php echo $holderValue('holderPostalCode'); ?>" required>
+                                    </div></div>
+                                    <div class="col-sm-6"><div class="form-group">
+                                        <label for="recurring-holderAddressNumber" class="control-label">Número do endereço</label>
+                                        <input id="recurring-holderAddressNumber" name="holderAddressNumber" type="text" class="form-control" autocomplete="off" maxlength="20" value="<?php echo $holderValue('holderAddressNumber'); ?>" required>
+                                    </div></div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="recurring-holderPhone" class="control-label">Telefone com DDD</label>
+                                    <input id="recurring-holderPhone" name="holderPhone" type="tel" class="form-control" autocomplete="off" maxlength="20" value="<?php echo $holderValue('holderPhone'); ?>" required>
+                                </div>
+                            </fieldset>
                         </div>
-                        <div class="form-group">
-                            <label for="recurring-cardNumber" class="control-label">Número do cartão</label>
-                            <input id="recurring-cardNumber" name="cardNumber" type="text" class="form-control" autocomplete="off" inputmode="numeric" pattern="[ \-]*(?:[0-9][ \-]*){13,19}" maxlength="37" required>
-                        </div>
-                        <div class="row">
-                            <div class="col-xs-4"><div class="form-group">
-                                <label for="recurring-expirationMonth" class="control-label">Validade: mês</label>
-                                <input id="recurring-expirationMonth" name="expirationMonth" type="text" class="form-control" placeholder="MM" autocomplete="off" inputmode="numeric" pattern="(?:0?[1-9]|1[0-2])" maxlength="2" required>
-                            </div></div>
-                            <div class="col-xs-4"><div class="form-group">
-                                <label for="recurring-expirationYear" class="control-label">Validade: ano</label>
-                                <input id="recurring-expirationYear" name="expirationYear" type="text" class="form-control" placeholder="AAAA" autocomplete="off" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required>
-                            </div></div>
-                            <div class="col-xs-4"><div class="form-group">
-                                <label for="recurring-securityCode" class="control-label">CVV</label>
-                                <input id="recurring-securityCode" name="securityCode" type="password" class="form-control" autocomplete="off" inputmode="numeric" pattern="[0-9]{3,4}" minlength="3" maxlength="4" required>
-                            </div></div>
-                        </div>
-                        <h4 class="bold">Dados do titular</h4>
-                        <div class="row">
-                            <div class="col-sm-6"><div class="form-group">
-                                <label for="recurring-holderEmail" class="control-label">E-mail</label>
-                                <input id="recurring-holderEmail" name="holderEmail" type="email" class="form-control" autocomplete="off" maxlength="254" value="<?php echo $holderValue('holderEmail'); ?>" required>
-                            </div></div>
-                            <div class="col-sm-6"><div class="form-group">
-                                <label for="recurring-holderDocument" class="control-label">CPF ou CNPJ</label>
-                                <input id="recurring-holderDocument" name="holderDocument" type="text" class="form-control" autocomplete="off" inputmode="numeric" maxlength="18" value="<?php echo $holderValue('holderDocument'); ?>" required>
-                            </div></div>
-                        </div>
-                        <div class="row">
-                            <div class="col-sm-4"><div class="form-group">
-                                <label for="recurring-holderPostalCode" class="control-label">CEP</label>
-                                <input id="recurring-holderPostalCode" name="holderPostalCode" type="text" class="form-control" autocomplete="off" inputmode="numeric" maxlength="9" value="<?php echo $holderValue('holderPostalCode'); ?>" required>
-                            </div></div>
-                            <div class="col-sm-4"><div class="form-group">
-                                <label for="recurring-holderAddressNumber" class="control-label">Número do endereço</label>
-                                <input id="recurring-holderAddressNumber" name="holderAddressNumber" type="text" class="form-control" autocomplete="off" maxlength="20" value="<?php echo $holderValue('holderAddressNumber'); ?>" required>
-                            </div></div>
-                            <div class="col-sm-4"><div class="form-group">
-                                <label for="recurring-holderPhone" class="control-label">Telefone com DDD</label>
-                                <input id="recurring-holderPhone" name="holderPhone" type="tel" class="form-control" autocomplete="off" maxlength="20" value="<?php echo $holderValue('holderPhone'); ?>" required>
-                            </div></div>
-                        </div>
-                        <p class="text-muted asaas-recurring-privacy">O módulo mantém a autorização e um token criptografado fornecido pelo Asaas para realizar novas cobranças. Número do cartão, validade e CVV são enviados nesta solicitação e não são gravados pelo módulo.</p>
+                        <p class="text-muted asaas-recurring-privacy">O pagamento é processado pelo Asaas. Para as próximas cobranças, este sistema utiliza uma referência protegida ao cartão, sem gravar o número, a validade ou o CVV.</p>
                         <div class="checkbox checkbox-primary asaas-recurring-consent">
                             <input id="recurring-consent" name="recurringConsent" type="checkbox" value="1" required aria-describedby="asaas-recurring-consent-help">
                             <label for="recurring-consent"><?php echo html_escape($consentText); ?></label>
@@ -164,9 +171,11 @@ $assetRoot = 'modules/asaas/assets/';
                 <?php } ?>
                 <?php if ($canPayOnce) { ?>
                     <div class="asaas-recurring-alternative mtop20">
-                        <p class="no-mbot">Prefere pagar somente esta fatura?</p>
-                        <a href="<?php echo html_escape($invoice_url); ?>" class="btn btn-default mtop10">Voltar ao pagamento pontual</a>
-                        <p class="text-muted mtop10 no-mbot">Na fatura, escolha o meio Asaas habitual para acessar as opções de boleto, Pix ou cartão disponíveis.</p>
+                        <div>
+                            <p class="no-mbot bold">Prefere um pagamento avulso?</p>
+                            <p class="text-muted mtop5 no-mbot">Escolha boleto, Pix ou cartão entre os meios disponíveis na fatura.</p>
+                        </div>
+                        <a href="<?php echo html_escape($invoice_url); ?>" class="btn btn-default">Pagar somente esta fatura</a>
                     </div>
                 <?php } ?>
                 <?php if ($canRevoke) { ?>

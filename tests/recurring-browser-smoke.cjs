@@ -341,7 +341,7 @@ async function main() {
     try {
         await scenario('Chromium renderiza os estados sem autorização, ativo, suspenso, incerto, pago e login', async () => {
             const states = {inactive: [1, 0, 'Ainda não autorizado'], active: [1, 1, 'Recorrência ativa'], suspended: [1, 1, 'Recorrência suspensa'],
-                uncertain: [0, 1, 'Confirmação pendente'], paid: [0, 1, 'Pagamento confirmado'], guest: [0, 0, 'Entre na conta do cliente']};
+                uncertain: [0, 1, 'Confirmação pendente'], paid: [0, 1, 'Pagamento confirmado'], guest: [0, 0, 'Entre na sua conta para ativar o pagamento automático']};
             for (const [mode, [enroll, revoke, label]] of Object.entries(states)) {
                 const {page} = await fixturePage(mode);
                 assert.equal(await page.locator('#asaas-recurring-enroll').count(), enroll);
@@ -351,6 +351,16 @@ async function main() {
                 assert.deepEqual(await page.evaluate(() => window.__recurringPrivacyAccesses), []);
                 await assertNoOverflow(page);
                 await page.screenshot({path: path.join(artifacts, 'recurring-' + mode + '.png'), fullPage: true});
+                if (mode === 'guest') {
+                    await page.setViewportSize({width: 320, height: 960});
+                    await assertNoOverflow(page);
+                    const login = page.getByRole('link', {name: 'Entrar na minha conta', exact: true});
+                    const payOnce = page.getByRole('link', {name: 'Pagar somente esta fatura', exact: true});
+                    assert.equal(await login.getAttribute('href'), new URL('/authentication/login', page.url()).href);
+                    assert.equal(await payOnce.getAttribute('href'), new URL(invoicePath, page.url()).href);
+                    assert.equal(await page.locator('form, input').count(), 0, 'Guest explanation must not expose an authorization form.');
+                    await page.screenshot({path: path.join(artifacts, 'recurring-guest-320.png'), fullPage: true});
+                }
             }
         });
         await scenario('card da fatura fica compacto abaixo dos totais, responsivo e separado do pagamento pontual', async () => {

@@ -4,13 +4,17 @@ defined('BASEPATH') or exit('No direct script access allowed');
 $cardHolderDefaults = isset($card_holder_defaults) && is_array($card_holder_defaults) ? $card_holder_defaults : [];
 $cardInstallmentOptions = isset($installment_options) && is_array($installment_options) ? $installment_options : [];
 $cardCheckoutBlocked = !empty($card_checkout_blocked) || $cardInstallmentOptions === [];
+$cardInitialInstallment = $cardInstallmentOptions === [] ? [] : reset($cardInstallmentOptions);
+$cardInitialInstallmentCount = (int) ($cardInitialInstallment['count'] ?? 0);
+$cardExtendedInstallmentSelected = $cardInitialInstallmentCount >= 13 && $cardInitialInstallmentCount <= 21;
 $cardHolderValue = static function (string $name) use ($cardHolderDefaults): string {
     return isset($cardHolderDefaults[$name]) && is_scalar($cardHolderDefaults[$name])
         ? html_escape((string) $cardHolderDefaults[$name])
         : '';
 };
 ?>
-<div class="kt-container kt-grid__item kt-grid__item--fluid mt-3">
+<link rel="stylesheet" href="<?php echo html_escape(site_url('modules/asaas/assets/css/asaas-card-checkout.css') . '?v=' . filemtime(__DIR__ . '/../assets/css/asaas-card-checkout.css')); ?>">
+<div id="asaas-card-page" class="kt-container kt-grid__item kt-grid__item--fluid mt-3">
     <div class="col-lg-12">
         <div class="kt-portlet" id="kt_portlet">
             <div class="kt-portlet__body"><?php echo validation_errors('<div class="alert alert-danger text-center">', '</div>'); ?>
@@ -40,7 +44,7 @@ $cardHolderValue = static function (string $name) use ($cardHolderDefaults): str
                                 <div class="clearfix"></div>
                             </div>
                             <a href="<?= site_url('invoice/' . $invoice->id . '/' . $invoice->hash); ?>" class="btn btn-info pull-right mtop5 mright5 action-button go-to-portal">
-                                Voltar a fatura
+                                Voltar à fatura
                             </a>
                             <!--
                             <?php if (is_client_logged_in() && has_contact_permission('invoices')) { ?>
@@ -161,9 +165,9 @@ $cardHolderValue = static function (string $name) use ($cardHolderDefaults): str
                             </tbody>
                         </table>
                     </div>
-                    <div class="col-md-8 col-md-offset-2">
+                    <div class="col-md-12 asaas-card-checkout-column">
                         <?php if (!empty($mensagem_erro)) { ?>
-                            <div class="alert alert-danger text-center" role="alert">ERRO: <?php echo html_escape($mensagem_erro); ?></div>
+                            <div class="alert alert-danger" role="alert"><?php echo html_escape($mensagem_erro); ?></div>
                         <?php } ?>
                         <?php if (!empty($mensagem_info)) { ?>
                             <div class="alert alert-info text-center" role="status"><?php echo html_escape($mensagem_info); ?></div>
@@ -173,97 +177,99 @@ $cardHolderValue = static function (string $name) use ($cardHolderDefaults): str
                         <?php if (!$cardCheckoutBlocked) { ?>
                         <form id="asaas-card-checkout" action="" method="post" autocomplete="off">
                         <input type="hidden" name="<?php echo html_escape($this->security->get_csrf_token_name()); ?>" value="<?php echo html_escape($this->security->get_csrf_hash()); ?>">
-                        <div class="form-group">
-                            <label class="control-label" for="installmentCount">Como deseja pagar?</label>
-                            <select id="installmentCount" class="form-control" name="installmentCount" aria-describedby="asaas-card-price-summary asaas-card-installment-help" required>
-                                <?php foreach ($cardInstallmentOptions as $cardInstallmentOption) { ?>
-                                    <option value="<?php echo (int) $cardInstallmentOption['count']; ?>"
-                                            data-card-principal="<?php echo html_escape($cardInstallmentOption['principal'] ?? ''); ?>"
-                                            data-card-fee="<?php echo html_escape($cardInstallmentOption['fee'] ?? '0.00'); ?>"
-                                            data-card-total="<?php echo html_escape($cardInstallmentOption['total'] ?? ''); ?>"
-                                            data-card-schedule="<?php echo html_escape($cardInstallmentOption['schedule'] ?? ''); ?>"><?php echo html_escape($cardInstallmentOption['label']); ?></option>
-                                <?php } ?>
-                            </select>
-                            <?php foreach ($cardInstallmentOptions as $cardInstallmentOption) { ?>
-                                <input type="hidden" name="cardQuote[<?php echo (int) $cardInstallmentOption['count']; ?>]" value="<?php echo html_escape($cardInstallmentOption['quote'] ?? ''); ?>">
-                            <?php } ?>
-                        </div>
-                        <div id="asaas-card-price-summary" class="well well-sm" aria-live="polite" hidden>
-                            <p class="no-mbot">Saldo da fatura: <strong data-card-price-principal></strong></p>
-                            <p class="no-mbot">Encargos do cartão: <strong data-card-price-fee></strong></p>
-                            <p class="mtop5 no-mbot">Total no cartão: <strong data-card-price-total></strong></p>
-                            <p class="text-muted mtop5 no-mbot" data-card-price-schedule></p>
-                        </div>
-                        <p id="asaas-card-installment-help" class="text-muted">De 13 a 21 parcelas, somente Visa e Mastercard. As opções respeitam o valor mínimo por parcela. Descontos adicionais da cobrança, quando elegíveis, continuam sujeitos às condições do Asaas.</p>
-                        <noscript>
-                            <table class="table table-condensed">
-                                <caption>Confira os encargos e o total da opção selecionada antes de confirmar.</caption>
-                                <thead><tr><th>Parcelas</th><th>Encargos</th><th>Total</th></tr></thead>
-                                <tbody><?php foreach ($cardInstallmentOptions as $cardInstallmentOption) { ?>
-                                    <tr><td><?php echo (int) $cardInstallmentOption['count']; ?></td><td>R$ <?php echo html_escape(number_format((float) ($cardInstallmentOption['fee'] ?? 0), 2, ',', '.')); ?></td><td>R$ <?php echo html_escape(number_format((float) ($cardInstallmentOption['total'] ?? $invoice->total_left_to_pay), 2, ',', '.')); ?></td></tr>
-                                <?php } ?></tbody>
-                            </table>
-                        </noscript>
-                        <h3 class="text-center">Informe os dados do cartão</h3>
-                        <div class="form-group">
-                            <label class="control-label" for="holderName">Nome do titular</label>
-                            <input id="holderName" name="holderName" type="text" placeholder="NOME DO TITULAR" class="form-control" autocomplete="off" maxlength="100" value="<?php echo $cardHolderValue('holderName'); ?>" required>
-                        </div>
-                        <div class="form-group">
-                            <label class="control-label" for="cardNumber">Número do cartão</label>
-                            <input id="cardNumber" name="cardNumber" type="text" placeholder="NUMERO DO CARTÃO" class="form-control"
-                                   autocomplete="off" inputmode="numeric" pattern="[ ]*(?:[0-9][ ]*){13,19}" maxlength="37" required>
-                        </div>
-                        <div class="row">
-                            <div class="col-xs-6 col-md-3">
+                        <section class="asaas-card-section asaas-card-offer" aria-labelledby="asaas-card-offer-heading">
+                            <h3 id="asaas-card-offer-heading">Pagamento com cartão</h3>
+                            <div class="asaas-card-offer-grid">
                                 <div class="form-group">
-                                    <label class="control-label" for="expirationMonth">Validade: mês</label>
-                                    <input id="expirationMonth" name="expirationMonth" type="text" placeholder="MM" class="form-control" autocomplete="off" inputmode="numeric" pattern="(?:0?[1-9]|1[0-2])" maxlength="2" required>
+                                    <label class="control-label" for="installmentCount">Parcelamento</label>
+                                    <select id="installmentCount" class="form-control" name="installmentCount" aria-describedby="asaas-card-price-summary" required>
+                                        <?php foreach ($cardInstallmentOptions as $cardInstallmentOption) { ?>
+                                            <option value="<?php echo (int) $cardInstallmentOption['count']; ?>"
+                                                    data-card-principal="<?php echo html_escape($cardInstallmentOption['principal'] ?? ''); ?>"
+                                                    data-card-fee="<?php echo html_escape($cardInstallmentOption['fee'] ?? '0.00'); ?>"
+                                                    data-card-total="<?php echo html_escape($cardInstallmentOption['total'] ?? ''); ?>"
+                                                    data-card-schedule="<?php echo html_escape($cardInstallmentOption['schedule'] ?? ''); ?>"><?php echo html_escape($cardInstallmentOption['label']); ?></option>
+                                        <?php } ?>
+                                    </select>
+                                    <p id="asaas-card-installment-help" class="asaas-card-installment-notice" role="status" aria-live="polite" aria-atomic="true"<?php echo $cardExtendedInstallmentSelected ? '' : ' hidden'; ?>>Para esta quantidade de parcelas, use um cartão Visa ou Mastercard.</p>
+                                    <?php foreach ($cardInstallmentOptions as $cardInstallmentOption) { ?>
+                                        <input type="hidden" name="cardQuote[<?php echo (int) $cardInstallmentOption['count']; ?>]" value="<?php echo html_escape($cardInstallmentOption['quote'] ?? ''); ?>">
+                                    <?php } ?>
+                                </div>
+                                <div id="asaas-card-price-summary" class="asaas-card-price-summary" aria-live="polite" hidden>
+                                    <p><span>Saldo da fatura</span><strong data-card-price-principal></strong></p>
+                                    <p><span>Encargos do cartão</span><strong data-card-price-fee></strong></p>
+                                    <p class="asaas-card-price-total"><span>Total no cartão</span><strong data-card-price-total></strong></p>
+                                    <p class="text-muted asaas-card-price-schedule" data-card-price-schedule></p>
                                 </div>
                             </div>
-                            <div class="col-xs-6 col-md-3">
+                            <noscript>
+                                <style>#asaas-card-checkout #asaas-card-installment-help { display: none !important; }</style>
+                                <div class="table-responsive"><table class="table table-condensed">
+                                    <caption>Confira os encargos e o total antes de confirmar.</caption>
+                                    <thead><tr><th>Parcelas</th><th>Encargos</th><th>Total</th></tr></thead>
+                                    <tbody><?php foreach ($cardInstallmentOptions as $cardInstallmentOption) { ?>
+                                        <tr><td><?php echo (int) $cardInstallmentOption['count']; ?><?php if ((int) $cardInstallmentOption['count'] >= 13 && (int) $cardInstallmentOption['count'] <= 21) { ?><br><small>Visa ou Mastercard</small><?php } ?></td><td>R$ <?php echo html_escape(number_format((float) ($cardInstallmentOption['fee'] ?? 0), 2, ',', '.')); ?></td><td>R$ <?php echo html_escape(number_format((float) ($cardInstallmentOption['total'] ?? $invoice->total_left_to_pay), 2, ',', '.')); ?></td></tr>
+                                    <?php } ?></tbody>
+                                </table></div>
+                            </noscript>
+                        </section>
+                        <div class="asaas-card-details-grid">
+                            <section class="asaas-card-section" aria-labelledby="asaas-card-details-heading">
+                                <h3 id="asaas-card-details-heading">Dados do cartão</h3>
                                 <div class="form-group">
-                                    <label class="control-label" for="expirationYear">Validade: ano</label>
-                                    <input id="expirationYear" name="expirationYear" type="text" placeholder="AAAA" class="form-control" autocomplete="off" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required>
+                                    <label class="control-label" for="holderName">Nome impresso no cartão</label>
+                                    <input id="holderName" name="holderName" type="text" placeholder="Como aparece no cartão" class="form-control" autocomplete="off" maxlength="100" value="<?php echo $cardHolderValue('holderName'); ?>" required>
                                 </div>
-                            </div>
-                            <div class="col-xs-2 col-md-2">
                                 <div class="form-group">
-                                    <label class="control-label" for="securityCode">CVV</label>
-                                    <input id="securityCode" name="securityCode" type="password" placeholder="CVV" class="form-control" autocomplete="off" inputmode="numeric" pattern="[0-9]{3,4}" minlength="3" maxlength="4" required>
+                                    <label class="control-label" for="cardNumber">Número do cartão</label>
+                                    <input id="cardNumber" name="cardNumber" type="text" placeholder="Somente os números" class="form-control"
+                                           autocomplete="off" inputmode="numeric" pattern="[ ]*(?:[0-9][ ]*){13,19}" maxlength="37" required>
                                 </div>
-                            </div>
-                        </div>
-                        <h4>Dados do titular do cartão</h4>
-                        <div class="form-group">
-                            <label class="control-label" for="holderEmail">E-mail do titular</label>
-                            <input id="holderEmail" name="holderEmail" type="email" class="form-control" autocomplete="off" maxlength="254" value="<?php echo $cardHolderValue('holderEmail'); ?>" required>
-                        </div>
-                        <div class="form-group">
-                            <label class="control-label" for="holderDocument">CPF ou CNPJ do titular</label>
-                            <input id="holderDocument" name="holderDocument" type="text" class="form-control" inputmode="numeric" autocomplete="off" maxlength="18" value="<?php echo $cardHolderValue('holderDocument'); ?>" required>
-                        </div>
-                        <div class="row">
-                            <div class="col-sm-6">
+                                <div class="asaas-card-validity-grid">
+                                    <div class="form-group">
+                                        <label class="control-label" for="expirationMonth">Validade: mês</label>
+                                        <input id="expirationMonth" name="expirationMonth" type="text" placeholder="MM" class="form-control" autocomplete="off" inputmode="numeric" pattern="(?:0?[1-9]|1[0-2])" maxlength="2" required>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="control-label" for="expirationYear">Validade: ano</label>
+                                        <input id="expirationYear" name="expirationYear" type="text" placeholder="AAAA" class="form-control" autocomplete="off" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="control-label" for="securityCode">CVV</label>
+                                        <input id="securityCode" name="securityCode" type="password" placeholder="CVV" class="form-control" autocomplete="off" inputmode="numeric" pattern="[0-9]{3,4}" minlength="3" maxlength="4" required>
+                                    </div>
+                                </div>
+                            </section>
+                            <section class="asaas-card-section" aria-labelledby="asaas-card-holder-heading">
+                                <h3 id="asaas-card-holder-heading">Dados do titular</h3>
                                 <div class="form-group">
-                                    <label class="control-label" for="holderPostalCode">CEP do titular</label>
-                                    <input id="holderPostalCode" name="holderPostalCode" type="text" class="form-control" inputmode="numeric" autocomplete="off" maxlength="9" value="<?php echo $cardHolderValue('holderPostalCode'); ?>" required>
+                                    <label class="control-label" for="holderEmail">E-mail</label>
+                                    <input id="holderEmail" name="holderEmail" type="email" class="form-control" autocomplete="off" maxlength="254" value="<?php echo $cardHolderValue('holderEmail'); ?>" required>
                                 </div>
-                            </div>
-                            <div class="col-sm-6">
                                 <div class="form-group">
-                                    <label class="control-label" for="holderAddressNumber">Número do endereço</label>
-                                    <input id="holderAddressNumber" name="holderAddressNumber" type="text" placeholder="Número ou S/N" class="form-control" autocomplete="off" maxlength="30" value="<?php echo $cardHolderValue('holderAddressNumber'); ?>" required>
+                                    <label class="control-label" for="holderDocument">CPF ou CNPJ</label>
+                                    <input id="holderDocument" name="holderDocument" type="text" class="form-control" inputmode="numeric" autocomplete="off" maxlength="18" value="<?php echo $cardHolderValue('holderDocument'); ?>" required>
                                 </div>
-                            </div>
-                        </div>
-                        <div class="form-group">
-                            <label class="control-label" for="holderPhone">Telefone do titular com DDD</label>
-                            <input id="holderPhone" name="holderPhone" type="tel" class="form-control" autocomplete="off" inputmode="tel" maxlength="20" value="<?php echo $cardHolderValue('holderPhone'); ?>" required>
+                                <div class="asaas-card-address-grid">
+                                    <div class="form-group">
+                                        <label class="control-label" for="holderPostalCode">CEP</label>
+                                        <input id="holderPostalCode" name="holderPostalCode" type="text" class="form-control" inputmode="numeric" autocomplete="off" maxlength="9" value="<?php echo $cardHolderValue('holderPostalCode'); ?>" required>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="control-label" for="holderAddressNumber">Número do endereço</label>
+                                        <input id="holderAddressNumber" name="holderAddressNumber" type="text" placeholder="Número ou S/N" class="form-control" autocomplete="off" maxlength="30" value="<?php echo $cardHolderValue('holderAddressNumber'); ?>" required>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label class="control-label" for="holderPhone">Telefone com DDD</label>
+                                    <input id="holderPhone" name="holderPhone" type="tel" class="form-control" autocomplete="off" inputmode="tel" maxlength="20" value="<?php echo $cardHolderValue('holderPhone'); ?>" required>
+                                </div>
+                            </section>
                         </div>
                         <p id="asaas-card-checkout-status" class="alert alert-info hidden" role="status" aria-live="polite" aria-atomic="true"></p>
-                        <div class="form-group">
-                            <button id="payment" class="subscribe btn btn-success btn-lg btn-block" type="submit">Confirmar pagamento</button>
+                        <div class="asaas-card-checkout-actions">
+                            <button id="payment" class="subscribe btn btn-success btn-lg" type="submit">Confirmar pagamento</button>
                         </div>
                         </form>
                         <?php } ?>

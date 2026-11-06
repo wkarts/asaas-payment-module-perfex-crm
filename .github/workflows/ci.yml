@@ -169,6 +169,7 @@ jobs:
           export NODE_PATH="$RUNNER_TEMP/asaas-ui/node_modules"
           node tests/settings-ui-smoke.js --browser
           node tests/recurring-browser-smoke.cjs
+          node tests/card-browser-smoke.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -176,6 +177,7 @@ jobs:
           path: |
             tests/artifacts/settings-*.png
             tests/artifacts/recurring-*.png
+            tests/artifacts/card-*.png
           if-no-files-found: ignore
           retention-days: 30
 
