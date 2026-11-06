@@ -158,7 +158,23 @@ async function main() {
             const request = page.waitForRequest(req => req.method() === 'POST' && new URL(req.url()).pathname === recurringPath);
             await page.locator('#asaas-recurring-enroll [data-recurring-submit]').click({noWaitAfter: true});
             await request;
-            await page.waitForFunction(() => [...document.querySelectorAll('[data-recurring-submit]')].every(button => button.disabled));
+            // The submit handler locks synchronously before native navigation starts. Read
+            // that state directly: RAF polling can stall while this test holds the POST
+            // response. Never wait for a later frame to prove a synchronous submit guard.
+            const submitState = await page.evaluate(() => ({
+                path: window.location.pathname,
+                buttons: [...document.querySelectorAll('[data-recurring-submit]')]
+                    .map(button => ({form: button.closest('form').id, disabled: button.disabled})),
+                forms: [...document.querySelectorAll('[data-asaas-recurring-form]')]
+                    .map(form => ({id: form.id, busy: form.getAttribute('aria-busy')})),
+                statusVisible: !document.getElementById('asaas-recurring-status').classList.contains('hidden')
+            }));
+            const submitDiagnostic = JSON.stringify({state: submitState, pageErrors: errors});
+            assert.equal(submitState.buttons.length, 2, 'Both operation buttons must exist: ' + submitDiagnostic);
+            assert.equal(submitState.buttons.every(button => button.disabled), true, 'Native submit must synchronously lock both operations: ' + submitDiagnostic);
+            assert.equal(submitState.forms.length, 2, 'Both operation forms must exist: ' + submitDiagnostic);
+            assert.equal(submitState.forms.every(form => form.busy === 'true') && submitState.statusVisible, true,
+                'Both forms must report the pending operation accessibly: ' + submitDiagnostic);
             assert.equal(fixture.submissions.length, 1);
             const body = fixture.submissions[0];
             assert.equal(body.get('action'), 'enroll');
