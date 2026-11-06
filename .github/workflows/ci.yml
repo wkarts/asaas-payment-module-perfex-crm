@@ -147,6 +147,7 @@ jobs:
   settings-browser:
     name: Subguias e monitoramento em Chromium
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
@@ -163,6 +164,7 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/asaas-ui" --no-audit --no-fund playwright@1.62.1 jquery@3.7.1 bootstrap@3.4.1
           "$RUNNER_TEMP/asaas-ui/node_modules/.bin/playwright" install --with-deps chromium
       - name: Validar interface em navegador
+        timeout-minutes: 3
         run: |
           export NODE_PATH="$RUNNER_TEMP/asaas-ui/node_modules"
           node tests/settings-ui-smoke.js --browser

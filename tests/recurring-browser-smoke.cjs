@@ -13,11 +13,23 @@ const php = process.env.ASAAS_TEST_PHP || 'php';
 const origin = 'https://crm.example.test';
 const recurringPath = '/asaas/recurring/index/recurring-browser-fixture';
 const invoicePath = '/invoice/42/recurring-browser-fixture';
+let currentScenario = 'renderização PHP';
+const watchdog = setTimeout(() => {
+    console.error('Recurring browser exceeded its 90-second deadline in: ' + currentScenario);
+    process.exit(1);
+}, 90000);
+watchdog.unref();
 const modes = ['inactive', 'active', 'suspended', 'uncertain', 'paid', 'guest', 'invoice', 'hostile'];
 const fixtures = Object.fromEntries(modes.map(mode => [mode, execFileSync(php,
-    [path.join(__dirname, 'fixtures/recurring-ui-page.php'), mode], {cwd: root, encoding: 'utf8', maxBuffer: 1024 * 1024})]));
+    [path.join(__dirname, 'fixtures/recurring-ui-page.php'), mode], {cwd: root, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 10000})]));
 let scenarios = 0;
-async function scenario(name, work) { await work(); scenarios++; console.log('OK  ' + name); }
+async function scenario(name, work) { currentScenario = name; await work(); scenarios++; console.log('OK  ' + name); }
+function deadline(promise, description) {
+    let timer;
+    return Promise.race([promise, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Timed out waiting for ' + description + ' in: ' + currentScenario)), 10000);
+    })]).finally(() => clearTimeout(timer));
+}
 
 async function main() {
     await scenario('view real preserva CSRF, consentimento explícito, preços e estados sem dados de cartão', async () => {
@@ -57,10 +69,11 @@ async function main() {
     };
     const artifacts = path.join(__dirname, 'artifacts');
     fs.mkdirSync(artifacts, {recursive: true});
-    const browser = await chromium.launch({headless: true});
+    const browser = await chromium.launch({headless: true, timeout: 20000});
     const errors = [];
     const unexpected = [];
     const contexts = [];
+    const pendingResponses = new Set();
     async function fixturePage(initialMode = 'inactive', viewport = {width: 1280, height: 960}) {
         const context = await browser.newContext({viewport});
         contexts.push(context);
@@ -76,11 +89,23 @@ async function main() {
             navigator.sendBeacon = forbidden('sendBeacon');
         });
         const page = await context.newPage();
+        page.setDefaultTimeout(10000);
+        page.setDefaultNavigationTimeout(15000);
         page.on('pageerror', error => errors.push(error.message));
         let displayMode = initialMode;
         let afterPost = 'paid';
         let release = null;
         const submissions = [];
+        let recordSubmit;
+        let recordDeparture;
+        let recordPending;
+        const submitted = new Promise(resolve => { recordSubmit = resolve; });
+        const departed = new Promise(resolve => { recordDeparture = resolve; });
+        const pending = new Promise(resolve => { recordPending = resolve; });
+        await page.exposeFunction('__asaasRecurringTestEvent', snapshot => {
+            if (snapshot.type === 'submit') { recordSubmit(snapshot); }
+            if (snapshot.type === 'pagehide') { recordDeparture(snapshot); }
+        });
         await page.route('**/*', async route => {
             const request = route.request();
             const url = new URL(request.url());
@@ -95,7 +120,11 @@ async function main() {
                 if (body.get('csrf_fixture') !== 'fixture-csrf-token' || body.get('recurringNonce') !== 'b'.repeat(64)) {
                     return route.fulfill({status: 403, body: 'Invalid fixture CSRF.'});
                 }
-                await new Promise(resolve => { release = resolve; });
+                await new Promise(resolve => {
+                    release = () => { pendingResponses.delete(release); resolve(); };
+                    pendingResponses.add(release);
+                    recordPending();
+                });
                 displayMode = afterPost;
                 return route.fulfill({status: 303, headers: {Location: origin + recurringPath, 'Cache-Control': 'no-store'}, body: ''});
             }
@@ -107,7 +136,52 @@ async function main() {
             return route.abort();
         });
         await page.goto(origin + '/_fixture/page');
-        return {page, submissions, release() { assert.ok(release, 'A native POST response must be pending.'); release(); }, setAfterPost(mode) { afterPost = mode; }};
+        // Install after the actual script, before the click. Browser-native form navigation
+        // can suspend later DOM RPCs while its response is held. Observe submit/pagehide
+        // synchronously inside their natural dispatch instead of evaluating a departing page.
+        await page.evaluate(() => {
+            const root = document.getElementById('asaas-recurring');
+            if (!root) { return; }
+            const forms = [...root.querySelectorAll('[data-asaas-recurring-form]')];
+            const names = ['holderName', 'cardNumber', 'expirationMonth', 'expirationYear', 'securityCode',
+                'holderEmail', 'holderDocument', 'holderPostalCode', 'holderAddressNumber', 'holderPhone'];
+            const clearance = () => ({
+                fields: names.map(name => {
+                    const field = document.getElementById('recurring-' + name);
+                    return {name, present: !!field, empty: !!field && field.value === '', defaultEmpty: !!field && field.defaultValue === ''};
+                }),
+                consentUnchecked: !document.getElementById('recurring-consent')?.checked,
+                consentDefaultUnchecked: !document.getElementById('recurring-consent')?.defaultChecked,
+                privacy: window.__recurringPrivacyAccesses.slice()
+            });
+            const emit = snapshot => { void window.__asaasRecurringTestEvent(snapshot).catch(() => {}); };
+            let probing = false;
+            root.addEventListener('submit', event => {
+                if (probing || !event.target.matches('[data-asaas-recurring-form]')) { return; }
+                const snapshot = {
+                    type: 'submit', operation: event.target.getAttribute('data-asaas-recurring-form'),
+                    prevented: event.defaultPrevented,
+                    buttons: [...root.querySelectorAll('[data-recurring-submit]')]
+                        .map(button => ({form: button.closest('form').id, disabled: button.disabled})),
+                    forms: forms.map(form => ({id: form.id, busy: form.getAttribute('aria-busy')})),
+                    statusVisible: !document.getElementById('asaas-recurring-status').classList.contains('hidden'),
+                    clearance: clearance()
+                };
+                // Bubble runs after the real form handler. Attempt both repeats while its
+                // pending flag is active; only booleans/IDs leave the page through the binding.
+                probing = true;
+                try { snapshot.replays = forms.map(form => form.dispatchEvent(new Event('submit', {bubbles: true, cancelable: true}))); }
+                finally { probing = false; }
+                emit(snapshot);
+            });
+            window.addEventListener('pagehide', () => emit({type: 'pagehide', clearance: clearance()}));
+        });
+        return {page, submissions,
+            waitForSubmit() { return deadline(submitted, 'the synchronous submit observation'); },
+            waitForDeparture() { return deadline(departed, 'the natural pagehide observation'); },
+            waitForPending() { return deadline(pending, 'the intercepted native POST'); },
+            release() { assert.ok(release, 'A native POST response must be pending.'); release(); },
+            setAfterPost(mode) { afterPost = mode; }};
     }
     async function fillCard(page) {
         for (const [field, value] of Object.entries({holderName: 'Titular de teste', cardNumber: '4111111111111111', expirationMonth: '12', expirationYear: '2030', securityCode: '123'})) {
@@ -118,6 +192,26 @@ async function main() {
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true, 'No horizontal document overflow.');
         assert.equal(await page.evaluate(() => [...document.querySelectorAll('#asaas-recurring input:not([type=hidden]), #asaas-recurring button')]
             .every(node => { const r = node.getBoundingClientRect(); return r.left >= 0 && r.right <= window.innerWidth + 1; })), true, 'Fields and actions must remain in the viewport.');
+    }
+    function assertSubmission(snapshot, operation) {
+        const diagnostic = JSON.stringify({state: snapshot, pageErrors: errors});
+        assert.equal(snapshot.operation, operation, 'Expected native operation: ' + diagnostic);
+        assert.equal(snapshot.prevented, false, 'The first native POST must remain permitted: ' + diagnostic);
+        assert.equal(snapshot.buttons.length, 2, 'Both operation buttons must exist: ' + diagnostic);
+        assert.equal(snapshot.buttons.every(button => button.disabled), true, 'Native submit must synchronously lock both operations: ' + diagnostic);
+        assert.equal(snapshot.forms.length, 2, 'Both operation forms must exist: ' + diagnostic);
+        assert.equal(snapshot.forms.every(form => form.busy === 'true') && snapshot.statusVisible, true,
+            'Both forms must report the pending operation accessibly: ' + diagnostic);
+        assert.deepEqual(snapshot.replays, [false, false], 'Both repeated operations must be prevented: ' + diagnostic);
+        assert.deepEqual(snapshot.clearance.privacy, []);
+    }
+    function assertCleared(snapshot) {
+        const cleared = snapshot.clearance;
+        assert.equal(cleared.fields.length, 10);
+        assert.equal(cleared.fields.every(field => field.present && field.empty && field.defaultEmpty), true,
+            'Actual card/holder fields and defaults must be cleared: ' + JSON.stringify(cleared));
+        assert.equal(cleared.consentUnchecked && cleared.consentDefaultUnchecked, true, 'Explicit consent must not survive departure.');
+        assert.deepEqual(cleared.privacy, []);
     }
     try {
         await scenario('Chromium renderiza os estados sem autorização, ativo, suspenso, incerto, pago e login', async () => {
@@ -158,23 +252,8 @@ async function main() {
             const request = page.waitForRequest(req => req.method() === 'POST' && new URL(req.url()).pathname === recurringPath);
             await page.locator('#asaas-recurring-enroll [data-recurring-submit]').click({noWaitAfter: true});
             await request;
-            // The submit handler locks synchronously before native navigation starts. Read
-            // that state directly: RAF polling can stall while this test holds the POST
-            // response. Never wait for a later frame to prove a synchronous submit guard.
-            const submitState = await page.evaluate(() => ({
-                path: window.location.pathname,
-                buttons: [...document.querySelectorAll('[data-recurring-submit]')]
-                    .map(button => ({form: button.closest('form').id, disabled: button.disabled})),
-                forms: [...document.querySelectorAll('[data-asaas-recurring-form]')]
-                    .map(form => ({id: form.id, busy: form.getAttribute('aria-busy')})),
-                statusVisible: !document.getElementById('asaas-recurring-status').classList.contains('hidden')
-            }));
-            const submitDiagnostic = JSON.stringify({state: submitState, pageErrors: errors});
-            assert.equal(submitState.buttons.length, 2, 'Both operation buttons must exist: ' + submitDiagnostic);
-            assert.equal(submitState.buttons.every(button => button.disabled), true, 'Native submit must synchronously lock both operations: ' + submitDiagnostic);
-            assert.equal(submitState.forms.length, 2, 'Both operation forms must exist: ' + submitDiagnostic);
-            assert.equal(submitState.forms.every(form => form.busy === 'true') && submitState.statusVisible, true,
-                'Both forms must report the pending operation accessibly: ' + submitDiagnostic);
+            await fixture.waitForPending();
+            assertSubmission(await fixture.waitForSubmit(), 'enroll');
             assert.equal(fixture.submissions.length, 1);
             const body = fixture.submissions[0];
             assert.equal(body.get('action'), 'enroll');
@@ -186,19 +265,10 @@ async function main() {
             assert.equal(body.get('cardNumber'), '4111111111111111');
             assert.equal(body.get('securityCode'), '123');
             assert.equal(body.has('installmentCount') || body.has('cardToken') || body.has('creditCardToken'), false);
-            assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('[data-asaas-recurring-form]')]
-                .map(form => form.dispatchEvent(new Event('submit', {bubbles: true, cancelable: true})))), [false, false]);
-            // The native body has already been serialized. Exercise the actual departure cleanup.
-            const cleared = await page.evaluate(() => {
-                window.dispatchEvent(new PageTransitionEvent('pagehide', {persisted: false}));
-                return {values: [...document.querySelectorAll('[id^="recurring-"]:not([type=checkbox])')].map(field => [field.value, field.defaultValue]),
-                    consent: document.getElementById('recurring-consent').checked, privacy: window.__recurringPrivacyAccesses};
-            });
-            assert.equal(cleared.values.every(([value, defaultValue]) => value === '' && defaultValue === ''), true);
-            assert.equal(cleared.consent, false);
-            assert.deepEqual(cleared.privacy, []);
+            const navigation = page.waitForURL(origin + recurringPath);
             fixture.release();
-            await page.waitForURL(origin + recurringPath);
+            await navigation;
+            assertCleared(await fixture.waitForDeparture());
             await page.locator('.asaas-recurring-state').waitFor();
             assert.equal(await page.locator('#asaas-recurring-enroll').count(), 0, 'PRG renders current paid state without the earlier input.');
             assert.equal(await page.locator('#asaas-recurring-revoke').count(), 1);
@@ -212,14 +282,17 @@ async function main() {
             const request = fixture.page.waitForRequest(req => req.method() === 'POST');
             await fixture.page.locator('#asaas-recurring-revoke [data-recurring-submit]').click({noWaitAfter: true});
             await request;
+            await fixture.waitForPending();
+            const submission = await fixture.waitForSubmit();
+            assertSubmission(submission, 'revoke');
+            assertCleared(submission);
             assert.equal(fixture.submissions.length, 1);
             assert.deepEqual([...fixture.submissions[0].keys()].sort(), ['action', 'csrf_fixture', 'recurringNonce']);
             assert.equal(fixture.submissions[0].get('action'), 'revoke');
-            assert.equal(await fixture.page.locator('#recurring-cardNumber').inputValue(), '');
-            assert.equal(await fixture.page.locator('#recurring-securityCode').inputValue(), '');
-            assert.equal(await fixture.page.locator('#asaas-recurring-enroll [data-recurring-submit]').isDisabled(), true);
+            const navigation = fixture.page.waitForURL(origin + recurringPath);
             fixture.release();
-            await fixture.page.waitForURL(origin + recurringPath);
+            await navigation;
+            assertCleared(await fixture.waitForDeparture());
             await fixture.page.locator('#asaas-recurring-enroll').waitFor();
             assert.equal(await fixture.page.locator('#asaas-recurring-revoke').count(), 0);
             assert.equal(await fixture.page.locator('#recurring-consent').isChecked(), false);
@@ -242,8 +315,9 @@ async function main() {
         assert.deepEqual(unexpected, [], 'All requests must stay inside the isolated fixture.');
         console.log('Recurring browser: ' + scenarios + ' cenários aprovados em Chromium; API e armazenamento não utilizados.');
     } finally {
+        for (const release of pendingResponses) { release(); }
         for (const context of contexts) { await context.close(); }
         await browser.close();
     }
 }
-main().catch(error => { console.error(error.stack || error); process.exitCode = 1; });
+main().catch(error => { console.error(error.stack || error); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));
