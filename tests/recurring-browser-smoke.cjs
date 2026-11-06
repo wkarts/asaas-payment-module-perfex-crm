@@ -201,14 +201,12 @@ async function main() {
         page.setDefaultNavigationTimeout(15000);
         page.on('pageerror', error => errors.push(error.message));
         let recordSubmit;
-        let recordDeparture;
         let observedResultView = null;
         const observationKinds = [];
         const observationPrefix = '__ASAAS_RECURRING_BROWSER_EVENT__:';
         const submitted = new Promise(resolve => { recordSubmit = resolve; });
-        const departed = new Promise(resolve => { recordDeparture = resolve; });
-        // Primitive console text is carried by CDP with the event itself. An exposed
-        // async binding can lose its call when the pagehide context is destroyed.
+        // Submit is observed before navigation. Departure is read from the surviving
+        // same-origin browsing context below, without CDP delivery during unload.
         page.on('console', message => {
             const text = message.text();
             if (!text.startsWith(observationPrefix)) { return; }
@@ -217,7 +215,6 @@ async function main() {
             catch (_) { errors.push('Invalid recurring test observation.'); return; }
             observationKinds.push(snapshot.type);
             if (snapshot.type === 'submit') { recordSubmit(snapshot); }
-            if (snapshot.type === 'pagehide') { recordDeparture(snapshot); }
         });
         await page.route('**/*', async route => {
             const request = route.request();
@@ -232,6 +229,7 @@ async function main() {
         await page.evaluate(marker => {
             const root = document.getElementById('asaas-recurring');
             if (!root) { return; }
+            window.name = '';
             const forms = [...root.querySelectorAll('[data-asaas-recurring-form]')];
             const names = ['holderName', 'cardNumber', 'expirationMonth', 'expirationYear', 'securityCode',
                 'holderEmail', 'holderDocument', 'holderPostalCode', 'holderAddressNumber', 'holderPhone'];
@@ -264,15 +262,28 @@ async function main() {
                 finally { probing = false; }
                 emit(snapshot);
             });
-            window.addEventListener('pagehide', () => emit({type: 'pagehide', clearance: clearance()}));
+            // Harness-only metadata: no input value, token, quote or card data is copied.
+            // window.name survives this same-origin POST/303/GET and is cleared on read.
+            window.addEventListener('pagehide', () => {
+                window.name = marker + JSON.stringify({type: 'pagehide', clearance: clearance()});
+            });
         }, observationPrefix);
         return {...transport, page,
             waitForSubmit() { return deadline(submitted, 'the synchronous submit observation'); },
             markResultView(state) { observedResultView = state; },
-            waitForDeparture() { return deadline(departed, 'the natural pagehide observation', () => ({
-                finalPath: new URL(page.url()).pathname, observedResultView,
-                requests: transport.requests, observations: observationKinds, pageErrors: errors
-            })); }};
+            async readDeparture() {
+                const captured = await page.evaluate(marker => {
+                    const name = window.name;
+                    window.name = '';
+                    if (!name.startsWith(marker)) { return {found: false, length: name.length}; }
+                    return {found: true, snapshot: JSON.parse(name.slice(marker.length))};
+                }, observationPrefix);
+                const diagnostic = JSON.stringify({found: captured.found, finalPath: new URL(page.url()).pathname,
+                    observedResultView, requests: transport.requests, observations: observationKinds, pageErrors: errors});
+                assert.equal(captured.found, true, 'Natural pagehide must record its flags before the same-origin PRG: ' + diagnostic);
+                assert.equal(captured.snapshot.type, 'pagehide');
+                return captured.snapshot;
+            }};
     }
     async function fillCard(page) {
         for (const [field, value] of Object.entries({holderName: 'Titular de teste', cardNumber: '4111111111111111', expirationMonth: '12', expirationYear: '2030', securityCode: '123'})) {
@@ -363,7 +374,7 @@ async function main() {
             assert.equal(await page.locator('#asaas-recurring-enroll').count(), 0, 'PRG renders current paid state without the earlier input.');
             assert.equal(await page.locator('#asaas-recurring-revoke').count(), 1);
             fixture.markResultView('paid');
-            assertCleared(await fixture.waitForDeparture());
+            assertCleared(await fixture.readDeparture());
             assert.equal(fixture.submissions.length, 1);
             assert.deepEqual(await page.evaluate(() => window.__recurringPrivacyAccesses), []);
         });
@@ -388,7 +399,7 @@ async function main() {
             assert.equal(await fixture.page.locator('#asaas-recurring-revoke').count(), 0);
             assert.equal(await fixture.page.locator('#recurring-consent').isChecked(), false);
             fixture.markResultView('inactive');
-            assertCleared(await fixture.waitForDeparture());
+            assertCleared(await fixture.readDeparture());
         });
         await scenario('texto e dados do titular são escapados sem injeção HTML ou chamadas extras', async () => {
             const {page} = await fixturePage('hostile');
@@ -407,7 +418,7 @@ async function main() {
         assert.deepEqual(errors, [], 'No browser script errors.');
         assert.deepEqual(unexpected, [], 'All requests must stay inside the isolated fixture.');
         for (const server of servers) { assert.deepEqual(server.failures, [], 'Loopback server must handle all fixture requests.'); }
-        console.log('Recurring browser: ' + scenarios + ' cenários aprovados em Chromium; API e armazenamento não utilizados.');
+        console.log('Recurring browser: ' + scenarios + ' cenários aprovados em Chromium; sem API externa ou persistência de dados de cartão.');
     } finally {
         for (const server of servers) { server.releasePending(); }
         for (const context of contexts) { await context.close(); }
