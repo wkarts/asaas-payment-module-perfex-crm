@@ -1,0 +1,49 @@
+.asaas-monitor [hidden] { display: none !important; }
+.asaas-monitor { min-width: 0; }
+.asaas-monitor .asaas-monitor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.asaas-monitor .asaas-monitor-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 15px 0 12px; }
+.asaas-monitor .asaas-monitor-card { border: 1px solid #e2e8f0; border-radius: 6px; padding: 13px 14px; background: #fff; }
+.asaas-monitor .asaas-monitor-card > span { display: block; color: #64748b; font-size: 12px; line-height: 1.45; }
+.asaas-monitor .asaas-monitor-card > strong { display: block; margin-top: 6px; color: #334155; font-size: 22px; line-height: 1.25; overflow-wrap: anywhere; }
+.asaas-monitor .asaas-monitor-card > small { display: block; margin-top: 7px; color: #64748b; font-size: 11px; }
+.asaas-monitor .asaas-monitor-overview-details { padding: 0 2px 8px; font-size: 12px; overflow-wrap: anywhere; }
+.asaas-monitor .asaas-monitor-overview-details p { margin: 0 0 5px; }
+.asaas-monitor .asaas-monitor-tabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 0 14px; border-top: 1px solid #e2e8f0; }
+.asaas-monitor .asaas-monitor-tabs .active { border-color: #0284c7; color: #0369a1; background: #f0f9ff; box-shadow: none; }
+.asaas-monitor .asaas-monitor-filters { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.asaas-monitor .asaas-monitor-filters .form-group { margin-bottom: 0; min-width: 150px; }
+.asaas-monitor .asaas-monitor-search { flex: 1 1 220px; }
+.asaas-monitor .asaas-monitor-filters label { font-size: 12px; font-weight: 600; }
+.asaas-monitor .asaas-monitor-filters select { min-width: 160px; }
+.asaas-monitor .asaas-monitor-batch-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin: 12px 0; }
+.asaas-monitor .asaas-monitor-batch-actions > span { margin-right: auto; font-size: 12px; }
+.asaas-monitor .asaas-monitor-table { border: 1px solid #e2e8f0; border-radius: 5px; margin: 0; }
+.asaas-monitor .asaas-monitor-table table { margin-bottom: 0; font-size: 12px; }
+.asaas-monitor .asaas-monitor-table th { font-size: 12px; white-space: nowrap; }
+.asaas-monitor .asaas-monitor-table td { vertical-align: top; min-width: 90px; overflow-wrap: anywhere; }
+.asaas-monitor .asaas-monitor-table th.asaas-monitor-check,
+.asaas-monitor .asaas-monitor-table td.asaas-monitor-check { min-width: 32px; width: 32px; }
+.asaas-monitor .asaas-monitor-table input[type=checkbox] { margin-top: 3px; }
+.asaas-monitor .asaas-monitor-secondary { display: block; color: #64748b; font-size: 11px; margin-top: 4px; line-height: 1.5; }
+.asaas-monitor .asaas-monitor-invoice { font-weight: 600; }
+.asaas-monitor .asaas-monitor-row-actions { display: flex; flex-wrap: wrap; gap: 4px; min-width: 140px; }
+.asaas-monitor .asaas-monitor-row-actions .btn { font-size: 11px; }
+.asaas-monitor .asaas-monitor-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 10px 0; font-size: 12px; }
+.asaas-monitor .asaas-monitor-task { margin-top: 18px; padding-top: 15px; border-top: 1px solid #e2e8f0; }
+.asaas-monitor .asaas-monitor-progress { height: 6px; margin-bottom: 12px; }
+.asaas-monitor .asaas-monitor-progress .progress-bar { min-width: 0; transition: width .15s ease; }
+.asaas-monitor .asaas-monitor-message { min-width: 200px; max-width: 430px; white-space: pre-wrap; }
+.asaas-monitor .asaas-monitor-context { margin-top: 7px; }
+.asaas-monitor .asaas-monitor-context summary { cursor: pointer; color: #0369a1; }
+.asaas-monitor .asaas-monitor-context pre { margin: 7px 0 0; max-height: 200px; max-width: 520px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-size: 11px; }
+.asaas-monitor .asaas-monitor-state { padding: 20px 12px; text-align: center; color: #64748b; }
+.asaas-monitor[aria-busy=true] .asaas-monitor-table { opacity: .65; }
+@media (max-width: 991px) {
+    .asaas-monitor .asaas-monitor-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 480px) {
+    .asaas-monitor .asaas-monitor-summary { grid-template-columns: minmax(0, 1fr); }
+    .asaas-monitor .asaas-monitor-filters .form-group { flex: 1 1 100%; }
+    .asaas-monitor .asaas-monitor-batch-actions > span { flex-basis: 100%; }
+    .asaas-monitor .asaas-monitor-heading { align-items: flex-start; }
+}

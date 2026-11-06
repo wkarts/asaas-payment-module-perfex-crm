@@ -1,0 +1,91 @@
+#online_payments_asaas_tab .asaas-settings-groups [hidden] {
+    display: none !important;
+}
+
+#online_payments_asaas_tab .asaas-settings-navigation {
+    position: relative;
+    margin: 0;
+    padding: 0;
+    max-width: 100%;
+}
+
+#online_payments_asaas_tab .asaas-settings-navigation.asaas-settings-overflow {
+    padding-right: 30px;
+    padding-left: 30px;
+}
+
+#online_payments_asaas_tab .asaas-settings-tab-scroll {
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+}
+
+#online_payments_asaas_tab .asaas-settings-navigation .nav-tabs {
+    display: flex;
+    flex-wrap: nowrap;
+    margin: 0;
+    min-width: 100%;
+    width: max-content;
+}
+
+#online_payments_asaas_tab .asaas-settings-navigation .nav-tabs > li {
+    float: none;
+    flex: 0 0 auto;
+}
+
+#online_payments_asaas_tab .asaas-settings-navigation .nav-tabs > li > a {
+    white-space: nowrap;
+}
+
+#online_payments_asaas_tab .asaas-settings-scroll {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 2;
+    width: 28px;
+    min-height: 38px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+
+#online_payments_asaas_tab .asaas-settings-scroll-left {
+    left: 0;
+}
+
+#online_payments_asaas_tab .asaas-settings-scroll-right {
+    right: 0;
+}
+
+#online_payments_asaas_tab .asaas-settings-scroll:disabled {
+    opacity: .35;
+    cursor: default;
+}
+
+#online_payments_asaas_tab .asaas-settings-description {
+    margin-top: 0;
+    margin-bottom: 20px;
+}
+
+#online_payments_asaas_tab .asaas-settings-content {
+    min-width: 0;
+}
+
+#online_payments_asaas_tab .asaas-settings-content > .tab-pane {
+    min-width: 0;
+}
+
+#online_payments_asaas_tab .asaas-settings-content .help-block,
+#online_payments_asaas_tab #asaas-webhook-feedback {
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 767px) {
+    #online_payments_asaas_tab .asaas-settings-navigation .nav-tabs > li > a {
+        padding-right: 12px;
+        padding-left: 12px;
+    }
+}

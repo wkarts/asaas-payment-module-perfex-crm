@@ -16,7 +16,7 @@ defined('BASEPATH') or exit('No direct script access allowed');
 Module Name: Asaas - Módulo de Pagamento
 Description: Integração com Sistema Financeiro Asaas com a função de recebimento via catão de crédito, Boleto e Pix.
 Author: WWSoft -> Wallace Kleiton - argws/asaas-sdk-php v0.2.61
-Version: 1.5.0
+Version: 1.5.1
 Requires at least: 2.9.*
 Author URI: https://t.me/wkartspro
 */
@@ -26,10 +26,12 @@ define('ASAAS_MODULE_NAME', 'asaas');
 require_once __DIR__ . '/helpers/asaas_webhook_helper.php';
 require_once __DIR__ . '/helpers/asaas_diagnostics_helper.php';
 require_once __DIR__ . '/helpers/asaas_lifecycle_helper.php';
+require_once __DIR__ . '/helpers/asaas_settings_helper.php';
 
 hooks()->add_action('before_render_payment_gateway_settings', 'asaas_before_render_payment_gateway_settings');
 hooks()->add_action('app_admin_footer', 'asaas_settings_tab_footer');
 hooks()->add_filter('before_settings_updated', 'asaas_validate_webhook_settings');
+hooks()->add_filter('before_settings_updated', 'asaas_validate_environment_settings');
 hooks()->add_action('admin_init', 'asaas_admin_invoice_transaction');
 hooks()->add_filter('before_invoice_added', 'asaas_before_invoice_added');
 hooks()->add_action('after_invoice_added', 'asaas_after_invoice_added');
@@ -47,6 +49,7 @@ hooks()->add_action('invoice_marked_as_cancelled', 'asaas_invoice_marked_as_canc
 hooks()->add_action('invoice_unmarked_as_cancelled', 'asaas_invoice_unmarked_as_cancelled');
 hooks()->add_filter('before_payment_recorded', 'asaas_before_payment_recorded');
 hooks()->add_action('after_payment_added', 'asaas_after_payment_added');
+hooks()->add_action('after_cron_run', 'asaas_reconcile_after_cron');
 
 $CI = &get_instance();
 
@@ -83,12 +86,26 @@ if (function_exists('app_payment_gateways')) {
 
 function asaas_before_render_payment_gateway_settings($gateway)
 {
+    if (is_array($gateway) && ($gateway['id'] ?? null) === ASAAS_MODULE_NAME) {
+        require __DIR__ . '/views/settings/tabs.php';
+    }
     return $gateway;
 }
 
 function asaas_settings_tab_footer()
 {
-    echo '<script src="' . html_escape(module_dir_url(ASAAS_MODULE_NAME, 'assets/js/asaas-webhook-settings.js')) . '"></script>';
+    foreach (['asaas-settings.css', 'asaas-monitor.css'] as $stylesheet) {
+        $asset = 'assets/css/' . $stylesheet;
+        if (is_file(__DIR__ . '/' . $asset)) {
+            echo '<link rel="stylesheet" href="' . html_escape(module_dir_url(ASAAS_MODULE_NAME, $asset) . '?v=' . filemtime(__DIR__ . '/' . $asset)) . '">';
+        }
+    }
+    foreach (['asaas-settings.js', 'asaas-webhook-settings.js', 'asaas-monitor.js'] as $script) {
+        $asset = 'assets/js/' . $script;
+        if (is_file(__DIR__ . '/' . $asset)) {
+            echo '<script src="' . html_escape(module_dir_url(ASAAS_MODULE_NAME, $asset) . '?v=' . filemtime(__DIR__ . '/' . $asset)) . '"></script>';
+        }
+    }
 ?>
     <script>
         $(document).ready(function() {
@@ -149,6 +166,23 @@ function asaas_settings_tab_footer()
         });
     </script>
 <?php
+}
+
+/** Keep optional reconciliation failures isolated from the native CRM cron. */
+function asaas_reconcile_after_cron($manually = false)
+{
+    try {
+        if ((string) get_option('paymentmethod_asaas_sync_enabled') !== '1') {
+            return;
+        }
+        require_once __DIR__ . '/libraries/Asaas/AsaasReconciliation.php';
+        \Asaas\AsaasReconciliation::runCron();
+    } catch (\Throwable $exception) {
+        asaas_diagnostic_log('error', 'Não foi possível executar a conciliação automática Asaas.', [
+            'source' => 'reconciliation', 'operation' => 'cron', 'trigger' => 'cron',
+            'exception' => get_class($exception),
+        ]);
+    }
 }
 
 function asaas_after_invoice_added($invoice_id)

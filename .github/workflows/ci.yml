@@ -61,6 +61,16 @@ jobs:
       - name: JavaScript das configurações do webhook
         run: node --check assets/js/asaas-webhook-settings.js
 
+      - name: Configurações, monitoramento e conciliação
+        run: |
+          php tests/settings-environment-smoke.php
+          php tests/monitor-reconciliation-smoke.php
+          php tests/module-version-smoke.php
+          node --check assets/js/asaas-settings.js
+          node --check assets/js/asaas-monitor.js
+          node tests/settings-ui-smoke.js
+          node tests/monitor-ui-smoke.js
+
       - name: Cartão de crédito e apresentação do ambiente
         run: |
           php tests/checkout-environment-smoke.php
@@ -89,9 +99,68 @@ jobs:
             exit 1
           fi
 
+  monitoring-database:
+    name: SQL e índices do monitoramento (MariaDB)
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: integration-fixture-only
+          MARIADB_DATABASE: asaas_monitor_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: pdo_mysql, mbstring
+      - name: Validar consultas e atualização aditiva
+        env:
+          ASAAS_MONITOR_TEST_DSN: mysql:host=127.0.0.1;port=3306;dbname=asaas_monitor_test;charset=utf8mb4
+          ASAAS_MONITOR_TEST_USER: root
+          ASAAS_MONITOR_TEST_PASSWORD: integration-fixture-only
+        run: php tests/monitor-mysql-smoke.php
+
+  settings-browser:
+    name: Subguias e monitoramento em Chromium
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          tools: composer
+          extensions: mbstring
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Preparar dependências exclusivas dos testes
+        run: |
+          composer install --no-dev --no-scripts --prefer-dist --no-interaction
+          npm install --prefix "$RUNNER_TEMP/asaas-ui" --no-audit --no-fund playwright@1.62.1 jquery@3.7.1 bootstrap@3.4.1
+          "$RUNNER_TEMP/asaas-ui/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Validar interface em navegador
+        run: |
+          export NODE_PATH="$RUNNER_TEMP/asaas-ui/node_modules"
+          node tests/settings-ui-smoke.js --browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: asaas-settings-browser-${{ github.sha }}
+          path: tests/artifacts/settings-*.png
+          if-no-files-found: ignore
+          retention-days: 30
+
   package:
     name: Pacote candidato com SDK de produção
-    needs: tests
+    needs: [tests, monitoring-database, settings-browser]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

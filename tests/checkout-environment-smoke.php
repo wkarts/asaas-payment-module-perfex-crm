@@ -107,7 +107,8 @@ foreach (['payment', 'qrcode'] as $view) {
         environmentSmokeTest($view . ': ' . $name, static function () use ($view, $environment, $option, $visible): void {
             $html = environmentSmokeRender($view, $environment, $option);
             environmentSmokeAssert(str_contains($html, 'Ambiente ativo:') === $visible, 'Environment notice visibility differs from the setting.');
-            environmentSmokeAssert(str_contains($html, $environment) === $visible, 'Environment label must follow the notice.');
+            environmentSmokeAssert(str_contains($html, $environment === 'SANDBOX' ? 'Homologação' : 'Produção') === $visible, 'Portuguese environment label must follow the notice.');
+            environmentSmokeAssert(!str_contains($html, $environment), 'Technical environment identifiers must not be displayed.');
             environmentSmokeAssert(str_contains($html, 'invoice/42/hash-environment-fixture'), 'Invoice return URL must remain available.');
             if ($view === 'payment') {
                 foreach (['boleto', 'cartao', 'qrcode'] as $method) {

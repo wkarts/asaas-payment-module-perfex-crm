@@ -11,7 +11,7 @@ $asaasCheckoutHint = isset($asaas_environment_hint) && is_string($asaas_environm
         <div class="alert alert-info mbot0">
             <strong>Ambiente ativo:</strong>
             <span class="label label-<?php echo strtoupper($asaasCheckoutEnvironment) === 'PRODUCTION' ? 'success' : 'warning'; ?>">
-                <?php echo html_escape($asaasCheckoutEnvironment); ?>
+                <?php echo html_escape(asaas_checkout_environment_label($asaasCheckoutEnvironment)); ?>
             </span>
             <?php if ($asaasCheckoutHint !== '') { ?>
                 <span class="text-muted mleft10"><?php echo html_escape($asaasCheckoutHint); ?></span>

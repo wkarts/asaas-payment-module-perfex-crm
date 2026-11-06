@@ -98,9 +98,6 @@
                     showFeedback(isToken ? 'Token copiado. Use o mesmo valor no Asaas.' : 'URL do webhook copiada.', false);
                     return;
                 }
-                if (isToken) {
-                    setTokenVisible(true);
-                }
                 input.focus();
                 input.select();
                 showFeedback('Não foi possível copiar automaticamente. O conteúdo foi selecionado para cópia manual.', true);
@@ -134,7 +131,7 @@
                 return;
             }
 
-            setTokenVisible(true);
+            setTokenVisible(false);
             tokenInput.dispatchEvent(new Event('input', { bubbles: true }));
             showFeedback('Novo token gerado. Copie-o para o Asaas e salve as configurações do CRM.', false);
         });
@@ -164,6 +161,7 @@
                 if (window.jQuery && window.jQuery.fn.tab) {
                     window.jQuery('a[href="#online_payments_asaas_tab"]').tab('show');
                 }
+                document.dispatchEvent(new CustomEvent('asaas:settings:show', { detail: { group: 'webhook' } }));
                 showFeedback(error, true);
                 tokenInput.setAttribute('aria-invalid', 'true');
                 tokenInput.focus();
