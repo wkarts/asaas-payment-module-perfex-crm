@@ -93,7 +93,7 @@ try {
     for ($id = 1; $id <= 1000; ++$id) {
         $insert('asaas_webhook_events', ['event_id' => 'evt_fixture_' . $id, 'event_type' => 'PAYMENT_RECEIVED', 'asaas_payment_id' => 'pay_fixture_' . (1 + $id % 60), 'invoice_id' => 1 + $id % 60, 'received_at' => '2026-11-06 10:00:00', 'process_status' => $id % 100 === 0 ? 'error' : 'processed']);
     }
-    foreach ([['info', ['source' => 'api', 'method' => 'GET']], ['info', ['operation' => 'card_lookup']], ['warning', ['source' => 'webhook', 'operation' => 'webhook_callback']], ['error', ['source' => 'reconciliation', 'operation' => 'compare']]] as [$level, $context]) {
+    foreach ([['info', ['source' => 'api', 'method' => 'GET']], ['info', ['operation' => 'card_lookup']], ['warning', ['source' => 'webhook', 'operation' => 'webhook_callback']], ['error', ['source' => 'reconciliation', 'operation' => 'compare']], ['info', ['source' => 'recurring', 'operation' => 'recurring_card', 'reason_code' => 'confirmed']]] as [$level, $context]) {
         $insert('asaas_logs', ['level' => $level, 'message' => 'Registro fixture', 'context_json' => json_encode($context), 'created_at' => '2026-11-06 10:00:00']);
     }
 
@@ -120,6 +120,9 @@ try {
     $assert($service->logs(['source' => 'api'])['pagination']['total'] === 2, 'O filtro de API deve incluir os registros legados de cartão.');
     $assert($service->logs(['source' => 'webhook'])['pagination']['total'] === 1, 'O filtro de entrega do webhook deve consultar a origem correta.');
     $assert($service->logs(['source' => 'reconciliation', 'level' => 'error'])['pagination']['total'] === 1, 'Nível e origem devem funcionar juntos.');
+    $recurringLog = $service->logs(['source' => 'recurring']);
+    $assert($recurringLog['pagination']['total'] === 1 && $recurringLog['data'][0]['source'] === 'recurring'
+        && $recurringLog['data'][0]['context']['reason_code'] === 'confirmed', 'Recorrência deve permitir filtro e diagnóstico operacional sem segredos.');
     $overview = $service->overview()['data'];
     $assert($overview['linked_open_invoices'] === 60 && $overview['webhook_errors'] === 1, 'O resumo deve contar cobranças e falhas de entrega sem duplicar eventos.');
 

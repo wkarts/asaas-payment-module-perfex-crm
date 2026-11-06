@@ -347,7 +347,7 @@ final class AsaasReconciliation
             $raw = is_array($raw) ? $raw : [];
             $safe = [];
             foreach (['source', 'operation', 'trigger', 'invoice_id', 'payment_id', 'payment_ids', 'event_id', 'method', 'path',
-                'http_status', 'status', 'remote_status', 'result', 'error_code', 'message', 'reason', 'details', 'receipts_added', 'receipt_verification_pending', 'processed', 'duplicated', 'correlation_id', 'exception'] as $key) {
+                'http_status', 'status', 'remote_status', 'result', 'error_code', 'message', 'reason', 'reason_code', 'details', 'receipts_added', 'receipt_verification_pending', 'processed', 'duplicated', 'correlation_id', 'exception'] as $key) {
                 if (!array_key_exists($key, $raw)) { continue; }
                 if ($key === 'payment_ids') {
                     $safe[$key] = array_values(array_filter(array_map(fn ($id): string => $this->identifier($id), array_slice(is_array($raw[$key]) ? $raw[$key] : [], 0, 100))));
@@ -355,7 +355,7 @@ final class AsaasReconciliation
                     $safe[$key] = is_string($raw[$key]) ? $this->safeText($raw[$key], in_array($key, ['message', 'reason', 'details'], true) ? 1000 : 250) : $raw[$key];
                 }
             }
-            $source = in_array($raw['source'] ?? '', ['api', 'webhook', 'reconciliation'], true) ? $raw['source']
+            $source = in_array($raw['source'] ?? '', ['api', 'webhook', 'reconciliation', 'recurring'], true) ? $raw['source']
                 : (isset($raw['method']) || strpos((string) ($raw['operation'] ?? ''), 'card_') === 0 ? 'api' : 'other');
             $items[] = [
                 'id' => (int) $row['id'], 'level' => $this->enumText($row['level']), 'message' => $this->safeText((string) $row['message'], 1000),
@@ -1245,7 +1245,7 @@ final class AsaasReconciliation
         $level = (string) ($filters['level'] ?? 'all');
         if (in_array($level, ['info', 'debug', 'warning', 'error'], true)) { $clauses[] = 'level = ?'; $bindings[] = $level; }
         $source = (string) ($filters['source'] ?? 'all');
-        if (in_array($source, ['api', 'webhook', 'reconciliation'], true)) {
+        if (in_array($source, ['api', 'webhook', 'reconciliation', 'recurring'], true)) {
             $context = $this->contextColumn();
             if ($context === null) { $clauses[] = '1 = 0'; }
             else {

@@ -87,6 +87,14 @@ jobs:
           node --check assets/js/asaas-card-checkout.js
           node tests/card-checkout-ui-smoke.js
 
+      - name: Cartão recorrente, consentimento e tentativa única
+        run: |
+          php tests/recurring-service-smoke.php
+          php tests/recurring-controller-smoke.php
+          php tests/recurring-hooks-smoke.php
+          node --check assets/js/asaas-recurring.js
+          node tests/recurring-ui-smoke.js
+
       - name: Validar padrão Perfex (versão + migrations)
         run: ./.github/scripts/check_perfex_module.sh
 
@@ -132,7 +140,9 @@ jobs:
           ASAAS_MONITOR_TEST_DSN: mysql:host=127.0.0.1;port=3306;dbname=asaas_monitor_test;charset=utf8mb4
           ASAAS_MONITOR_TEST_USER: root
           ASAAS_MONITOR_TEST_PASSWORD: integration-fixture-only
-        run: php tests/monitor-mysql-smoke.php
+        run: |
+          php tests/monitor-mysql-smoke.php
+          php tests/recurring-mysql-smoke.php
 
   settings-browser:
     name: Subguias e monitoramento em Chromium
@@ -156,11 +166,14 @@ jobs:
         run: |
           export NODE_PATH="$RUNNER_TEMP/asaas-ui/node_modules"
           node tests/settings-ui-smoke.js --browser
+          node tests/recurring-browser-smoke.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: asaas-settings-browser-${{ github.sha }}
-          path: tests/artifacts/settings-*.png
+          path: |
+            tests/artifacts/settings-*.png
+            tests/artifacts/recurring-*.png
           if-no-files-found: ignore
           retention-days: 30
 

@@ -340,6 +340,58 @@ foreach (['../pay_other', 'pay_test?cardToken=' . CARD_API_TEST_TOKEN, "pay_test
     ++$scenarios;
 }
 
+foreach ([true, false] as $sandbox) {
+    $history = [];
+    [$api, $provider] = cardApiFixture([new Response(200, [], json_encode([
+        'creditCardToken' => CARD_API_TEST_TOKEN, 'creditCardNumber' => '1111', 'creditCardBrand' => 'VISA',
+        'creditCard' => ['number' => CARD_API_TEST_NUMBER, 'ccv' => CARD_API_TEST_CVV],
+    ], JSON_THROW_ON_ERROR))], $history, $sandbox);
+    $token = $api->tokenize(cardApiPayload());
+    cardApiAssert($token === CARD_API_TEST_TOKEN, 'Tokenização deve devolver somente o token opaco.');
+    cardApiAssert(count($history) === 1 && $provider->cardCalls === 1 && $provider->normalCalls === 0,
+        'Tokenização deve usar apenas o transporte seguro de cartão.');
+    $request = $history[0]['request'];
+    $sent = json_decode((string) $request->getBody(), true, 512, JSON_THROW_ON_ERROR);
+    cardApiAssert($request->getMethod() === 'POST' && $request->getUri()->getPath() === '/v3/creditCard/tokenizeCreditCard',
+        'Tokenização precisa manter o endpoint oficial sem criar uma cobrança.');
+    cardApiAssert(array_keys($sent) === ['customer', 'remoteIp', 'creditCard', 'creditCardHolderInfo'],
+        'A solicitação de tokenização deve descartar valor, vencimento e demais campos de cobrança.');
+    cardApiSafe(implode("\n", $GLOBALS['card_api_logs']));
+    ++$scenarios;
+}
+foreach ([400, 401, 403, 429, 500, 503] as $status) {
+    $history = [];
+    [$api, , $mock] = cardApiFixture([
+        new Response($status, [], json_encode(['errors' => [['description' => CARD_API_TEST_NUMBER . ' ' . CARD_API_TEST_TOKEN]]])),
+        new Response(200, [], json_encode(['creditCardToken' => CARD_API_TEST_TOKEN])),
+    ], $history);
+    try { $api->tokenize(cardApiPayload()); throw new LogicException('Falha de tokenização precisa ser devolvida.'); }
+    catch (AsaasCardRequestException $exception) {
+        cardApiAssert($exception->getCode() === $status && $exception->getPrevious() === null, 'Preservar somente o status da falha de tokenização.');
+        cardApiSafe((string) $exception . implode("\n", $GLOBALS['card_api_logs']));
+    }
+    cardApiAssert(count($history) === 1 && count($mock) === 1, 'Tokenização não pode repetir automaticamente, inclusive em 429/5xx.');
+    ++$scenarios;
+}
+foreach ([null, [], 12345, 'short', CARD_API_TEST_NUMBER, "opaque-token\r\nheader", ['bad' => CARD_API_TEST_TOKEN]] as $invalidToken) {
+    $history = [];
+    [$api] = cardApiFixture([new Response(200, [], json_encode(['creditCardToken' => $invalidToken]))], $history);
+    try { $api->tokenize(cardApiPayload()); throw new LogicException('Resposta de token inválida não pode ser aceita.'); }
+    catch (AsaasCardRequestException $exception) {
+        cardApiAssert($exception->getCode() === 0 && $exception->getPrevious() === null, 'Token inválido deve falhar sem corpo ou valor sensível.');
+        cardApiSafe((string) $exception . implode("\n", $GLOBALS['card_api_logs']));
+    }
+    ++$scenarios;
+}
+foreach (['customer' => '../other', 'remoteIp' => 'not-an-ip', 'creditCard' => 'invalid', 'creditCardHolderInfo' => null] as $field => $value) {
+    $history = [];
+    [$api] = cardApiFixture([], $history);
+    try { $api->tokenize(array_replace(cardApiPayload(), [$field => $value])); throw new LogicException('Entrada inválida precisa ser recusada localmente.'); }
+    catch (AsaasCardRequestException $exception) { cardApiAssert(!$exception->requestSent, 'Validação não pode transmitir credenciais.'); }
+    cardApiAssert($history === [], 'Entrada inválida de tokenização não deve chamar HTTP.');
+    ++$scenarios;
+}
+
 foreach (['--unsupported-sdk', '--ignored-injection'] as $scenario) {
     $process = proc_open([PHP_BINARY, __FILE__, $scenario], [['pipe', 'r'], ['pipe', 'w'], ['pipe', 'w']], $pipes);
     if (!is_resource($process)) { throw new RuntimeException('Não foi possível iniciar a fixture isolada da SDK.'); }

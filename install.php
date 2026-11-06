@@ -68,3 +68,6 @@ if (!$CI->db->table_exists($logsTable)) {
 
 require_once __DIR__ . '/helpers/asaas_monitor_schema_helper.php';
 asaas_monitor_ensure_indexes($CI->db);
+
+require_once __DIR__ . '/helpers/asaas_recurring_schema_helper.php';
+asaas_recurring_schema_install($CI->db);

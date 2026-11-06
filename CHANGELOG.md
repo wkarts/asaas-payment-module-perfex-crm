@@ -2,6 +2,9 @@
 
 ## Não publicado
 
+- Acrescenta o meio **Cartão de crédito recorrente – Asaas**, separado do checkout avulso, com adesão autenticada, consentimento explícito, token criptografado e revogação pelo cliente.
+- Enfileira somente a fatura autorizada e as próximas faturas Asaas elegíveis, cobrando a mesma obrigação em 1x pelo cron; uma recusa suspende a recorrência e uma resposta incerta permite somente consulta, sem repetir captura.
+- Preserva o recebimento nativo, as taxas à vista e a conciliação existente; inclui migração aditiva, diagnóstico por origem Recorrência e verificações de concorrência, autorização, transporte e privacidade.
 - Recupera vínculos e recebimentos pela API sem depender de webhook, incluindo faturas Asaas antigas e parciais; o cron passa a percorrer abertas sem corte de emissão/vencimento, preservando bloqueios e verificação de duplicidade.
 - Acrescenta **Cobranças no Asaas** ao monitoramento, com paginação remota, filtros por situação e período, associação conservadora e ações individuais/em lote para faturas identificadas.
 - Torna os erros do resumo acessíveis diretamente e detalha falhas de consulta/conciliação com códigos seguros, sem expor credenciais ou dados de cartão.
