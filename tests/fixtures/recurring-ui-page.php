@@ -4,6 +4,13 @@ declare(strict_types=1);
 
 /** Render actual recurring views with synthetic values; CLI only, without CRM/API/session. */
 if (PHP_SAPI !== 'cli') { http_response_code(404); exit; }
+$fixtureOrigin = getenv('ASAAS_RECURRING_FIXTURE_ORIGIN') ?: 'https://crm.example.test';
+if ($fixtureOrigin !== 'https://crm.example.test'
+    && (!preg_match('~^http://127\.0\.0\.1:[1-9][0-9]{0,4}$~D', $fixtureOrigin)
+        || (int) parse_url($fixtureOrigin, PHP_URL_PORT) > 65535)) {
+    fwrite(STDERR, "The recurring fixture accepts only a loopback HTTP origin.\n"); exit(1);
+}
+define('RECURRING_FIXTURE_ORIGIN', $fixtureOrigin);
 define('BASEPATH', __DIR__ . '/');
 error_reporting(E_ALL);
 set_error_handler(static function (int $severity, string $message, string $file, int $line): bool {
@@ -14,7 +21,7 @@ if (!in_array($fixtureMode, ['inactive', 'active', 'suspended', 'uncertain', 'pa
     fwrite(STDERR, "Unknown recurring fixture.\n"); exit(1);
 }
 function html_escape($value): string { return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
-function site_url(string $path = ''): string { return 'https://crm.example.test/' . ltrim($path, '/'); }
+function site_url(string $path = ''): string { return RECURRING_FIXTURE_ORIGIN . '/' . ltrim($path, '/'); }
 function get_option(string $name) { return $name === 'paymentmethod_asaas_show_environment_in_production' ? '0' : ''; }
 function format_invoice_number(int $id): string { return 'FAT-000042/11/2026'; }
 function format_invoice_status($status, $classes = '', $label = true): string {

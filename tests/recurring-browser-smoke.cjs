@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 'use strict';
 
-/** Actual PHP view + Bootstrap 3 + Chromium, entirely intercepted HTTP; no Asaas/CRM access.
- * ASAAS_TEST_PHP selects PHP. --contract-only validates the rendered fixture without npm/browser.
+/** Actual PHP view + Bootstrap 3 + Chromium on loopback HTTP only; no Asaas/CRM access.
+ * ASAAS_TEST_PHP selects PHP. --contract-only checks HTML; --transport-only also checks real HTTP PRG without Chromium.
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
 const path = require('node:path');
 const {execFileSync} = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const php = process.env.ASAAS_TEST_PHP || 'php';
-const origin = 'https://crm.example.test';
+const defaultOrigin = 'https://crm.example.test';
 const recurringPath = '/asaas/recurring/index/recurring-browser-fixture';
 const invoicePath = '/invoice/42/recurring-browser-fixture';
 let currentScenario = 'renderização PHP';
@@ -20,8 +21,12 @@ const watchdog = setTimeout(() => {
 }, 90000);
 watchdog.unref();
 const modes = ['inactive', 'active', 'suspended', 'uncertain', 'paid', 'guest', 'invoice', 'hostile'];
-const fixtures = Object.fromEntries(modes.map(mode => [mode, execFileSync(php,
-    [path.join(__dirname, 'fixtures/recurring-ui-page.php'), mode], {cwd: root, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 10000})]));
+function renderFixture(mode, origin = defaultOrigin) {
+    return execFileSync(php, [path.join(__dirname, 'fixtures/recurring-ui-page.php'), mode],
+        {cwd: root, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 10000,
+            env: {...process.env, ASAAS_RECURRING_FIXTURE_ORIGIN: origin}});
+}
+const fixtures = Object.fromEntries(modes.map(mode => [mode, renderFixture(mode)]));
 let scenarios = 0;
 async function scenario(name, work) { currentScenario = name; await work(); scenarios++; console.log('OK  ' + name); }
 function deadline(promise, description) {
@@ -29,6 +34,83 @@ function deadline(promise, description) {
     return Promise.race([promise, new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error('Timed out waiting for ' + description + ' in: ' + currentScenario)), 10000);
     })]).finally(() => clearTimeout(timer));
+}
+
+/** Real 303 responses need a real destination: Playwright routes only the first URL in a redirect chain. */
+async function fixtureServer(initialMode, assets = {}) {
+    let origin;
+    let displayMode = initialMode;
+    let afterPost = 'paid';
+    let release = null;
+    let recordPending;
+    const pending = new Promise(resolve => { recordPending = resolve; });
+    const pendingResponses = new Set();
+    const submissions = [];
+    const requests = [];
+    const failures = [];
+    const rendered = new Map();
+    const html = mode => {
+        if (!rendered.has(mode)) { rendered.set(mode, renderFixture(mode, origin)); }
+        return rendered.get(mode);
+    };
+    const server = http.createServer((request, response) => {
+        const send = (status, type, body, extra = {}) => {
+            response.writeHead(status, {'Content-Type': type, 'Cache-Control': 'no-store', ...extra});
+            response.end(body);
+        };
+        const handle = async () => {
+            const url = new URL(request.url, origin);
+            requests.push({method: request.method, path: url.pathname});
+            if (request.headers.host !== new URL(origin).host) { return send(400, 'text/plain', 'Invalid fixture host.'); }
+            if (request.method === 'GET' && assets[url.pathname]) {
+                return send(200, url.pathname.endsWith('.css') ? 'text/css' : 'text/javascript', fs.readFileSync(assets[url.pathname]));
+            }
+            if (url.pathname === '/favicon.ico') { return send(204, 'text/plain', ''); }
+            if (request.method === 'POST' && url.pathname === recurringPath) {
+                const chunks = [];
+                let size = 0;
+                for await (const chunk of request) {
+                    size += chunk.length;
+                    if (size > 16384) { return send(413, 'text/plain', 'Fixture body too large.'); }
+                    chunks.push(chunk);
+                }
+                const body = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+                submissions.push(body);
+                if (body.get('csrf_fixture') !== 'fixture-csrf-token' || body.get('recurringNonce') !== 'b'.repeat(64)) {
+                    return send(403, 'text/plain', 'Invalid fixture CSRF.');
+                }
+                await new Promise(resolve => {
+                    release = () => { pendingResponses.delete(release); resolve(); };
+                    pendingResponses.add(release);
+                    recordPending();
+                });
+                displayMode = afterPost;
+                return send(303, 'text/plain', '', {Location: origin + recurringPath});
+            }
+            if (request.method === 'GET' && [recurringPath, invoicePath, '/_fixture/page'].includes(url.pathname)) {
+                const mode = url.pathname === invoicePath ? 'invoice'
+                    : (url.pathname === recurringPath && displayMode === 'invoice' ? 'inactive' : displayMode);
+                return send(200, 'text/html; charset=utf-8', html(mode));
+            }
+            failures.push('Unexpected fixture request: ' + request.method + ' ' + url.pathname);
+            return send(404, 'text/plain', 'Unknown fixture route.');
+        };
+        handle().catch(error => { failures.push(error.message); if (!response.headersSent) { send(500, 'text/plain', 'Fixture failed.'); } else { response.destroy(); } });
+    });
+    server.requestTimeout = 15000;
+    server.headersTimeout = 15000;
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    origin = 'http://127.0.0.1:' + server.address().port;
+    return {origin, submissions, requests, failures,
+        waitForPending() { return deadline(pending, 'the loopback native POST'); },
+        release() { assert.ok(release, 'A native POST response must be pending.'); release(); },
+        setAfterPost(mode) { afterPost = mode; },
+        releasePending() { for (const finish of pendingResponses) { finish(); } },
+        async close() {
+            for (const finish of pendingResponses) { finish(); }
+            server.closeAllConnections();
+            await new Promise(resolve => server.close(resolve));
+        }};
 }
 
 async function main() {
@@ -61,6 +143,28 @@ async function main() {
         return;
     }
 
+    await scenario('servidor loopback executa POST, 303 e GET reais sem DNS externo', async () => {
+        const server = await fixtureServer('active');
+        try {
+            const responsePromise = fetch(server.origin + recurringPath, {method: 'POST', redirect: 'follow',
+                body: new URLSearchParams({action: 'enroll', csrf_fixture: 'fixture-csrf-token', recurringNonce: 'b'.repeat(64)})});
+            await server.waitForPending();
+            server.release();
+            const response = await deadline(responsePromise, 'the loopback 303 chain');
+            assert.equal(response.status, 200);
+            assert.equal(response.redirected, true);
+            assert.equal(response.url, server.origin + recurringPath);
+            assert.match(await response.text(), /Pagamento confirmado/);
+            assert.deepEqual(server.requests, [{method: 'POST', path: recurringPath}, {method: 'GET', path: recurringPath}]);
+            assert.equal(server.submissions.length, 1);
+            assert.deepEqual(server.failures, []);
+        } finally { await server.close(); }
+    });
+    if (process.argv.includes('--transport-only')) {
+        console.log('Recurring transport: HTML e HTTP POST/303/GET aprovados; Chromium não executado neste modo.');
+        return;
+    }
+
     const {chromium} = require('playwright');
     const assets = {
         '/_fixture/bootstrap.css': require.resolve('bootstrap/dist/css/bootstrap.min.css'),
@@ -73,8 +177,11 @@ async function main() {
     const errors = [];
     const unexpected = [];
     const contexts = [];
-    const pendingResponses = new Set();
+    const servers = [];
     async function fixturePage(initialMode = 'inactive', viewport = {width: 1280, height: 960}) {
+        const transport = await fixtureServer(initialMode, assets);
+        servers.push(transport);
+        const origin = transport.origin;
         const context = await browser.newContext({viewport});
         contexts.push(context);
         await context.addInitScript(() => {
@@ -92,16 +199,10 @@ async function main() {
         page.setDefaultTimeout(10000);
         page.setDefaultNavigationTimeout(15000);
         page.on('pageerror', error => errors.push(error.message));
-        let displayMode = initialMode;
-        let afterPost = 'paid';
-        let release = null;
-        const submissions = [];
         let recordSubmit;
         let recordDeparture;
-        let recordPending;
         const submitted = new Promise(resolve => { recordSubmit = resolve; });
         const departed = new Promise(resolve => { recordDeparture = resolve; });
-        const pending = new Promise(resolve => { recordPending = resolve; });
         await page.exposeFunction('__asaasRecurringTestEvent', snapshot => {
             if (snapshot.type === 'submit') { recordSubmit(snapshot); }
             if (snapshot.type === 'pagehide') { recordDeparture(snapshot); }
@@ -110,30 +211,7 @@ async function main() {
             const request = route.request();
             const url = new URL(request.url());
             if (url.origin !== origin) { unexpected.push(url.origin); return route.abort(); }
-            if (assets[url.pathname]) {
-                return route.fulfill({contentType: url.pathname.endsWith('.css') ? 'text/css' : 'text/javascript', body: fs.readFileSync(assets[url.pathname])});
-            }
-            if (url.pathname === '/favicon.ico') { return route.fulfill({status: 204}); }
-            if (request.method() === 'POST' && url.pathname === recurringPath) {
-                const body = new URLSearchParams(request.postData() || '');
-                submissions.push(body);
-                if (body.get('csrf_fixture') !== 'fixture-csrf-token' || body.get('recurringNonce') !== 'b'.repeat(64)) {
-                    return route.fulfill({status: 403, body: 'Invalid fixture CSRF.'});
-                }
-                await new Promise(resolve => {
-                    release = () => { pendingResponses.delete(release); resolve(); };
-                    pendingResponses.add(release);
-                    recordPending();
-                });
-                displayMode = afterPost;
-                return route.fulfill({status: 303, headers: {Location: origin + recurringPath, 'Cache-Control': 'no-store'}, body: ''});
-            }
-            if (request.method() === 'GET' && [recurringPath, invoicePath, '/_fixture/page'].includes(url.pathname)) {
-                return route.fulfill({contentType: 'text/html; charset=utf-8', headers: {'Cache-Control': 'no-store'},
-                    body: fixtures[url.pathname === invoicePath ? 'invoice' : (url.pathname === recurringPath && displayMode === 'invoice' ? 'inactive' : displayMode)]});
-            }
-            unexpected.push(request.method() + ' ' + url.pathname);
-            return route.abort();
+            return route.continue();
         });
         await page.goto(origin + '/_fixture/page');
         // Install after the actual script, before the click. Browser-native form navigation
@@ -176,12 +254,9 @@ async function main() {
             });
             window.addEventListener('pagehide', () => emit({type: 'pagehide', clearance: clearance()}));
         });
-        return {page, submissions,
+        return {...transport, page,
             waitForSubmit() { return deadline(submitted, 'the synchronous submit observation'); },
-            waitForDeparture() { return deadline(departed, 'the natural pagehide observation'); },
-            waitForPending() { return deadline(pending, 'the intercepted native POST'); },
-            release() { assert.ok(release, 'A native POST response must be pending.'); release(); },
-            setAfterPost(mode) { afterPost = mode; }};
+            waitForDeparture() { return deadline(departed, 'the natural pagehide observation'); }};
     }
     async function fillCard(page) {
         for (const [field, value] of Object.entries({holderName: 'Titular de teste', cardNumber: '4111111111111111', expirationMonth: '12', expirationYear: '2030', securityCode: '123'})) {
@@ -232,8 +307,8 @@ async function main() {
             const fixture = await fixturePage('invoice');
             assert.equal(await fixture.page.locator('[name=paymentmode][value=asaas]:checked').count(), 1);
             const link = fixture.page.locator('[data-asaas-recurring-invoice-option] a');
-            assert.equal(await link.getAttribute('href'), origin + recurringPath);
-            await Promise.all([fixture.page.waitForURL(origin + recurringPath), link.click()]);
+            assert.equal(await link.getAttribute('href'), fixture.origin + recurringPath);
+            await Promise.all([fixture.page.waitForURL(fixture.origin + recurringPath), link.click()]);
             assert.equal(await fixture.page.locator('#asaas-recurring-enroll').count(), 1);
             assert.equal(fixture.submissions.length, 0, 'Opening enrollment cannot capture a card.');
         });
@@ -265,7 +340,7 @@ async function main() {
             assert.equal(body.get('cardNumber'), '4111111111111111');
             assert.equal(body.get('securityCode'), '123');
             assert.equal(body.has('installmentCount') || body.has('cardToken') || body.has('creditCardToken'), false);
-            const navigation = page.waitForURL(origin + recurringPath);
+            const navigation = page.waitForURL(fixture.origin + recurringPath);
             fixture.release();
             await navigation;
             assertCleared(await fixture.waitForDeparture());
@@ -289,7 +364,7 @@ async function main() {
             assert.equal(fixture.submissions.length, 1);
             assert.deepEqual([...fixture.submissions[0].keys()].sort(), ['action', 'csrf_fixture', 'recurringNonce']);
             assert.equal(fixture.submissions[0].get('action'), 'revoke');
-            const navigation = fixture.page.waitForURL(origin + recurringPath);
+            const navigation = fixture.page.waitForURL(fixture.origin + recurringPath);
             fixture.release();
             await navigation;
             assertCleared(await fixture.waitForDeparture());
@@ -313,11 +388,13 @@ async function main() {
         });
         assert.deepEqual(errors, [], 'No browser script errors.');
         assert.deepEqual(unexpected, [], 'All requests must stay inside the isolated fixture.');
+        for (const server of servers) { assert.deepEqual(server.failures, [], 'Loopback server must handle all fixture requests.'); }
         console.log('Recurring browser: ' + scenarios + ' cenários aprovados em Chromium; API e armazenamento não utilizados.');
     } finally {
-        for (const release of pendingResponses) { release(); }
+        for (const server of servers) { server.releasePending(); }
         for (const context of contexts) { await context.close(); }
         await browser.close();
+        for (const server of servers) { await server.close(); }
     }
 }
 main().catch(error => { console.error(error.stack || error); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));
