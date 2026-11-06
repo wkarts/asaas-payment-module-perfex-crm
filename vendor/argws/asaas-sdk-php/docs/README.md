@@ -17,5 +17,15 @@
 - [12 - Exemplos CodeEngine](12-exemplos-codeengine.md)
 - [13 - Geração OpenAPI e paridade](13-geracao-openapi-e-paridade.md)
 - [14 - Status/Healthcheck/Resiliência](14-status-healthcheck-resiliencia.md)
-- [15 - FAQ/Troubleshooting](15-faq-troubleshooting.md)
-- [16 - Changelog e versionamento](16-changelog-versionamento.md)
+
+## Extras
+
+- [15 — Exemplos Perfex CRM](15-exemplos-perfex-crm.md)
+- [16 — Playground (referência)](16-playground-referencia.md)
+
+- [17 - Guia de payloads mínimos (por recurso)](17-guia-payloads-minimos.md)
+- [18 - Mapeamento ERP/Perfex ↔ Asaas](18-mapeamento-erp-perfex-asaas.md)
+- [19 - Idempotência e “não duplicar” como padrão](19-idempotencia-e-anti-duplicacao.md)
+
+- [99 — Referência de endpoints (gerada do código)](99-reference-endpoints.md)
+

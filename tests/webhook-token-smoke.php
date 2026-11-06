@@ -1227,4 +1227,85 @@ foreach (['api_key', 'api_key_sandbox'] as $key) {
     });
 }
 
+
+$suite->run('cartão avulso baixa somente o valor confirmado', function () use ($suite): void {
+    [$adapter, $gateway] = webhook_smoke_fixture();
+    $event = json_decode(webhook_smoke_payload('evt_card_partial'), true);
+    $event['payment']['billingType'] = 'CREDIT_CARD';
+    $event['payment']['value'] = '40.00';
+    $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], json_encode($event));
+    $suite->same(200, $result['http_status'], 'Recebimento parcial é aceito.');
+    $suite->same('40.00', $gateway->payments[0]['amount'], 'Não quitar125.50 com cobrança40.00.');
+});
+
+$suite->run('parcelas confirmadas conciliam individualmente e RECEIVED não duplica CONFIRMED', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $headers = ['asaas-access-token' => WEBHOOK_SMOKE_TOKEN];
+    foreach (['40.00', '40.00', '45.50'] as $number => $value) {
+        foreach (['CONFIRMED', 'RECEIVED'] as $status) {
+            $event = json_decode(webhook_smoke_payload('evt_card_' . $number . '_' . $status, $status), true);
+            $event['event'] = 'PAYMENT_' . $status;
+            $event['payment'] = array_replace($event['payment'], ['id' => 'pay_card_' . $number,
+                'billingType' => 'CREDIT_CARD', 'value' => $value, 'installment' => 'ins_fixture', 'installmentNumber' => $number + 1]);
+            $result = $adapter->handleWebhook($headers, json_encode($event));
+            $suite->same(200, $result['http_status'], 'Cada evento válido é aceito.');
+            $suite->same($number + 1, count($gateway->payments), 'Uma baixa por ID da parcela.');
+        }
+    }
+    $suite->same(['40.00', '40.00', '45.50'], array_column($gateway->payments, 'amount'), 'Somente a última parcela quita o saldo.');
+    $suite->same('0.00', get_invoice_total_left_to_pay(42, '125.50'), 'Saldo termina zerado após todas as parcelas.');
+});
+
+foreach (['AUTHORIZED', 'AWAITING_RISK_ANALYSIS', 'REPROVED_BY_RISK_ANALYSIS', 'CHARGEBACK_REQUESTED'] as $status) {
+    $suite->run('cartão ' . $status . ' não registra recebimento', function () use ($suite, $status): void {
+        [$adapter, $gateway] = webhook_smoke_fixture();
+        $event = json_decode(webhook_smoke_payload('evt_card_pending', $status), true);
+        $event['payment']['billingType'] = 'CREDIT_CARD';
+        $event['payment']['value'] = '125.50';
+        $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], json_encode($event));
+        $suite->same(200, $result['http_status'], 'Status conhecido pode ser acompanhado.');
+        $suite->same([], $gateway->payments, 'Não confundir autorização/análise com recebimento.');
+    });
+}
+
+$suite->run('cartão sem valor confirmado fica pendente de conciliação', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $event = json_decode(webhook_smoke_payload('evt_card_no_amount'), true);
+    $event['payment']['billingType'] = 'CREDIT_CARD';
+    unset($event['payment']['value']);
+    $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], json_encode($event));
+    $suite->same(500, $result['http_status'], 'Sem valor não marcar o evento como processado.');
+    $suite->same([], $gateway->payments, 'Nenhuma baixa integral presumida.');
+    $suite->truth(!isset($db->events['evt_card_no_amount']), 'Rollback permite uma entrega completa posterior.');
+});
+
+$suite->run('credenciais de cartão do webhook não são persistidas', function () use ($suite): void {
+    [$adapter, $gateway, $db] = webhook_smoke_fixture();
+    $event = json_decode(webhook_smoke_payload('evt_card_safe'), true);
+    $event['payment'] = array_replace($event['payment'], ['billingType' => 'CREDIT_CARD', 'value' => '125.50',
+        'creditCardToken' => 'token-fixture-never-store',
+        'creditCard' => ['number' => '4111111111111111', 'ccv' => 'unlogged-cvv'],
+        'creditCardHolderInfo' => ['name' => 'unlogged-holder']]);
+    $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], json_encode($event));
+    $suite->same(200, $result['http_status'], 'Dados sensíveis não impedem a conciliação dos dados públicos.');
+    $stored = json_encode([$db->events, $GLOBALS['webhook_smoke_logs']]);
+    foreach (['token-fixture-never-store', '4111111111111111', 'unlogged-cvv', 'unlogged-holder'] as $secret) {
+        $suite->truth(!str_contains($stored, $secret), 'Não armazenar credenciais de cartão no evento nem nos logs.');
+    }
+    $suite->same('125.50', $gateway->payments[0]['amount'], 'Valor e identificador continuam disponíveis.');
+});
+
+foreach ([5, 6] as $invoiceStatus) {
+    $suite->run('webhook de cartão não baixa fatura indisponível ' . $invoiceStatus, function () use ($suite, $invoiceStatus): void {
+        [$adapter, $gateway, $db] = webhook_smoke_fixture();
+        $db->invoice->status = $invoiceStatus;
+        $event = json_decode(webhook_smoke_payload('evt_card_closed'), true);
+        $event['payment']['billingType'] = 'CREDIT_CARD';
+        $event['payment']['value'] = '125.50';
+        $result = $adapter->handleWebhook(['asaas-access-token' => WEBHOOK_SMOKE_TOKEN], json_encode($event));
+        $suite->same(200, $result['http_status'], 'Evento conhecido é aceito sem forçar a fatura.');
+        $suite->same([], $gateway->payments, 'Não alterar fatura cancelada ou rascunho.');
+    });
+}
+
 $suite->finish();

@@ -5,6 +5,8 @@ require FCPATH . 'modules/asaas/traits/BaseApi.php';
 require_once __DIR__ . '/AsaasSdkProvider.php';
 require_once __DIR__ . '/Asaas/AsaasAdapter.php';
 require_once __DIR__ . '/../helpers/asaas_lifecycle_helper.php';
+require_once __DIR__ . '/../helpers/asaas_card_helper.php';
+require_once __DIR__ . '/Asaas/AsaasCardCheckout.php';
 
 class Asaas_gateway extends App_gateway
 {
@@ -37,6 +39,13 @@ class Asaas_gateway extends App_gateway
                 'label' => 'Sandbox',
                 'type' => 'yes_no',
                 'default_value' => 1,
+            ),
+            array(
+                'name' => 'show_environment_in_production',
+                'label' => 'Exibir o ambiente em produção na área de pagamentos',
+                'type' => 'yes_no',
+                'default_value' => 0,
+                'after' => '<p class="help-block">Controla a faixa de ambiente exibida ao pagador. Em sandbox, o aviso de teste permanece visível.</p>',
             ),
             array(
                 'name' => 'debug',
@@ -144,9 +153,12 @@ class Asaas_gateway extends App_gateway
             ),
             array(
                 'name' => 'installmentCount',
-                'label' => 'Limite de parcelas',
+                'label' => 'Limite de parcelas no cartão (1 a 12)',
                 'type' => 'input',
+                'input_type' => 'number',
+                'field_attributes' => ['min' => '1', 'max' => '12', 'step' => '1'],
                 'default_value' => 1,
+                'after' => '<p class="help-block">As opções respeitam o saldo da fatura e o valor mínimo de cada parcela.</p>',
             ),
             array(
                 'name' => 'diasdevencimento',
@@ -277,6 +289,11 @@ class Asaas_gateway extends App_gateway
     public function process_payment($data)
     {
         if (empty($data)) {
+            return;
+        }
+
+        if (asaas_card_attempt_blocks(asaas_lifecycle_cached_payment(asaas_lifecycle_map((int) ($data['invoice']->id ?? 0))))) {
+            redirect(site_url('asaas/checkout/cartao/' . $data['invoice']->hash));
             return;
         }
 
@@ -603,8 +620,12 @@ class Asaas_gateway extends App_gateway
     {
         $payments = $this->adapter->listPayments([
             'externalReference' => (string) $hash,
+            'limit' => 100,
         ]);
 
+        if (!empty($payments['hasMore'])) {
+            throw new RuntimeException('Há cobranças demais para esta referência. Concilie os vínculos antes de continuar.');
+        }
         $charges = $payments['data'] ?? [];
         if (!is_array($charges) || $charges === []) {
             return [];
@@ -777,292 +798,15 @@ class Asaas_gateway extends App_gateway
         return $charge;
     }
 
+    public function card_checkout(): \Asaas\AsaasCardCheckout
+    {
+        return new \Asaas\AsaasCardCheckout($this);
+    }
+
     public function charge_credit_card($data)
     {
-        if (empty($data)) {
-            return;
-        }
-        $asaasInvoiceId = (int) ($data['invoice']->id ?? 0);
-        try {
-            asaas_lifecycle_checkout_begin($asaasInvoiceId);
-        $invoice_id = $data['invoice']->id;
-        $ci = &get_instance();
-        $ci->db->where('id', $invoice_id);
-        $invoice = $ci->db->get(db_prefix() . 'invoices')->row();
-
-        $ci->db->select('c.*, cc.email');
-        $ci->db->from(db_prefix() . 'clients c');
-        $ci->db->join(db_prefix() . 'contacts cc', 'cc.userid = c.userid AND cc.is_primary = 1', 'LEFT');
-        $ci->db->where('c.userid', $invoice->clientid);
-        $client = $ci->db->get()->row();
-
-        $description = $this->getSetting('description');
-        $interest = $this->getSetting('interest_value');
-        $fine = $this->getSetting('fine_value');
-        $discount_value = $this->getSetting('discount_value');
-        $dueDateLimitDays = $this->getSetting('discount_days');
-        $discount_type = $this->getSetting('discount_type');
-        $api_key = $this->getApiKey();
-        $api_url = $this->getUrlBase();
-
-        $disable_charge_notification = $this->getSetting('disable_charge_notification');
-
-        if ($disable_charge_notification == '1') {
-            $notificationDisabled = true;
-        } else {
-            $notificationDisabled = false;
-        }
-
-        $invoice_number = $invoice->prefix . str_pad($invoice->number, 6, "0", STR_PAD_LEFT);
-        $description = utf8_encode(str_replace("{invoice_number}", $invoice_number, $description));
-        $email = $client->email;
-        $address_number = $client->numero;
-
-        $document = str_replace('/', '', str_replace('-', '', str_replace('.', '', $client->vat)));
-        $postalCode = str_replace('-', '', str_replace('.', '', $client->zip));
-        $customer = $this->search_customer($api_url, $api_key, $document);
-        if ($customer['totalCount'] == "0") {
-            $post_data = json_encode([
-                "name" => $client->company,
-                "email" => $email,
-                "phone" => $client->phonenumber,
-                "cpfCnpj" => $document,
-                "postalCode" => $postalCode,
-                "address" => $client->address,
-                "addressNumber" => $address_number,
-                "complement" => "",
-                "phone" => $client->phonenumber,
-                "mobilePhone" => $client->phonenumber,
-                "externalReference" => (string) $invoice->clientid,
-                "notificationDisabled" => $notificationDisabled,
-            ]);
-
-
-            $cliente_create = $this->create_customer($api_url, $api_key, $post_data);
-            $cliente_id = $cliente_create['id'];
-            $this->logAsaasActivity('Cliente cadastrado no Asaas [Cliente ID: ' . $cliente_id . ']');
-
-            if ($this->debug_enable()) {
-                echo "Campos cadastro";
-                echo "<br>";
-                echo "<pre>";
-                var_dump($post_data);
-                echo "</pre>";
-                echo "Cliente cadastrado no Asaas ID" . $cliente_id;
-                echo "<hr>";
-            }
-        } else {
-            // se existir recupera os dados para cobranca
-            $cliente_id = $customer['data'][0]['id'];
-            if ($this->debug_enable()) {
-                echo "Cliente jA existente ID" . $cliente_id;
-                echo "<hr>";
-            }
-        }
-
-        if ($invoice->status == '4') {
-
-            // calculate_invoice()
-
-            $now = time();
-            $duedate = strtotime($invoice->duedate);
-            $datediff = $now - $duedate;
-
-            $invoice->subtotal = $invoice->subtotal + $invoice->adjustment;
-
-            $invoice->subtotal = get_invoice_total_left_to_pay($invoice->id, $invoice->subtotal);
-
-            $overdue_days = round($datediff / (60 * 60 * 24));
-
-            $overdue_days_interest = $interest * (int)$overdue_days;
-
-            $overdue_interest = $invoice->subtotal * $overdue_days_interest;
-
-            $overdue_fine = $invoice->subtotal * $fine;
-
-            $updated_total_overdue = number_format($overdue_interest, 2) + $overdue_fine;
-            $updated_total = $invoice->subtotal + number_format($updated_total_overdue / 100, 2);
-
-            $adjustment = $invoice->adjustment + number_format($updated_total_overdue / 100, 2);
-
-            $update_data = [
-                'status' => 1,
-                'adjustment' => $adjustment,
-                'subtotal' => $updated_total,
-                'total' => $updated_total,
-                'duedate' => date('Y-m-d', strtotime("+10 day"))
-            ];
-
-            $ci->db->where('id', $invoice_id);
-            $ci->db->update(db_prefix() . 'invoices', $update_data);
-
-            $search_charge = $this->search_charge($api_url, $api_key, $invoice->hash);
-
-            $discount = NULL;
-
-            $sem_desconto = strpos($invoice->adminnote, "{sem_desconto}", 0);
-
-            if ($discount_type == 1) {
-
-                $type = 'FIXED';
-
-                $discount = [
-                    'type' => 'FIXED',
-                    "value" => $discount_value,
-                    "dueDateLimitDays" => $dueDateLimitDays,
-                ];
-            }
-
-            if ($discount_type == 0) {
-
-                $type = 'PERCENTAGE';
-
-                $discount = [
-                    'type' => 'PERCENTAGE',
-                    "value" => $discount_value,
-                    "dueDateLimitDays" => $dueDateLimitDays,
-                ];
-            }
-
-            if (is_bool($sem_desconto)) {
-                $discount = [
-                    'type' => $type,
-                    "value" => $discount_value,
-                    "dueDateLimitDays" => $dueDateLimitDays,
-                ];
-            }
-
-            if ($this->debug_enable()) {
-                echo "Tipo desconto" . $discount_type;
-                echo "<br>";
-                echo "Campos desconto";
-                echo "<br>";
-                echo "<pre>";
-                var_dump($discount);
-                echo "</pre>";
-                echo "<hr>";
-                echo "Sem desconto" . $sem_desconto;
-                echo "<br>";
-                echo "<pre>";
-                var_dump($discount);
-                echo "</pre>";
-                echo "<hr>";
-            }
-
-            $post_data = json_encode([
-                "customer" => $search_charge->customer,
-                "billingType" => $search_charge->billingType,
-                "dueDate" => date('Y-m-d', strtotime("+10 day")),
-                "value" => $updated_total,
-                "description" => $search_charge->description,
-                "externalReference" => $invoice->hash,
-                "discount" => $discount,
-                "fine" => [
-                    "value" => $fine,
-                ],
-                "interest" => [
-                    "value" => $interest,
-                ],
-                "postalService" => false
-            ]);
-
-            $charge = $this->update_charge($search_charge->id, $post_data);
-
-            $this->logAsaasActivity('Cobran�a atualizada Asaas [Fatura ID: ' . $search_charge->id . ']');
-
-            return json_encode($charge);
-        }
-
-
-        $installmentCount = filter_var($data['card']['installmentCount'] ?? null, FILTER_VALIDATE_INT);
-        if ($installmentCount === false || $installmentCount < 1) {
-            throw new RuntimeException('Informe uma quantidade de parcelas inteira e positiva.', 400);
-        }
-
-        $discount = NULL;
-
-        $sem_desconto = strpos($invoice->adminnote, "{sem_desconto}", 0);
-
-        if ($discount_type == 1) {
-
-            $type = 'FIXED';
-
-            $discount = [
-                'type' => 'FIXED',
-                "value" => $discount_value,
-                "dueDateLimitDays" => $dueDateLimitDays,
-            ];
-        }
-
-        if ($discount_type == 0) {
-
-            $type = 'PERCENTAGE';
-
-            $discount = [
-                'type' => 'PERCENTAGE',
-                "value" => $discount_value,
-                "dueDateLimitDays" => $dueDateLimitDays,
-            ];
-        }
-
-        if (is_bool($sem_desconto)) {
-            $discount = [
-                'type' => $type,
-                "value" => $discount_value,
-                "dueDateLimitDays" => $dueDateLimitDays,
-            ];
-        }
-
-        $invoice->total = get_invoice_total_left_to_pay($invoice->id, $invoice->total);
-        $installmentValue = number_format($invoice->total / $installmentCount, 2, '.', '');
-
-        $post_data = json_encode([
-            "customer" => $cliente_id,
-            "billingType" => 'CREDIT_CARD',
-            "dueDate" => $invoice->duedate,
-            "value" => $invoice->total,
-            "description" => $description,
-            "externalReference" => $invoice->hash,
-            "installmentCount" => $data["card"]["installmentCount"],
-            "installmentValue" => $installmentValue,
-            "creditCard" => [
-                "holderName" => $data["card"]["holderName"],
-                "number" => $data["card"]["number"],
-                "expiryMonth" => $data["card"]["expiryMonth"],
-                "expiryYear" => $data["card"]["expiryYear"],
-                "ccv" => $data["card"]["cvv"]
-            ],
-            "creditCardHolderInfo" => [
-                "name" => $client->company,
-                "email" => $email,
-                "cpfCnpj" => $document,
-                "postalCode" => $postalCode,
-                "addressNumber" => $address_number,
-                "addressComplement" => "",
-                "phone" => $client->phonenumber,
-                "mobilePhone" => $client->phonenumber
-            ],
-            "discount" => $discount,
-            "fine" => [
-                "value" => $fine,
-            ],
-            "interest" => [
-                "value" => $interest,
-            ],
-            "postalService" => false
-        ]);
-
-        $charge = $this->create_charge($api_url, $api_key, $post_data);
-
-        $this->logAsaasActivity('Cobran�a cart�o de credito Asaas [Fatura ID: ' . $invoice_id . ']');
-
-
-        return $charge;
-        } catch (Throwable $error) {
-            asaas_lifecycle_reject($error, $asaasInvoiceId);
-        } finally {
-            asaas_lifecycle_checkout_finish($asaasInvoiceId);
-        }
+        // Keep the legacy JSON return contract for callers of this gateway.
+        return json_encode($this->card_checkout()->pay((array) $data), JSON_THROW_ON_ERROR);
     }
 
     public function charge_pix($data)
@@ -1566,6 +1310,7 @@ class Asaas_gateway extends App_gateway
             return false;
         }
 
+        $chargeData = asaas_card_safe_payload($chargeData);
         $now = date('Y-m-d H:i:s');
         $existing = $ci->db->get_where($table, ['invoice_id' => $invoiceId])->row_array();
 

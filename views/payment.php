@@ -40,16 +40,17 @@
                             <div class="clearfix"></div>
                         </div>
 
-                        <div class="col-md-12 mtop10">
-                            <div class="alert alert-info mbot0">
-                                <strong>Ambiente ativo:</strong>
-                                <span class="label label-<?php echo ($environment === 'SANDBOX') ? 'warning' : 'success'; ?>">
-                                    <?php echo $environment; ?>
-                                </span>
-                                <span class="text-muted mleft10">Selecione a forma de pagamento abaixo.</span>
-                            </div>
-                        </div>
+                        <?php
+                        $asaas_environment_hint = !empty($card_checkout_blocked) ? '' : 'Selecione a forma de pagamento abaixo.';
+                        include __DIR__ . '/partials/payment_environment.php';
+                        ?>
 
+                        <?php if (!empty($card_checkout_blocked)) { ?>
+                            <div class="col-md-12 mtop20">
+                                <div class="alert alert-info" role="status"><?php echo html_escape(!empty($mensagem_info) ? $mensagem_info : 'O pagamento está em processamento. Aguarde a confirmação antes de tentar novamente.'); ?></div>
+                                <a class="btn btn-info" href="<?php echo html_escape(site_url('asaas/checkout/cartao/' . $hash)); ?>">Acompanhar pagamento por cartão</a>
+                            </div>
+                        <?php } else { ?>
                         <p>&nbsp;</p>
                         <h2 class="bold invoice-html-number" style="text-align: center">Selecione umas das opções abaixo para realizar o pagamento</h2>
                         <p>&nbsp;</p>
@@ -108,6 +109,7 @@
                                                                     </div>
                                                                 <?php } ?>
                                                                 </div>
+                        <?php } ?>
                                                             </div>
                                                     </div>
                                                 </div>

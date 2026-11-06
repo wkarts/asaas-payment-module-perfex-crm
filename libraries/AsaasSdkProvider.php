@@ -135,6 +135,69 @@ class AsaasSdkProvider
         );
     }
 
+    /**
+     * Card mutations must never inherit the SDK's automatic retry middleware.
+     * SDK 0.2.64 supports an injected Guzzle client, not a maxRetries option.
+     * Keep the existing client()/sdk() behaviour for all other operations.
+     */
+    public function cardClient(?int $companyId = null): Client
+    {
+        try {
+            $this->ensureComposerAutoload();
+
+            // A root autoloader may have loaded an older SDK before this module.
+            // Refuse an unknown constructor instead of silently enabling retries.
+            $constructor = (new \ReflectionClass(Client::class))->getConstructor();
+            $parameters = $constructor === null ? [] : $constructor->getParameters();
+            $injection = $parameters[6] ?? null;
+            $injectionType = $injection === null ? null : $injection->getType();
+            if ($injection === null || $injection->getName() !== 'client'
+                || !$injectionType instanceof \ReflectionNamedType
+                || $injectionType->getName() !== \GuzzleHttp\Client::class) {
+                throw new \RuntimeException('Unsupported SDK HTTP transport injection.');
+            }
+
+            $environment = $this->environmentEnum($companyId);
+            $transport = new \GuzzleHttp\Client([
+                'base_uri' => $environment->value,
+                'timeout' => 90.0,
+                'connect_timeout' => $this->getConnectTimeout($companyId),
+                'http_errors' => false,
+                'allow_redirects' => false,
+                // Guzzle's default stack has no retry middleware.
+                'handler' => \GuzzleHttp\HandlerStack::create(),
+            ]);
+
+            $client = new Client(
+                $this->getApiKey($companyId),
+                $environment,
+                $this->getUserAgent($companyId),
+                90.0,
+                $this->getConnectTimeout($companyId),
+                null,
+                $transport
+            );
+
+            // Verify that the loaded SDK actually retained the safe transport.
+            $property = new \ReflectionProperty(Client::class, 'client');
+            $property->setAccessible(true);
+            if ($property->getValue($client) !== $transport) {
+                throw new \RuntimeException('SDK ignored the injected HTTP transport.');
+            }
+
+            return $client;
+        } catch (\Throwable) {
+            $message = 'Não foi possível preparar o transporte seguro para cartão. Atualize a SDK Asaas para 0.2.64 ou superior e confira o vendor carregado pelo Perfex.';
+            try {
+                $this->logDiagnostic($message, ['operation' => 'card_client_bootstrap']);
+            } catch (\Throwable) {
+                // Preserve the safe bootstrap error even when diagnostics fail.
+            }
+            // Do not retain an exception chain that can contain credentials.
+            throw new \RuntimeException($message);
+        }
+    }
+
     public function env(?int $companyId = null): string
     {
         return $this->getSandboxSetting($companyId) ? 'sandbox' : 'production';

@@ -61,6 +61,16 @@ jobs:
       - name: JavaScript das configurações do webhook
         run: node --check assets/js/asaas-webhook-settings.js
 
+      - name: Cartão de crédito e apresentação do ambiente
+        run: |
+          php tests/checkout-environment-smoke.php
+          php tests/card-view-smoke.php
+          php tests/card-api-smoke.php
+          php tests/card-checkout-smoke.php
+          php tests/card-controller-smoke.php
+          node --check assets/js/asaas-card-checkout.js
+          node tests/card-checkout-ui-smoke.js
+
       - name: Validar padrão Perfex (versão + migrations)
         run: ./.github/scripts/check_perfex_module.sh
 
@@ -78,3 +88,36 @@ jobs:
             echo "Encontrado padrão proibido no código."
             exit 1
           fi
+
+  package:
+    name: Pacote candidato com SDK de produção
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          tools: composer
+          extensions: mbstring
+      - name: Instalar dependências de produção do lock
+        run: composer install --no-dev --no-scripts --prefer-dist --optimize-autoloader --no-interaction
+      - name: Conferir SDK distribuída
+        run: |
+          php -r 'require "vendor/autoload.php"; $lock = json_decode(file_get_contents("composer.lock"), true, 512, JSON_THROW_ON_ERROR); foreach ($lock["packages"] as $package) { if ($package["name"] === "argws/asaas-sdk-php") { $expected = $package["source"]["reference"]; } } if (!isset($expected) || Composer\InstalledVersions::getReference("argws/asaas-sdk-php") !== $expected) { throw new RuntimeException("SDK diferente do lock validado"); }'
+          composer check-platform-reqs --no-dev
+      - name: Empacotar módulo
+        run: |
+          mkdir -p dist/asaas
+          rsync -a ./ dist/asaas/ --exclude=/dist --exclude=/.git --exclude=/.github --exclude=/tests --exclude=/phpunit.xml --exclude=/.phpunit.cache --exclude=/.phpunit.result.cache
+          printf '%s\n' "${GITHUB_SHA}" > dist/asaas/BUILD-COMMIT.txt
+          cd dist
+          zip -qr asaas-module-candidate.zip asaas
+          sha256sum asaas-module-candidate.zip > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asaas-module-candidate-${{ github.sha }}
+          path: |
+            dist/asaas-module-candidate.zip
+            dist/SHA256SUMS.txt
+          retention-days: 30

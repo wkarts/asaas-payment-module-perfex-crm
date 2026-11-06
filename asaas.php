@@ -289,6 +289,13 @@ function asaas_after_invoice_updated($hookData = null)
             return $id;
         }
 
+        $cardCache = asaas_lifecycle_cached_payment(asaas_lifecycle_map($id));
+        if (!$reactivating && (asaas_card_attempt_blocks($cardCache) || !empty($cardCache['installment']))) {
+            // Do not send the whole invoice total to each installment, or mutate an uncertain capture.
+            // Financial edits have already been checked in the before-update filter.
+            return $id;
+        }
+
         if (in_array((int) ($invoice->status ?? 1), [2, 5, 6], true)) {
             return $id;
         }

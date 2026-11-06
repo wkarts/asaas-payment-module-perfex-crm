@@ -222,6 +222,7 @@ final class InvoiceSmokeCi
     public InvoiceSmokeDatabase $db;
     public InvoiceSmokeLoader $load;
     public InvoiceSmokeInvoices $invoices_model;
+    public object $input;
     public ?Asaas_gateway $asaas_gateway = null;
     public ?object $client;
     public ?object $invoice;
@@ -244,6 +245,9 @@ final class InvoiceSmokeCi
         $this->db = new InvoiceSmokeDatabase($this);
         $this->load = new InvoiceSmokeLoader();
         $this->invoices_model = new InvoiceSmokeInvoices($this);
+        $this->input = new class {
+            public function ip_address(): string { return '203.0.113.10'; }
+        };
     }
 }
 
@@ -275,6 +279,7 @@ function log_activity(string $message): void
 }
 function html_escape(string $value): string { return htmlspecialchars($value, ENT_QUOTES, 'UTF-8'); }
 function site_url(string $path = ''): string { return 'https://crm.example.test/' . $path; }
+function is_https(): bool { return true; }
 function admin_url(string $path = ''): string { return site_url('admin/' . $path); }
 function format_invoice_number(mixed $id): string { return 'INV-' . str_pad((string) $id, 6, '0', STR_PAD_LEFT); }
 function get_invoice_total_left_to_pay($id, $total = null): float
@@ -298,6 +303,7 @@ final class InvoiceSmokeProvider extends AsaasSdkProvider
         parent::__construct($gateway);
     }
     public function client(?int $companyId = null): SdkClient { return $this->mockClient; }
+    public function cardClient(?int $companyId = null): SdkClient { return $this->mockClient; }
 }
 
 function invoiceSmokeFixture(array $responses, array &$history): InvoiceSmokeCi
@@ -318,6 +324,7 @@ function invoiceSmokeFixture(array $responses, array &$history): InvoiceSmokeCi
         'api_key' => INVOICE_SMOKE_KEY, 'api_key_sandbox' => INVOICE_SMOKE_KEY,
         'sandbox' => '1', 'debug' => '0', 'file_log_enabled' => '0',
         'webhook_secret' => '', 'billet_only' => '1', 'card_only' => '1', 'pix_only' => '1',
+        'installmentCount' => '2',
         'update_charge' => '0', 'description' => 'Pagamento {invoice_number}',
         'interest_value' => '0', 'fine_value' => '0', 'discount_value' => '0',
         'discount_days' => '0', 'discount_type' => '1', 'disable_charge_notification' => '1', 'diasdevencimento' => '10',
@@ -378,11 +385,24 @@ function invoiceSmokeReject(callable $operation, ?int $expectedStatus = null): A
     throw new RuntimeException('Era esperada uma AsaasInvoiceSyncException no contrato CLI.');
 }
 
-function invoiceSmokeCheckout(InvoiceSmokeCi $ci, string $method)
+function invoiceSmokeCardReject(callable $operation, int $expectedStatus): RuntimeException
+{
+    try { $operation(); }
+    catch (RuntimeException $error) {
+        invoiceSmokeCheck($error->getCode() === $expectedStatus, 'A rejeição do cartão deve preservar o status HTTP ou a validação local.');
+        invoiceSmokeCheck($error->getPrevious() === null, 'O erro do cartão não deve expor a cadeia HTTP com credenciais.');
+        return $error;
+    }
+    throw new RuntimeException('Era esperada uma rejeição segura do pagamento com cartão.');
+}
+
+function invoiceSmokeCheckout(InvoiceSmokeCi $ci, string $method, int $installments = 2)
 {
     return $ci->asaas_gateway->$method(['invoice' => $ci->invoice, 'card' => [
-        'installmentCount' => 2, 'holderName' => 'Card fixture', 'number' => '4111111111111111',
+        'installmentCount' => $installments, 'holderName' => 'Card fixture', 'number' => '4111111111111111',
         'expiryMonth' => '12', 'expiryYear' => '2030', 'cvv' => '123',
+        'holderEmail' => 'cardholder@example.test', 'holderDocument' => '12345678909',
+        'holderPostalCode' => '12345678', 'holderAddressNumber' => '10', 'holderPhone' => '11999999999',
     ]]);
 }
 
@@ -558,7 +578,7 @@ $tests['checkout process_payment usa os mesmos endpoints e preserva redirecionam
 };
 
 foreach (['process_payment', 'charge_pix', 'charge_credit_card'] as $method) {
-    $tests['checkout ' . $method . ' restaura fatura vencida após HTTP 400'] = static function () use ($customer, $payment, $method): void {
+    $tests['checkout ' . $method . ($method === 'charge_credit_card' ? ' preserva' : ' restaura') . ' fatura vencida após HTTP 400'] = static function () use ($customer, $payment, $method): void {
         $existing = array_replace($payment, ['id' => 'pay_checkout_existing', 'status' => 'OVERDUE',
             'customer' => 'cus_existing', 'description' => 'Original charge', 'externalReference' => INVOICE_SMOKE_HASH]);
         $error = new Response(400, ['Content-Type' => 'application/json'], json_encode([
@@ -567,18 +587,37 @@ foreach (['process_payment', 'charge_pix', 'charge_credit_card'] as $method) {
         $responses = $method === 'process_payment'
             ? [['data' => [$existing]], $customer, $error]
             : [$customer, ['data' => [$existing]], $error];
+        if ($method === 'charge_credit_card') {
+            $responses = [['data' => [$existing]], array_replace($existing, ['billingType' => 'CREDIT_CARD']), $error, $existing];
+        }
         $history = []; $ci = invoiceSmokeFixture($responses, $history);
         $ci->invoice->status = 4; $ci->invoice->duedate = date('Y-m-d', strtotime('-2 days'));
         $GLOBALS['invoice_smoke_options']['paymentmethod_asaas_fine_value'] = '2';
         $before = serialize($ci->invoice); $clientBefore = serialize($ci->client);
-        invoiceSmokeReject(static fn () => invoiceSmokeCheckout($ci, $method), 400);
+        if ($method === 'charge_credit_card') {
+            $rejection = invoiceSmokeCardReject(static fn () => invoiceSmokeCheckout($ci, $method, 1), 400);
+            invoiceSmokeCheck($rejection instanceof \Asaas\AsaasCardCheckoutException, 'Recusa HTTP do cartão deve retornar o erro público controlado.');
+        } else {
+            invoiceSmokeReject(static fn () => invoiceSmokeCheckout($ci, $method), 400);
+        }
         invoiceSmokeCheck(serialize($ci->invoice) === $before, 'HTTP 400 deve restaurar total, subtotal, multa, status e vencimento.');
         invoiceSmokeCheck(serialize($ci->client) === $clientBefore, 'Checkout recusado deve preservar cliente e contato.');
         $writes = array_values(array_filter($ci->db->writes, static fn (array $write): bool => $write['table'] === 'tblinvoices'));
-        invoiceSmokeCheck(count($writes) === 1 && $writes[0]['depth'] > 0, 'O teste deve exercer uma atualização real da fixture dentro da transação.');
-        invoiceSmokeCheck($writes[0]['payload']['total'] > 149.90 && $writes[0]['payload']['duedate'] !== $ci->invoice->duedate, 'A atualização tentada deve alterar valor e vencimento antes de ser revertida.');
-        invoiceSmokeCheck(count($history) === 3 && invoiceSmokeRequests($history)[2] === 'POST /v3/payments/pay_checkout_existing', 'Executar a requisição real do SDK e não repetir POST recusado.');
-        invoiceSmokeCheck($ci->db->_trans_depth === 0 && $ci->db->payments === [], 'Recusa remota não deixa transação nem vínculo novo.');
+        if ($method === 'charge_credit_card') {
+            invoiceSmokeCheck($writes === [], 'Cartão recusado não deve regravar total, vencimento, multa ou status da fatura local.');
+            invoiceSmokeCheck(invoiceSmokeRequests($history) === [
+                'GET /v3/payments', 'POST /v3/payments/pay_checkout_existing',
+                'POST /v3/payments/pay_checkout_existing/payWithCreditCard', 'POST /v3/payments/pay_checkout_existing',
+            ], 'O cartão deve pagar a cobrança existente uma vez e restaurar seu meio após recusa definitiva.');
+            $cached = json_decode($ci->db->payments[42]['payload_cache'], true, 512, JSON_THROW_ON_ERROR);
+            invoiceSmokeCheck($ci->db->_trans_depth === 0 && $cached['_asaas_lifecycle']['card_attempt']['state'] === 'declined', 'A recusa deve deixar o marcador durável sem transação aberta.');
+            invoiceSmokeCheck($cached['id'] === $existing['id'] && $cached['billingType'] === 'BOLETO', 'A cobrança anterior deve continuar vinculada após compensar a recusa do cartão.');
+        } else {
+            invoiceSmokeCheck(count($writes) === 1 && $writes[0]['depth'] > 0, 'O teste deve exercer uma atualização real da fixture dentro da transação.');
+            invoiceSmokeCheck($writes[0]['payload']['total'] > 149.90 && $writes[0]['payload']['duedate'] !== $ci->invoice->duedate, 'A atualização tentada deve alterar valor e vencimento antes de ser revertida.');
+            invoiceSmokeCheck(count($history) === 3 && invoiceSmokeRequests($history)[2] === 'POST /v3/payments/pay_checkout_existing', 'Executar a requisição real do SDK e não repetir POST recusado.');
+            invoiceSmokeCheck($ci->db->_trans_depth === 0 && $ci->db->payments === [], 'Recusa remota não deixa transação nem vínculo novo.');
+        }
         invoiceSmokeCheck($GLOBALS['invoice_smoke_redirects'] === [], 'Não redirecionar como sucesso após erro da cobrança.');
     };
 }
@@ -586,10 +625,16 @@ foreach (['process_payment', 'charge_pix', 'charge_credit_card'] as $method) {
 foreach (['process_payment', 'charge_pix', 'charge_credit_card'] as $method) {
     $tests['checkout ' . $method . ' rejeita R$ 1 no payload antes de POST'] = static function () use ($customer, $method): void {
         $responses = $method === 'process_payment' ? [['data' => []], $customer] : [$customer];
+        if ($method === 'charge_credit_card') { $responses = []; }
         $history = []; $ci = invoiceSmokeFixture($responses, $history);
         $ci->invoice->total = '1.00'; $ci->invoice->subtotal = '1.00';
         $before = serialize($ci->invoice);
-        invoiceSmokeReject(static fn () => invoiceSmokeCheckout($ci, $method), 400);
+        if ($method === 'charge_credit_card') {
+            invoiceSmokeCardReject(static fn () => invoiceSmokeCheckout($ci, $method), 400);
+            invoiceSmokeCheck($history === [], 'O cartão de R$ 1 deve ser recusado antes de consultas ou mutações remotas.');
+        } else {
+            invoiceSmokeReject(static fn () => invoiceSmokeCheckout($ci, $method), 400);
+        }
         invoiceSmokeCheck(!array_filter($history, static fn (array $entry): bool => $entry['request']->getMethod() === 'POST'), 'Valor mínimo inválido não chega ao endpoint de criação.');
         invoiceSmokeCheck(serialize($ci->invoice) === $before, 'Validação do payload preserva a fatura.');
         invoiceSmokeCheck($ci->db->_trans_depth === 0 && $ci->db->payments === [], 'Validação fecha a transação sem gravar cobrança.');
@@ -598,22 +643,37 @@ foreach (['process_payment', 'charge_pix', 'charge_credit_card'] as $method) {
 
 $tests['checkout cartão usa saldo líquido e não persiste dados sensíveis'] = static function () use ($payment): void {
     $history = [];
-    $ci = invoiceSmokeFixture([['totalCount' => 0, 'data' => []], ['id' => 'cus_checkout'],
-        array_replace($payment, ['id' => 'pay_card_checkout', 'billingType' => 'CREDIT_CARD', 'value' => 100.0])], $history);
+    $first = array_replace($payment, ['id' => 'pay_card_checkout', 'billingType' => 'CREDIT_CARD', 'status' => 'CONFIRMED',
+        'value' => 50.0, 'customer' => 'cus_checkout', 'externalReference' => INVOICE_SMOKE_HASH,
+        'installment' => 'ins_card_checkout', 'installmentNumber' => 1,
+        'creditCard' => ['creditCardToken' => 'returned-card-token-must-not-persist', 'creditCardNumber' => '1111']]);
+    $second = array_replace($first, ['id' => 'pay_card_checkout_2', 'installmentNumber' => 2]);
+    $ci = invoiceSmokeFixture([['data' => []], ['totalCount' => 0, 'data' => []], ['id' => 'cus_checkout'],
+        $first, ['data' => [$first, $second], 'hasMore' => false, 'totalCount' => 2]], $history);
     $ci->received = 39.90; $ci->credits = 10.00;
     $before = serialize($ci->invoice); $clientBefore = serialize($ci->client);
     $result = invoiceSmokeCheckout($ci, 'charge_credit_card');
-    invoiceSmokeCheck(json_decode($result, true, 512, JSON_THROW_ON_ERROR)['id'] === 'pay_card_checkout', 'Cartão preserva o contrato de retorno JSON.');
-    invoiceSmokeCheck(invoiceSmokeRequests($history) === ['GET /v3/customers', 'POST /v3/customers', 'POST /v3/payments'], 'Cadastro e cobrança usam o SDK real com transporte controlado.');
-    $customerPayload = invoiceSmokePayload($history, 1); $payload = invoiceSmokePayload($history, 2);
+    $result = json_decode($result, true, 512, JSON_THROW_ON_ERROR);
+    invoiceSmokeCheck($result['id'] === 'pay_card_checkout', 'Cartão preserva o contrato de retorno JSON.');
+    invoiceSmokeCheck(invoiceSmokeRequests($history) === [
+        'GET /v3/payments', 'GET /v3/customers', 'POST /v3/customers', 'POST /v3/payments',
+        'GET /v3/installments/ins_card_checkout/payments',
+    ], 'Cadastro, cobrança única e consulta das parcelas usam o SDK real com transporte controlado.');
+    $customerPayload = invoiceSmokePayload($history, 2); $payload = invoiceSmokePayload($history, 3);
     invoiceSmokeCheck($customerPayload['externalReference'] === '7', 'Cliente novo usa clientid escalar como referência externa.');
+    invoiceSmokeCheck($customerPayload['notificationDisabled'] === (get_option('paymentmethod_asaas_disable_charge_notification') === '1'), 'Cliente novo deve respeitar a configuração existente de notificações Asaas.');
     invoiceSmokeCheck($customerPayload['email'] === $ci->client->email && $customerPayload['phone'] === $ci->client->phonenumber && $customerPayload['mobilePhone'] === $ci->client->phonenumber, 'Preservar o email e os telefones do contato atual.');
-    invoiceSmokeCheck((float) $payload['value'] === 100.0 && (float) $payload['installmentValue'] === 50.0 && $payload['installmentCount'] === 2, 'Parcelas usam saldo após recebimentos e créditos.');
+    invoiceSmokeCheck((float) $payload['totalValue'] === 100.0 && $payload['installmentCount'] === 2
+        && !array_key_exists('value', $payload) && !array_key_exists('installmentValue', $payload), 'Parcelas usam totalValue do saldo após recebimentos e créditos, sem combinar os contratos monetários.');
+    invoiceSmokeCheck(count($result['_asaas_card_receipts']) === 2
+        && array_column($result['_asaas_card_receipts'], 'value') === [50, 50], 'As duas parcelas confirmadas de R$ 50 devem ser conferidas individualmente.');
     invoiceSmokeCheck($payload['billingType'] === 'CREDIT_CARD' && $payload['externalReference'] === INVOICE_SMOKE_HASH, 'Preservar modalidade e hash da fatura.');
     invoiceSmokeCheck(serialize($ci->invoice) === $before && serialize($ci->client) === $clientBefore, 'Checkout não regrava dados de cliente nem total original da fatura.');
     invoiceSmokeCheck(!array_filter($ci->db->writes, static fn (array $write): bool => str_contains($write['table'], 'ac_a_ccta')), 'Não inserir cartão na tabela legada ac_a_ccta.');
     $stored = json_encode([$ci->db->logs, $ci->db->payments, $GLOBALS['invoice_smoke_framework_logs']], JSON_THROW_ON_ERROR);
     invoiceSmokeCheck(!str_contains($stored, '4111111111111111') && !str_contains($stored, '"creditCard"') && !str_contains($stored, '"ccv"'), 'PAN e CVV não entram no mapa nem no diagnóstico persistido.');
+    invoiceSmokeCheck(!str_contains($stored, 'returned-card-token-must-not-persist')
+        && !str_contains(json_encode($result, JSON_THROW_ON_ERROR), 'returned-card-token-must-not-persist'), 'O token devolvido pelo Asaas não pode entrar no cache nem no retorno público do gateway.');
     invoiceSmokeCheck($ci->db->_trans_depth === 0, 'Checkout confirma e fecha sua transação antes de retornar.');
 };
 

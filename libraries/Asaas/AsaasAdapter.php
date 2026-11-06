@@ -14,6 +14,7 @@ require_once __DIR__ . '/../../helpers/asaas_diagnostics_helper.php';
 require_once __DIR__ . '/../../helpers/asaas_payment_validation_helper.php';
 require_once __DIR__ . '/../../helpers/asaas_lifecycle_helper.php';
 require_once __DIR__ . '/../../helpers/asaas_receipt_lock_helper.php';
+require_once __DIR__ . '/../../helpers/asaas_card_helper.php';
 
 final class AsaasAdapter
 {
@@ -375,6 +376,8 @@ final class AsaasAdapter
         } else {
             $payload = [
                 'name' => $client['company'] ?? $client['name'] ?? 'Cliente',
+                'externalReference' => (string) $clientId,
+                'notificationDisabled' => (string) $this->provider->setting('disable_charge_notification') === '1',
                 'email' => $client['email'] ?? '',
                 'cpfCnpj' => $document,
                 'postalCode' => $this->normalizePostalCode($client['zip'] ?? ''),
@@ -710,7 +713,7 @@ final class AsaasAdapter
                     'asaas_payment_id' => $paymentId,
                     'invoice_id' => $invoice?->id,
                     'received_at' => date('Y-m-d H:i:s'),
-                    'payload' => $rawBody,
+                    'payload' => json_encode(\asaas_card_safe_payload($payload), JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
                     'process_status' => 'received',
                 ]);
                 if ($inserted === false) {
@@ -726,7 +729,7 @@ final class AsaasAdapter
                 }
                 $ignored = \asaas_lifecycle_should_ignore_payment((int) $invoice->id, $paymentId);
                 $alreadyRecorded = $this->hasRecordedPayment((int) $invoice->id, $paymentId);
-                if (!$ignored && !$alreadyRecorded && (int) $invoice->status !== 2) {
+                if (!$ignored && !$alreadyRecorded && !in_array((int) $invoice->status, [2, 5, 6], true)) {
                     if ($this->gateway === null) {
                         throw new RuntimeException('O gateway Asaas não está disponível para registrar o recebimento.');
                     }
@@ -736,7 +739,7 @@ final class AsaasAdapter
                     }
                     if ((float) $balance > 0) {
                         $added = \asaas_lifecycle_remote_payment(fn () => $this->gateway->addPayment([
-                            'amount' => $balance,
+                            'amount' => \asaas_card_receipt_amount($payment, $balance),
                             'invoiceid' => $invoice->id,
                             'paymentmode' => 'Asaas',
                             'paymentmethod' => is_string($payment['billingType'] ?? null) ? $payment['billingType'] : 'Asaas',
