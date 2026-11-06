@@ -39,9 +39,10 @@
 - Consulte [WEBHOOK.md](WEBHOOK.md) para geração, configuração, respostas HTTP, compatibilidade, testes e rollback.
 
 ## CRON / Sincronização
-- Parâmetros de CRON foram preparados nos settings (janela de dias e limite).
-- Caso queira sincronização automática, configure uma rotina externa que chame o módulo.
-  (Implementação de cron dedicada pode ser adicionada conforme necessidade.)
+- A opção de conciliação automática usa o CRON nativo do Perfex por meio do hook `after_cron_run`.
+- Configure a janela de dias e o limite de faturas na subguia **Sincronização**. A opção permanece desabilitada por padrão.
+- A subguia **Monitoramento** reúne histórico e comparação/conciliação individual ou em lote, além do resultado da última execução automática.
+- Consulte [CONFIGURACOES-MONITORAMENTO.md](CONFIGURACOES-MONITORAMENTO.md) para filtros, limites, segurança, índices e atualização a partir da versão histórica `1.4.10`.
 
 ## Checklist de testes manuais
 - Criar cobrança (boleto/PIX) a partir de fatura.

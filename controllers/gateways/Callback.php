@@ -2,6 +2,8 @@
 
 if (!defined('BASEPATH')) exit('No direct script access allowed');
 
+require_once __DIR__ . '/../../helpers/asaas_diagnostics_helper.php';
+
 class Callback extends APP_Controller
 {
     public function __construct()
@@ -28,6 +30,10 @@ class Callback extends APP_Controller
         } catch (\Throwable $exception) {
             // Não registrar payload, headers ou mensagens de terceiros que possam conter segredos.
             log_activity('Asaas: Falha interna ao processar webhook.');
+            asaas_diagnostic_log('error', 'Webhook Asaas não concluído.', [
+                'source' => 'webhook', 'operation' => 'webhook_callback',
+                'http_status' => 500, 'processed' => false, 'duplicated' => false,
+            ]);
             return $this->output
                 ->set_status_header(500)
                 ->set_content_type('text/plain', 'utf-8')
@@ -37,6 +43,16 @@ class Callback extends APP_Controller
         if ($result['processed'] !== true) {
             log_activity('Asaas: Falha ao processar webhook. ' . $result['message']);
         }
+
+        // Keep delivery outcome visible even if its business transaction rolled back.
+        // Never pass headers, body, token, card data or the original exception here.
+        asaas_diagnostic_log($result['processed'] === true ? 'info' : 'warning',
+            $result['processed'] === true ? 'Webhook Asaas processado.' : 'Webhook Asaas recusado ou não concluído.', [
+                'source' => 'webhook', 'operation' => 'webhook_callback',
+                'http_status' => (int) ($result['http_status'] ?? ($result['processed'] ? 200 : 400)),
+                'processed' => $result['processed'] === true,
+                'duplicated' => !empty($result['duplicated']),
+            ]);
 
         return $this->output
             ->set_status_header($result['http_status'] ?? ($result['processed'] ? 200 : 400))

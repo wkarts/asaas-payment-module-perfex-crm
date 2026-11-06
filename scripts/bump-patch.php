@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/module-version.php';
+
 $root = dirname(__DIR__);
 $moduleFileCandidates = [
     $root . '/modules/asaas/asaas.php',
@@ -33,11 +35,8 @@ if (!preg_match('/^Version:\s*([0-9]+)\.([0-9]+)\.([0-9]+)/m', $moduleContents, 
     exit(1);
 }
 
-$major = (int) $matches[1];
-$minor = (int) $matches[2];
-$patch = (int) $matches[3];
-$newPatch = $patch + 1;
-$newVersion = sprintf('%d.%d.%d', $major, $minor, $newPatch);
+$currentVersion = $matches[1] . '.' . $matches[2] . '.' . $matches[3];
+$newVersion = asaas_module_next_version($currentVersion);
 
 $updatedContents = preg_replace(
     '/^Version:\s*[0-9]+\.[0-9]+\.[0-9]+/m',
@@ -57,7 +56,7 @@ if (file_put_contents($moduleFile, $updatedContents) === false) {
     exit(1);
 }
 
-$versionInt = ($major * 100) + ($minor * 10) + $newPatch;
+$versionInt = asaas_module_version_number($newVersion);
 $migrationFileName = sprintf('%d_version_%d.php', $versionInt, $versionInt);
 $migrationPath = $migrationsDir . '/' . $migrationFileName;
 

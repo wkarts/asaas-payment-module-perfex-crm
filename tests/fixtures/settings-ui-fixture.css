@@ -1,0 +1,19 @@
+/* Apenas a moldura de teste. As views, metadados e scripts são os do módulo. */
+body { background: #f1f5f9; color: #334155; font-family: Arial, sans-serif; }
+.fixture-page { max-width: 1150px; margin: 24px auto; padding: 0 20px; }
+.fixture-page h1 { font-size: 22px; margin-bottom: 22px; }
+.panel { border-radius: 6px; border-color: #e2e8f0; }
+.panel-body { padding: 24px; }
+.nav-tabs > li > a { color: #475569; padding: 14px 15px; }
+.nav-tabs > li.active > a, .nav-tabs > li.active > a:hover, .nav-tabs > li.active > a:focus { color: #0f172a; border: 0; border-bottom: 2px solid #334155; }
+.nav-tabs > li > a { border: 0; }
+.form-control { border-color: #cbd5e1; box-shadow: none; }
+.control-label { font-weight: 600; }
+.help-block { color: #64748b; line-height: 1.5; }
+.mtop5 { margin-top: 5px; } .mtop10 { margin-top: 10px; } .mtop15 { margin-top: 15px; } .mtop20 { margin-top: 20px; } .mtop30 { margin-top: 30px; }
+.mbot0 { margin-bottom: 0; } .mbot5 { margin-bottom: 5px; } .mbot10 { margin-bottom: 10px; } .mbot15 { margin-bottom: 15px; } .mbot20 { margin-bottom: 20px; } .mright5 { margin-right: 5px; }
+.no-margin { margin: 0; } .fixture-save { border-top: 1px solid #e2e8f0; padding-top: 20px; margin-top: 24px; }
+.btn-info { background: #0284c7; border-color: #0284c7; }
+.asaas-settings-scroll-left i::before { content: '‹'; font-size: 22px; font-style: normal; }
+.asaas-settings-scroll-right i::before { content: '›'; font-size: 22px; font-style: normal; }
+@media (max-width: 767px) { .fixture-page { margin: 12px auto; padding: 0 10px; } .panel-body { padding: 15px; } }

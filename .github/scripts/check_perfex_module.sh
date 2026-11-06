@@ -15,8 +15,8 @@ if [[ ! -d "$MIGRATIONS_DIR" ]]; then
 fi
 
 # 1) Garantir que existe versão no cabeçalho do módulo
-if ! grep -qE '^Version:[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+' "$MODULE_FILE"; then
-  echo "Version do módulo não encontrada ou fora do padrão semântico em $MODULE_FILE"
+if ! grep -qE '^Version:[[:space:]]*[0-9]+\.[0-9]\.[0-9][[:space:]]*$' "$MODULE_FILE"; then
+  echo "Version do módulo inválida: minor e patch devem ter um dígito (ex.: 1.4.9 -> 1.5.0)."
   exit 1
 fi
 

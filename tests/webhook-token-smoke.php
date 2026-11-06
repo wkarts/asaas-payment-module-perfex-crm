@@ -1062,9 +1062,13 @@ foreach ([
         $suite->same($message, $result->body, 'Controller deve explicar a falha sem payload.');
         $suite->same('text/plain', $result->contentType, 'Contrato de resposta texto deve ser mantido.');
         $suite->same('utf-8', $result->charset, 'Resposta deve declarar charset.');
-        $suite->same(1, count($GLOBALS['webhook_smoke_logs']), 'Falha deve gerar registro genérico.');
+        $deliveryLogs = array_values(array_filter($GLOBALS['webhook_smoke_logs'], static fn (string $line): bool => str_contains($line, '"operation":"webhook_callback"')));
+        $suite->same(1, count($deliveryLogs), 'Falha deve gerar um diagnóstico de entrega para o monitoramento.');
+        $suite->truth(str_contains($deliveryLogs[0], '"http_status":' . $status), 'Diagnóstico precisa preservar somente o status HTTP da entrega.');
+        $suite->truth(str_contains($deliveryLogs[0], '"source":"webhook"') && str_contains($deliveryLogs[0], '"processed":false'), 'Origem e resultado da entrega precisam ser consultáveis.');
         $suite->truth(!str_contains(json_encode($GLOBALS['webhook_smoke_logs']), WEBHOOK_SMOKE_TOKEN), 'Logs não podem revelar o segredo.');
-        $suite->same([], $db->calls, 'Falha de autenticação/payload não pode consultar banco.');
+        $businessCalls = array_values(array_filter($db->calls, static fn (string $call): bool => $call !== 'table_exists:tblasaas_logs'));
+        $suite->same([], $businessCalls, 'Notificação recusada só pode tentar o diagnóstico; não acessar faturas, clientes, recebimentos ou eventos.');
     });
 }
 
@@ -1079,7 +1083,11 @@ $suite->run('controller confirma pagamento e duplicata com HTTP 200', function (
     $suite->same('Evento já processado.', $second->body, 'Duplicata deve ser identificada.');
     $suite->same(1, count($gateway->payments), 'Controller não pode causar dupla baixa.');
     $suite->same(1, count($db->events), 'Controller não pode duplicar evento.');
-    $suite->same([], $GLOBALS['webhook_smoke_logs'], 'Processamento normal não deve registrar falha.');
+    $deliveryLogs = array_values(array_filter($GLOBALS['webhook_smoke_logs'], static fn (string $line): bool => str_contains($line, '"operation":"webhook_callback"')));
+    $suite->same(2, count($deliveryLogs), 'Cada entrega deve ter diagnóstico, inclusive duplicata.');
+    $suite->truth(str_contains($deliveryLogs[0], '"processed":true') && str_contains($deliveryLogs[0], '"duplicated":false'), 'Primeira entrega deve ser identificada como processada.');
+    $suite->truth(str_contains($deliveryLogs[1], '"processed":true') && str_contains($deliveryLogs[1], '"duplicated":true'), 'Reentrega precisa manter resultado de deduplicação.');
+    $suite->same([], array_values(array_filter($GLOBALS['webhook_smoke_logs'], static fn (string $line): bool => str_contains($line, '[ERROR]') || str_contains($line, 'Falha'))), 'Processamento normal não deve registrar falha.');
 });
 
 $suite->run('controller devolve 500 genérico e não vaza exceção', function () use ($suite): void {

@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/module-version.php';
+
 $moduleFile = __DIR__ . '/../asaas.php';
 $migrationsDir = __DIR__ . '/../migrations';
 $writeMode = in_array('--write', $argv, true);
@@ -25,7 +27,12 @@ if (!preg_match('/^Version:\s*([0-9]+)\.([0-9]+)\.([0-9]+)/m', $contents, $match
 $major = (int) $matches[1];
 $minor = (int) $matches[2];
 $patch = (int) $matches[3];
-$versionInt = ($major * 100) + ($minor * 10) + $patch;
+$version = $matches[1] . '.' . $matches[2] . '.' . $matches[3];
+$versionInt = asaas_module_version_number($version);
+if (asaas_module_version_from_number($versionInt) !== $version) {
+    fwrite(STDERR, "Versão não normalizada: {$version}. Use " . asaas_module_version_from_number($versionInt) . ".\n");
+    exit(1);
+}
 $filename = sprintf('%d_version_%d.php', $versionInt, $versionInt);
 $path = $migrationsDir . '/' . $filename;
 
