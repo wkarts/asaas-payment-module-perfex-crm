@@ -68,10 +68,19 @@ class RecurringFixtureView
             $card_holder_defaults['holderEmail'] = '"><svg onload="window.fixtureXss = true;">';
         }
         if ($mode === 'invoice') {
-            echo '<main class="container mtop25"><div class="panel_s"><div class="panel-body"><h1>FAT-000042/11/2026</h1>';
-            echo '<h3>Pagamento online</h3><label><input type="radio" name="paymentmode" value="asaas" checked> Asaas — Boleto, Pix ou cartão</label>';
+            echo '<main class="container mtop25"><div class="panel_s"><div class="panel-body"><h1 class="h4">FAT-000042/11/2026</h1>';
+            // Native invoicehtml invokes after_total_summary_invoicehtml inside this row,
+            // immediately after floating item/total columns, without a preceding clearfix.
+            echo '<div class="row"><div class="col-md-12" data-fixture-invoice-items><div class="table-responsive">';
+            echo '<table class="table table-bordered"><thead><tr><th>Descrição</th><th>Quantidade</th><th>Valor</th></tr></thead>';
+            echo '<tbody><tr><td>Serviço mensal</td><td>1</td><td>R$ 100,00</td></tr></tbody></table></div></div>';
+            echo '<div class="col-md-6 col-md-offset-6" data-fixture-invoice-totals><table class="table text-right">';
+            echo '<tbody><tr><td>Subtotal</td><td>R$ 100,00</td></tr><tr><td>Total</td><td>R$ 100,00</td></tr>';
+            echo '<tr><td>Quantia devida</td><td>R$ 100,00</td></tr></tbody></table></div>';
             include dirname(__DIR__, 2) . '/views/partials/recurring_payment_option.php';
-            echo '</div></div></main>';
+            echo '<div class="col-md-12" data-fixture-invoice-payments><hr><h3 class="h4">Pagamento online</h3>';
+            echo '<label><input type="radio" name="paymentmode" value="asaas" checked> Asaas — Boleto, Pix ou cartão</label></div>';
+            echo '</div></div></div></main>';
             return;
         }
         include dirname(__DIR__, 2) . '/views/recorrente.php';

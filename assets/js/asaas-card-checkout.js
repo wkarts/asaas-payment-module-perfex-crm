@@ -14,10 +14,16 @@
     var holderFields = ['holderEmail', 'holderDocument', 'holderPostalCode', 'holderAddressNumber', 'holderPhone'];
     var installments = document.getElementById('installmentCount');
     var summary = document.getElementById('asaas-card-price-summary');
+    var installmentHelp = document.getElementById('asaas-card-installment-help');
 
     function showPrice() {
         if (!installments || !summary || submitting) { return; }
         var option = installments.options[installments.selectedIndex];
+        if (installmentHelp) {
+            installmentHelp.hidden = !option || option.disabled || option.hidden || installments.disabled
+                || (option.parentElement && option.parentElement.disabled)
+                || !/^(?:1[3-9]|2[01])$/.test(option.value);
+        }
         if (!option) { return; }
         ['principal', 'fee', 'total'].forEach(function (name) {
             var output = summary.querySelector('[data-card-price-' + name + ']');

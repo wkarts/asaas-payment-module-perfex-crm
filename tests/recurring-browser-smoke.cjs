@@ -173,6 +173,7 @@ async function main() {
     const assets = {
         '/_fixture/bootstrap.css': require.resolve('bootstrap/dist/css/bootstrap.min.css'),
         '/modules/asaas/assets/css/asaas-recurring.css': path.join(root, 'assets/css/asaas-recurring.css'),
+        '/modules/asaas/assets/css/asaas-recurring-invoice.css': path.join(root, 'assets/css/asaas-recurring-invoice.css'),
         '/modules/asaas/assets/js/asaas-recurring.js': path.join(root, 'assets/js/asaas-recurring.js')
     };
     const artifacts = path.join(__dirname, 'artifacts');
@@ -340,7 +341,7 @@ async function main() {
     try {
         await scenario('Chromium renderiza os estados sem autorização, ativo, suspenso, incerto, pago e login', async () => {
             const states = {inactive: [1, 0, 'Ainda não autorizado'], active: [1, 1, 'Recorrência ativa'], suspended: [1, 1, 'Recorrência suspensa'],
-                uncertain: [0, 1, 'Confirmação pendente'], paid: [0, 1, 'Pagamento confirmado'], guest: [0, 0, 'Entre na conta do cliente']};
+                uncertain: [0, 1, 'Confirmação pendente'], paid: [0, 1, 'Pagamento confirmado'], guest: [0, 0, 'Entre na sua conta para ativar o pagamento automático']};
             for (const [mode, [enroll, revoke, label]] of Object.entries(states)) {
                 const {page} = await fixturePage(mode);
                 assert.equal(await page.locator('#asaas-recurring-enroll').count(), enroll);
@@ -350,10 +351,59 @@ async function main() {
                 assert.deepEqual(await page.evaluate(() => window.__recurringPrivacyAccesses), []);
                 await assertNoOverflow(page);
                 await page.screenshot({path: path.join(artifacts, 'recurring-' + mode + '.png'), fullPage: true});
+                if (mode === 'guest') {
+                    await page.setViewportSize({width: 320, height: 960});
+                    await assertNoOverflow(page);
+                    const login = page.getByRole('link', {name: 'Entrar na minha conta', exact: true});
+                    const payOnce = page.getByRole('link', {name: 'Pagar somente esta fatura', exact: true});
+                    assert.equal(await login.getAttribute('href'), new URL('/authentication/login', page.url()).href);
+                    assert.equal(await payOnce.getAttribute('href'), new URL(invoicePath, page.url()).href);
+                    assert.equal(await page.locator('form, input').count(), 0, 'Guest explanation must not expose an authorization form.');
+                    await page.screenshot({path: path.join(artifacts, 'recurring-guest-320.png'), fullPage: true});
+                }
             }
         });
-        await scenario('entrada na fatura permanece separada do menu boleto, Pix e cartão pontual', async () => {
+        await scenario('card da fatura fica compacto abaixo dos totais, responsivo e separado do pagamento pontual', async () => {
             const fixture = await fixturePage('invoice');
+            for (const width of [320, 375, 768, 1280]) {
+                await fixture.page.setViewportSize({width, height: 960});
+                const layout = await fixture.page.evaluate(() => {
+                    const bounds = selector => {
+                        const {top, right, bottom, left, width, height} = document.querySelector(selector).getBoundingClientRect();
+                        return {top, right, bottom, left, width, height};
+                    };
+                    return {
+                        items: bounds('[data-fixture-invoice-items]'),
+                        totals: bounds('[data-fixture-invoice-totals]'),
+                        card: bounds('.asaas-recurring-invoice-card'),
+                        content: bounds('.asaas-recurring-invoice-content'),
+                        heading: bounds('[data-asaas-recurring-invoice-option] h4'),
+                        action: bounds('[data-asaas-recurring-invoice-option] a'),
+                        payments: bounds('[data-fixture-invoice-payments]'),
+                        pageWidth: document.documentElement.scrollWidth,
+                        itemsFloat: getComputedStyle(document.querySelector('[data-fixture-invoice-items]')).cssFloat
+                    };
+                });
+                const diagnostic = width + 'px: ' + JSON.stringify(layout);
+                assert.ok(layout.card.top >= Math.max(layout.items.bottom, layout.totals.bottom) - 1,
+                    'The recurring card must clear the native item and total columns: ' + diagnostic);
+                assert.ok(layout.heading.top >= layout.card.top && layout.heading.top - layout.card.top <= 24,
+                    'The heading must start near the card top without the former blank area: ' + diagnostic);
+                assert.ok(layout.card.bottom - Math.max(layout.content.bottom, layout.action.bottom) <= 24,
+                    'The card must end after its content without a fixed empty height: ' + diagnostic);
+                assert.ok(layout.payments.top >= layout.card.bottom - 1,
+                    'The native payment section must follow the complete card: ' + diagnostic);
+                assert.ok(layout.pageWidth <= width + 1, 'The invoice must not overflow horizontally: ' + diagnostic);
+                for (const name of ['card', 'heading', 'action']) {
+                    assert.ok(layout[name].width > 0 && layout[name].left >= -1 && layout[name].right <= width + 1,
+                        name + ' must fit inside the viewport: ' + diagnostic);
+                }
+                if (width === 1280) {
+                    assert.equal(layout.itemsFloat, 'left', 'Desktop fixture must exercise the actual Bootstrap floating columns.');
+                }
+                assert.deepEqual(await fixture.page.evaluate(() => window.__recurringPrivacyAccesses), []);
+                await fixture.page.screenshot({path: path.join(artifacts, 'recurring-invoice-' + width + '.png'), fullPage: true});
+            }
             assert.equal(await fixture.page.locator('[name=paymentmode][value=asaas]:checked').count(), 1);
             const link = fixture.page.locator('[data-asaas-recurring-invoice-option] a');
             assert.equal(await link.getAttribute('href'), fixture.origin + recurringPath);

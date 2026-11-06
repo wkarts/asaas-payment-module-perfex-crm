@@ -1,38 +1,75 @@
 #asaas-recurring { max-width: 1100px; }
+#asaas-recurring .asaas-recurring-panel { overflow-wrap: break-word; }
+#asaas-recurring .asaas-recurring-panel > .panel-body { padding: 22px; }
 #asaas-recurring .asaas-recurring-heading,
 #asaas-recurring .asaas-recurring-state,
-#asaas-recurring .asaas-recurring-actions {
+#asaas-recurring .asaas-recurring-actions,
+#asaas-recurring .asaas-recurring-alternative {
     display: flex;
     align-items: center;
     justify-content: space-between;
     flex-wrap: wrap;
-    gap: 16px;
+    gap: 12px 16px;
 }
-#asaas-recurring .asaas-recurring-heading h2 { font-size: 23px; line-height: 1.3; margin-bottom: 0; }
-#asaas-recurring .asaas-recurring-state { align-items: flex-start; padding: 16px; border: 1px solid #dce4ee; border-radius: 5px; }
-#asaas-recurring .asaas-recurring-state > div { flex: 1 1 160px; min-width: 0; }
-#asaas-recurring .asaas-recurring-state strong { display: block; margin-top: 5px; }
-#asaas-recurring .asaas-recurring-explanation h3 { font-size: 18px; }
+#asaas-recurring .asaas-recurring-heading { padding-bottom: 18px; border-bottom: 1px solid #dce4ee; }
+#asaas-recurring .asaas-recurring-heading > div { flex: 1 1 260px; min-width: 0; }
+#asaas-recurring .asaas-recurring-heading h2 { font-size: 22px; line-height: 1.35; margin-bottom: 0; }
+#asaas-recurring .asaas-recurring-heading > .btn { flex-shrink: 0; }
+#asaas-recurring .asaas-recurring-guest { padding: 18px; border: 1px solid #dce4ee; border-radius: 6px; background: #f8fafc; }
+#asaas-recurring .asaas-recurring-guest h3 { margin: 0 0 10px; font-size: 18px; line-height: 1.4; }
+#asaas-recurring .asaas-recurring-guest p { margin: 0 0 10px; line-height: 1.55; }
+#asaas-recurring .asaas-recurring-guest .asaas-recurring-actions { margin-top: 18px; }
+#asaas-recurring .asaas-recurring-guest .asaas-recurring-guest-note { margin: 12px 0 0; font-size: 12px; }
+#asaas-recurring .asaas-recurring-state { align-items: flex-start; padding: 14px; border: 1px solid #dce4ee; border-radius: 6px; background: #f8fafc; }
+#asaas-recurring .asaas-recurring-state > div { flex: 1 1 150px; min-width: 0; }
+#asaas-recurring .asaas-recurring-state span.text-muted { font-size: 12px; }
+#asaas-recurring .asaas-recurring-state strong { display: block; margin-top: 5px; font-size: 13px; }
+#asaas-recurring .asaas-recurring-state .label { margin-top: 5px; }
+#asaas-recurring .asaas-recurring-explanation h3 { font-size: 16px; margin: 0 0 8px; }
 #asaas-recurring .asaas-recurring-explanation ul { padding-left: 20px; }
-#asaas-recurring .asaas-recurring-explanation li { margin: 7px 0; }
-#asaas-recurring .asaas-recurring-price { padding: 16px; border: 1px solid #dce4ee; border-radius: 5px; }
-#asaas-recurring .asaas-recurring-price > div { display: flex; justify-content: space-between; gap: 15px; margin: 8px 0; }
-#asaas-recurring .asaas-recurring-price strong { white-space: nowrap; }
-#asaas-recurring .asaas-recurring-total { padding-top: 12px; border-top: 1px solid #dce4ee; font-size: 17px; }
-#asaas-recurring .asaas-recurring-consent { padding: 15px 15px 15px 37px; border: 1px solid #dce4ee; border-radius: 5px; }
-#asaas-recurring .asaas-recurring-consent label { line-height: 1.6; }
-#asaas-recurring .asaas-recurring-privacy { line-height: 1.6; }
+#asaas-recurring .asaas-recurring-explanation li { margin: 5px 0; font-size: 13px; line-height: 1.5; }
+#asaas-recurring .asaas-recurring-price { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; padding: 14px 16px; border: 1px solid #dce4ee; border-radius: 6px; background: #f8fafc; }
+#asaas-recurring .asaas-recurring-price > div { display: flex; flex-direction: column; justify-content: center; gap: 5px; min-width: 0; }
+#asaas-recurring .asaas-recurring-price span { font-size: 13px; }
+#asaas-recurring .asaas-recurring-price strong { font-size: 17px; }
+#asaas-recurring .asaas-recurring-total { padding-left: 14px; border-left: 1px solid #dce4ee; }
+#asaas-recurring .asaas-recurring-form-sections { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+#asaas-recurring .asaas-recurring-fieldset { min-width: 0; margin: 0; padding: 12px 14px 0; border: 1px solid #dce4ee; border-radius: 6px; }
+#asaas-recurring .asaas-recurring-fieldset legend { width: auto; margin: 0; padding: 0 6px; border: 0; color: inherit; font-size: 16px; line-height: 1.5; font-weight: 600; }
+#asaas-recurring .asaas-recurring-fieldset-help { margin: 0 0 14px; font-size: 12px; line-height: 1.5; }
+#asaas-recurring .asaas-recurring-fieldset .form-group { margin-bottom: 14px; }
+#asaas-recurring .asaas-recurring-fieldset .row { margin-right: -7px; margin-left: -7px; }
+#asaas-recurring .asaas-recurring-fieldset .row > div { padding-right: 7px; padding-left: 7px; }
+#asaas-recurring .asaas-recurring-consent { margin-top: 16px; padding: 14px 14px 14px 37px; border: 1px solid #dce4ee; border-radius: 6px; }
+#asaas-recurring .asaas-recurring-consent label { font-size: 13px; line-height: 1.6; }
+#asaas-recurring .asaas-recurring-privacy { margin-top: 14px; font-size: 12px; line-height: 1.6; }
+#asaas-recurring #asaas-recurring-consent-help { font-size: 12px; line-height: 1.5; }
 #asaas-recurring .asaas-recurring-revoke { border-top: 1px solid #dce4ee; padding-top: 18px; }
+#asaas-recurring .asaas-recurring-revoke h4 { margin: 0 0 8px; font-size: 16px; }
+#asaas-recurring .asaas-recurring-revoke p { font-size: 13px; line-height: 1.5; }
 #asaas-recurring .asaas-recurring-alternative { border-top: 1px solid #dce4ee; padding-top: 18px; }
+#asaas-recurring .asaas-recurring-alternative > div { flex: 1 1 260px; min-width: 0; font-size: 13px; }
 #asaas-recurring .asaas-recurring-actions { justify-content: flex-start; }
-#asaas-recurring .btn { white-space: normal; }
+#asaas-recurring .btn { max-width: 100%; min-height: 40px; padding: 9px 12px; white-space: normal; overflow-wrap: break-word; }
+@media (min-width: 992px) {
+    #asaas-recurring .asaas-recurring-form-sections { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 575px) {
-    #asaas-recurring .panel-body { padding: 16px; }
+    #asaas-recurring .asaas-recurring-panel > .panel-body { padding: 16px; }
     #asaas-recurring .asaas-recurring-heading { align-items: flex-start; }
-    #asaas-recurring .asaas-recurring-heading h2 { font-size: 21px; }
-    #asaas-recurring .asaas-recurring-price > div { flex-wrap: wrap; gap: 5px; }
+    #asaas-recurring .asaas-recurring-heading h2 { font-size: 20px; }
+    #asaas-recurring .asaas-recurring-guest { padding: 14px; }
+    #asaas-recurring .asaas-recurring-guest h3 { font-size: 17px; }
+    #asaas-recurring .asaas-recurring-guest p { font-size: 13px; }
+    #asaas-recurring .asaas-recurring-price { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+    #asaas-recurring .asaas-recurring-price > div { flex-direction: row; flex-wrap: wrap; justify-content: space-between; gap: 5px; }
     #asaas-recurring .asaas-recurring-price strong { margin-left: auto; }
+    #asaas-recurring .asaas-recurring-total { padding: 10px 0 0; border-top: 1px solid #dce4ee; border-left: 0; }
     #asaas-recurring .asaas-recurring-consent { padding-right: 10px; }
     #asaas-recurring .asaas-recurring-state > div { flex-basis: 100%; }
     #asaas-recurring .control-label { font-size: 12px; }
+    #asaas-recurring .asaas-recurring-actions { flex-direction: column; align-items: stretch; }
+    #asaas-recurring .asaas-recurring-actions > .btn,
+    #asaas-recurring .asaas-recurring-alternative > .btn,
+    #asaas-recurring [data-recurring-submit] { width: 100%; }
 }

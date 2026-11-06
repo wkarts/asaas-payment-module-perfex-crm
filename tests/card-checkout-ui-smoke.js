@@ -20,7 +20,7 @@ function forbiddenSink() {
     throw new Error('The card handler must not use cookies, storage or an extra network request.');
 }
 
-function fixture(valid = true, hasForm = true, withPrices = false) {
+function fixture(valid = true, hasForm = true, withPrices = false, priceOptions = null) {
     const handlers = {};
     const windowHandlers = {};
     const timers = [];
@@ -53,13 +53,18 @@ function fixture(valid = true, hasForm = true, withPrices = false) {
     };
     const csrf = {value: 'csrf-fixture', defaultValue: 'csrf-fixture'};
     const installments = {value: '2'};
+    const installmentHelp = {hidden: true};
     const priceFields = Object.fromEntries(['principal', 'fee', 'total', 'schedule'].map(name => [name, {textContent: ''}]));
     const summary = withPrices ? {hidden: true, querySelector(selector) { return priceFields[selector.replace('[data-card-price-', '').replace(']', '')]; }} : null;
     if (withPrices) {
-        installments.options = [
-            {getAttribute(name) { return {'data-card-principal': '100.00', 'data-card-fee': '3.59', 'data-card-total': '103.59', 'data-card-schedule': 'Pagamento à vista.'}[name]; }},
-            {getAttribute(name) { return {'data-card-principal': '100.00', 'data-card-fee': '4.13', 'data-card-total': '104.13', 'data-card-schedule': '2 parcelas de R$ 34,71 e a última de R$ 34,71.'}[name]; }}
-        ];
+        installments.options = (priceOptions || [
+            {count: 1, principal: '100.00', fee: '3.59', total: '103.59', schedule: 'Pagamento à vista.'},
+            {count: 3, principal: '100.00', fee: '4.13', total: '104.13', schedule: '2 parcelas de R$ 34,71 e a última de R$ 34,71.'}
+        ]).map(offer => ({
+            value: String(offer.count), disabled: !!offer.disabled, hidden: !!offer.hidden,
+            parentElement: {disabled: !!offer.groupDisabled},
+            getAttribute(name) { return offer[name.replace('data-card-', '')]; }
+        }));
         installments.selectedIndex = 0;
         installments.addEventListener = (name, callback) => { handlers['installments:' + name] = callback; };
     }
@@ -70,6 +75,7 @@ function fixture(valid = true, hasForm = true, withPrices = false) {
         csrf_token: csrf,
         installmentCount: installments,
         'asaas-card-price-summary': summary,
+        'asaas-card-installment-help': installmentHelp,
         ...fields
     };
     const document = {getElementById: id => elements[id]};
@@ -93,7 +99,7 @@ function fixture(valid = true, hasForm = true, withPrices = false) {
         }
     }
     vm.runInNewContext(source, context);
-    return {form, button, status, fields, csrf, installments, summary, priceFields, handlers, windowHandlers, timers, redirects, cleared};
+    return {form, button, status, fields, csrf, installments, installmentHelp, summary, priceFields, handlers, windowHandlers, timers, redirects, cleared};
 }
 
 function event() {
@@ -195,6 +201,39 @@ priced.installments.selectedIndex = 0;
 priced.handlers['installments:change']();
 check(priced.priceFields.total.textContent.includes('104,13'), 'The acknowledged display must not change while a payment is submitting.');
 
+const installmentChoices = fixture(true, true, true, [1, 12, 13, 21].map(count => ({count})));
+check(installmentChoices.installmentHelp.hidden, 'Paying once must not display the extended-installment brand notice.');
+for (const [index, visible] of [[1, false], [2, true], [3, true], [0, false], [1, false]]) {
+    installmentChoices.installments.selectedIndex = index;
+    installmentChoices.handlers['installments:change']();
+    check(installmentChoices.installmentHelp.hidden === !visible,
+        'The notice must follow the selected available offer: ' + installmentChoices.installments.options[index].value + 'x.');
+}
+
+for (const count of [13, 21]) {
+    const firstExtended = fixture(true, true, true, [{count}]);
+    check(!firstExtended.installmentHelp.hidden, 'An initial available ' + count + 'x offer must display its brand restriction.');
+}
+
+const limitedChoices = fixture(true, true, true, [{count: 1}, {count: 12}]);
+limitedChoices.installments.value = '21';
+limitedChoices.installments.selectedIndex = -1;
+limitedChoices.handlers['installments:change']();
+check(limitedChoices.installmentHelp.hidden, 'A value without a corresponding offered option cannot activate the notice.');
+installmentChoices.installments.options.splice(2);
+installmentChoices.installments.selectedIndex = 2;
+installmentChoices.handlers['installments:change']();
+check(installmentChoices.installmentHelp.hidden, 'An option that is no longer available cannot retain the notice.');
+
+for (const offer of [{count: 13, disabled: true}, {count: 21, hidden: true}, {count: 13, groupDisabled: true}, {count: 22}]) {
+    const unavailable = fixture(true, true, true, [offer]);
+    check(unavailable.installmentHelp.hidden, 'Unavailable or unsupported installment offers must not activate the notice.');
+}
+const disabledChoices = fixture(true, true, true, [{count: 13}]);
+disabledChoices.installments.disabled = true;
+disabledChoices.handlers['installments:change']();
+check(disabledChoices.installmentHelp.hidden, 'A disabled installment selector must not advertise an available choice.');
+
 check(privacySinkAccesses === 0, 'Card submit/navigation must not access cookies, local/session storage, IndexedDB, Cache API, fetch, XHR or beacon.');
 
-console.log('Card checkout UI: 11 scenarios, ' + assertions + ' assertions, 0 failures.');
+console.log('Card checkout UI: 15 scenarios, ' + assertions + ' assertions, 0 failures.');

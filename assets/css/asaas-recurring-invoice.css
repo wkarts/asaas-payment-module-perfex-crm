@@ -1,0 +1,57 @@
+/* The invoice hook follows floated Bootstrap columns for items and totals. */
+.asaas-recurring-invoice-option {
+    clear: both;
+    box-sizing: border-box;
+    width: 100%;
+    padding: 16px 15px 0;
+}
+.asaas-recurring-invoice-option .asaas-recurring-invoice-card {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 16px;
+    padding: 14px 16px;
+    border: 1px solid #dce4ee;
+    border-radius: 6px;
+    background: #fff;
+}
+.asaas-recurring-invoice-option .asaas-recurring-invoice-content {
+    flex: 1 1 320px;
+    min-width: 0;
+    overflow-wrap: break-word;
+}
+.asaas-recurring-invoice-option h4 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.4;
+}
+.asaas-recurring-invoice-option p {
+    margin: 5px 0 0;
+    font-size: 13px;
+    line-height: 1.5;
+}
+.asaas-recurring-invoice-option .asaas-recurring-invoice-help {
+    font-size: 12px;
+}
+.asaas-recurring-invoice-option .asaas-recurring-invoice-action {
+    flex: 0 1 auto;
+    max-width: 100%;
+    min-height: 40px;
+    padding: 9px 12px;
+    white-space: normal;
+    overflow-wrap: break-word;
+}
+@media (max-width: 767px) {
+    .asaas-recurring-invoice-option .asaas-recurring-invoice-card {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 12px;
+    }
+    .asaas-recurring-invoice-option .asaas-recurring-invoice-content {
+        flex-basis: auto;
+    }
+    .asaas-recurring-invoice-option .asaas-recurring-invoice-action {
+        width: 100%;
+    }
+}

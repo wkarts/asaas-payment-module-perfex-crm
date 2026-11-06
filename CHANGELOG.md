@@ -2,6 +2,8 @@
 
 ## Não publicado
 
+- Compacta o card de cartão recorrente na fatura, corrigindo o espaço vazio após os totais e adaptando texto e botão a telas pequenas com estilos próprios.
+- Organiza as telas de cartão avulso e recorrente em blocos de resumo, cartão e titular, com orientações mais claras para o cliente. O aviso de Visa/Mastercard aparece somente para uma opção disponível de 13 a 21 parcelas selecionada.
 - Acrescenta o meio **Cartão de crédito recorrente – Asaas**, separado do checkout avulso, com adesão autenticada, consentimento explícito, token criptografado e revogação pelo cliente.
 - Enfileira somente a fatura autorizada e as próximas faturas Asaas elegíveis, cobrando a mesma obrigação em 1x pelo cron; uma recusa suspende a recorrência e uma resposta incerta permite somente consulta, sem repetir captura.
 - Preserva o recebimento nativo, as taxas à vista e a conciliação existente; inclui migração aditiva, diagnóstico por origem Recorrência e verificações de concorrência, autorização, transporte e privacidade.

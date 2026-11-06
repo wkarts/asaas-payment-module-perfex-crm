@@ -1,0 +1,138 @@
+#asaas-card-page .asaas-card-checkout-column {
+    clear: both;
+}
+#asaas-card-checkout {
+    margin: 8px 0 24px;
+}
+#asaas-card-checkout .asaas-card-section {
+    min-width: 0;
+    margin-bottom: 16px;
+    padding: 20px;
+    border: 1px solid #dce4ee;
+    border-radius: 6px;
+    background: #fff;
+}
+#asaas-card-checkout .asaas-card-section h3 {
+    margin: 0 0 18px;
+    font-size: 17px;
+    font-weight: 600;
+    line-height: 1.4;
+}
+#asaas-card-checkout .asaas-card-offer-grid,
+#asaas-card-checkout .asaas-card-details-grid,
+#asaas-card-checkout .asaas-card-address-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+#asaas-card-checkout .asaas-card-details-grid {
+    align-items: start;
+}
+#asaas-card-checkout .form-group {
+    min-width: 0;
+    margin-bottom: 16px;
+}
+#asaas-card-checkout .asaas-card-section > .form-group:last-child,
+#asaas-card-checkout .asaas-card-offer-grid > .form-group {
+    margin-bottom: 0;
+}
+#asaas-card-checkout .form-control {
+    width: 100%;
+    min-width: 0;
+    min-height: 40px;
+}
+#asaas-card-checkout .control-label {
+    font-size: 13px;
+    overflow-wrap: break-word;
+}
+#asaas-card-checkout .asaas-card-validity-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+}
+#asaas-card-checkout .asaas-card-validity-grid .form-group {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 0;
+}
+#asaas-card-checkout .asaas-card-validity-grid .form-control {
+    margin-top: auto;
+}
+#asaas-card-checkout .asaas-card-price-summary {
+    min-width: 0;
+    padding: 14px;
+    border-radius: 4px;
+    background: #f5f8fb;
+}
+#asaas-card-checkout .asaas-card-price-summary p {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0 0 8px;
+    font-size: 13px;
+    overflow-wrap: break-word;
+}
+#asaas-card-checkout .asaas-card-price-summary strong {
+    flex-shrink: 0;
+}
+#asaas-card-checkout .asaas-card-price-summary .asaas-card-price-total {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #dce4ee;
+    font-weight: 600;
+    font-size: 15px;
+}
+#asaas-card-checkout .asaas-card-price-summary .asaas-card-price-schedule {
+    display: block;
+    margin-bottom: 0;
+    line-height: 1.5;
+}
+#asaas-card-checkout .asaas-card-installment-notice {
+    margin: 12px 0 0;
+    padding: 10px 12px;
+    border-left: 3px solid #f0ad4e;
+    background: #fff9ec;
+    color: #78520c;
+    font-size: 13px;
+    line-height: 1.5;
+}
+#asaas-card-checkout [hidden] {
+    display: none !important;
+}
+#asaas-card-checkout .asaas-card-checkout-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+#asaas-card-checkout .asaas-card-checkout-actions .btn {
+    max-width: 100%;
+    min-height: 44px;
+    white-space: normal;
+}
+@media (max-width: 991px) {
+    #asaas-card-checkout .asaas-card-offer-grid,
+    #asaas-card-checkout .asaas-card-details-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    #asaas-card-checkout .asaas-card-details-grid {
+        gap: 0;
+    }
+}
+@media (max-width: 575px) {
+    #asaas-card-page .asaas-card-checkout-column {
+        padding-right: 0;
+        padding-left: 0;
+    }
+    #asaas-card-checkout .asaas-card-section {
+        padding: 14px 12px;
+    }
+    #asaas-card-checkout .asaas-card-address-grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0;
+    }
+    #asaas-card-checkout .form-control {
+        font-size: 16px;
+    }
+    #asaas-card-checkout .asaas-card-checkout-actions .btn {
+        width: 100%;
+    }
+}

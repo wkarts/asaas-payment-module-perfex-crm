@@ -156,6 +156,8 @@ cardViewTest('card form keeps one escaped CSRF token and required accessible fie
     }
     cardViewAssert(cardViewField($document, 'securityCode')->getAttribute('type') === 'password', 'CVV must be masked.');
     cardViewAssert($document->query('//script[contains(@src, "asaas-card-checkout.js?v=")]')->length === 1, 'The privacy handler must load with an updated asset version.');
+    cardViewAssert($document->query('//link[@rel="stylesheet" and contains(@href, "asaas-card-checkout.css?v=")]')->length === 1,
+        'The isolated card layout must load its own versioned stylesheet.');
 });
 
 cardViewTest('card and holder fields explicitly disable browser autocomplete', static function () use ($renderer): void {
@@ -201,6 +203,47 @@ cardViewTest('only backend installment choices are shown for the outstanding bal
     cardViewAssert($choices->item(0)->textContent === 'À vista — R$ 70,00', 'Single payment must use the outstanding amount supplied by the controller.');
     cardViewAssert($choices->item(1)->textContent === '2x de R$ 35,00', 'Installments must not be calculated from the invoice total.');
     cardViewAssert($choices->item(1)->getAttribute('value') === '2', 'Installment count must retain the existing POST field format.');
+});
+
+foreach ([1 => false, 12 => false, 13 => true, 21 => true] as $count => $visible) {
+    cardViewTest('initial installment notice follows the offered selection: ' . $count, static function () use ($renderer, $count, $visible): void {
+        $document = cardViewDocument($renderer->render('cartao', [
+            'installment_options' => [['count' => $count, 'label' => $count . 'x — oferta do servidor']],
+        ], ['paymentmethod_asaas_installmentCount' => '21']));
+        $notice = $document->query('//*[@id="asaas-card-installment-help"]')->item(0);
+        cardViewAssert($notice instanceof DOMElement && $notice->hasAttribute('hidden') === !$visible,
+            'Visa/Mastercard notice must match the first actual offer, not the configured maximum.');
+        cardViewAssert(!str_contains(cardViewField($document, 'installmentCount')->getAttribute('aria-describedby'), 'asaas-card-installment-help'),
+            'A hidden contextual notice must not be read as an unconditional select description.');
+        cardViewAssert($notice->getAttribute('role') === 'status', 'Changes to the contextual notice must remain accessible.');
+    });
+}
+
+cardViewTest('limited offers do not advertise unavailable extended installments or generic conditions', static function () use ($renderer): void {
+    $html = $renderer->render('cartao', ['installment_options' => [
+        ['count' => 1, 'label' => 'À vista — R$ 120,00'], ['count' => 12, 'label' => '12x de R$ 10,00'],
+    ]], ['paymentmethod_asaas_installmentCount' => '21']);
+    $document = cardViewDocument($html);
+    cardViewAssert($document->query('//*[@id="asaas-card-installment-help" and @hidden]')->length === 1,
+        'Configured 21 installments must not activate the notice when actual offers stop at 12.');
+    cardViewAssert($document->query('//select[@name="installmentCount"]/option')->length === 2,
+        'The view cannot add a payment choice that was not offered by the server.');
+    cardViewAssert($document->query('//noscript//small')->length === 0,
+        'No-JavaScript rows must not advertise a card-brand restriction for the available 1–12 choices.');
+    cardViewAssert(!str_contains($html, 'valor mínimo por parcela') && !str_contains($html, 'Descontos adicionais da cobrança'),
+        'The checkout should not show generic minimum/discount conditions without an applicable offer.');
+});
+
+cardViewTest('without JavaScript the brand restriction belongs only to each extended offer', static function () use ($renderer): void {
+    $document = cardViewDocument($renderer->render('cartao', ['installment_options' => array_map(
+        static fn (int $count): array => ['count' => $count, 'label' => $count . 'x — oferta do servidor'], [1, 12, 13, 21]
+    )]));
+    $rows = $document->query('//noscript//tbody/tr');
+    cardViewAssert($rows->length === 4, 'All actual installment offers must remain readable without JavaScript.');
+    foreach ([0 => false, 1 => false, 2 => true, 3 => true] as $index => $restricted) {
+        cardViewAssert(str_contains($rows->item($index)->textContent, 'Visa ou Mastercard') === $restricted,
+            'The brand restriction must be attached only to its own 13–21 installment offer.');
+    }
 });
 
 cardViewTest('messages, safe holder defaults and installment labels are escaped', static function () use ($renderer): void {
@@ -296,7 +339,8 @@ cardViewTest('priced offers disclose charges and preserve acknowledgements witho
         'The browser can display only the server-supplied amount for the selected offer.');
     cardViewAssert(str_contains($html, '<noscript>') && str_contains($html, 'R$ 103,59') && str_contains($html, 'R$ 3,59'),
         'The no-JavaScript form must show the total and surcharge before confirmation.');
-    cardViewAssert(strpos($html, 'Como deseja pagar?') < strpos($html, 'id="cardNumber"'), 'The financial offer must appear before entering a card number.');
+    cardViewAssert($document->query('//select[@id="installmentCount"]/following::input[@id="cardNumber"]')->length === 1,
+        'The financial offer must appear before entering a card number.');
 });
 
 cardViewTest('anticipation cost appears only in the aggregate card charge', static function () use ($renderer): void {
