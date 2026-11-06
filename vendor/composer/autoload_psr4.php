@@ -16,5 +16,5 @@ return array(
     'DASPRiD\\Enum\\' => array($vendorDir . '/dasprid/enum/src'),
     'BaconQrCode\\' => array($vendorDir . '/bacon/bacon-qr-code/src'),
     'Asaas\\Sdk\\' => array($vendorDir . '/argws/asaas-sdk-php/src'),
-    'Asaas\\' => array($baseDir . '/libraries'),
+    'Asaas\\' => array($baseDir . '/libraries/Asaas'),
 );

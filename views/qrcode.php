@@ -35,15 +35,10 @@
                             <?php } ?>
                             <div class="clearfix"></div>
                         </div>
-                        <div class="col-md-12 mtop10">
-                            <div class="alert alert-info mbot0">
-                                <strong>Ambiente ativo:</strong>
-                                <span class="label label-<?php echo ($environment === 'SANDBOX') ? 'warning' : 'success'; ?>">
-                                    <?php echo $environment; ?>
-                                </span>
-                                <span class="text-muted mleft10">Use o QR Code abaixo para concluir o pagamento.</span>
-                            </div>
-                        </div>
+                        <?php
+                        $asaas_environment_hint = 'Use o QR Code abaixo para concluir o pagamento.';
+                        include __DIR__ . '/partials/payment_environment.php';
+                        ?>
                         <div class="panel-body">
                             <div class="col-md-10 col-md-offset-1">
                                 <div class="row mtop20">

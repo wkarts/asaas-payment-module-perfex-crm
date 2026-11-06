@@ -825,6 +825,65 @@ lifecycleTest('replacement of an explicitly cancelled charge keeps retired id ig
     lifecycleSame(false, asaas_lifecycle_should_ignore_payment(42, 'pay_replacement'), 'Replacement is processable.');
 });
 
+
+function lifecycleCardState(LifecycleCi $ci, string $state, bool $installment = false): void
+{
+    $charge = $ci->asaas_gateway->remote['pay_original'];
+    $charge['billingType'] = 'CREDIT_CARD';
+    if ($installment) { $charge['installment'] = 'ins_fixture'; }
+    asaas_lifecycle_store_payment(42, $charge, 'active', ['card_attempt' => ['state' => $state, 'amount' => '100.00', 'installment_count' => $installment ? 2 : 1]]);
+    $ci->asaas_gateway->calls = [];
+}
+
+foreach (['total' => '120.00', 'duedate' => '2027-01-01', 'clientid' => 88, 'allowed_payment_modes' => serialize(['cash'])] as $field => $value) {
+    lifecycleTest('card attempt prevents divergent financial edit ' . $field, static function () use ($field, $value): void {
+        $ci = lifecycleReset(); lifecycleCardState($ci, 'ambiguous');
+        $before = lifecycleBusinessSnapshot($ci);
+        lifecycleReject(static fn () => lifecycleUpdate([$field => $value]));
+        lifecycleSame($before, lifecycleBusinessSnapshot($ci), 'Uncertain capture blocks debt changes and rolls back local pre-hook writes.');
+        lifecycleSame([], $ci->asaas_gateway->calls, 'No update or new remote charge during reconciliation.');
+    }, true);
+}
+
+foreach (['cancel', 'delete', 'manual'] as $operation) {
+    lifecycleTest('uncertain card blocks conflicting ' . $operation, static function () use ($operation): void {
+        $ci = lifecycleReset(); lifecycleCardState($ci, 'pending');
+        $before = lifecycleBusinessSnapshot($ci);
+        lifecycleReject(static fn () => match ($operation) { 'cancel' => lifecycleCancel(), 'delete' => lifecycleDelete(), default => lifecyclePayment('100.00') });
+        lifecycleSame($before, lifecycleBusinessSnapshot($ci), 'Card in risk analysis cannot be settled or deleted through another operation.');
+        lifecycleSame([], $ci->asaas_gateway->calls, 'No additional money action while card is uncertain.');
+    });
+}
+
+lifecycleTest('nonfinancial edit preserves card installment values', static function (): void {
+    $ci = lifecycleReset(); lifecycleCardState($ci, 'confirmed', true);
+    lifecycleSame(true, lifecycleUpdate(['adminnote' => 'Internal note']), 'Internal note remains editable.');
+    lifecycleSame('Internal note', $ci->db->tables['tblinvoices'][42]['adminnote'], 'Native edit persists normally.');
+    lifecycleSame([], $ci->asaas_gateway->calls, 'Never apply the full invoice total to each card installment.');
+}, true);
+
+lifecycleTest('new debt after a cancelled card does not inherit its attempt lock', static function (): void {
+    $ci = lifecycleReset(); lifecycleCardState($ci, 'confirmed');
+    $charge = $ci->asaas_gateway->remote['pay_original'];
+    asaas_lifecycle_store_payment(42, $charge, 'cancelled');
+    $replacement = array_replace($charge, ['id' => 'pay_reactivated', 'billingType' => 'BOLETO', 'status' => 'PENDING']);
+    asaas_lifecycle_store_payment(42, $replacement);
+    $cache = asaas_lifecycle_cached_payment(asaas_lifecycle_map(42));
+    lifecycleCheck(!isset($cache['_asaas_lifecycle']['card_attempt']), 'Reactivated charge can be paid using enabled methods.');
+    lifecycleCheck(asaas_lifecycle_should_ignore_payment(42, 'pay_original'), 'Cancelled card ID remains retired.');
+});
+
+
+lifecycleTest('card or Pix without boleto rejects an invoice below the minimum before INSERT', static function (): void {
+    $ci = lifecycleReset(false, false);
+    $GLOBALS['lifecycle_options']['paymentmethod_asaas_billet_only'] = '0';
+    $GLOBALS['lifecycle_options']['paymentmethod_asaas_card_only'] = '1';
+    $GLOBALS['lifecycle_options']['paymentmethod_asaas_pix_only'] = '1';
+    lifecycleReject(static fn () => lifecycleCreate(['total' => '1.00', 'subtotal' => '1.00']), 400);
+    lifecycleSame([], $ci->db->tables['tblinvoices'], 'Native invoice cannot remain saved when Asaas amount is invalid.');
+    lifecycleSame([], $ci->asaas_gateway->calls, 'Minimum validation precedes any remote request.');
+});
+
 $GLOBALS['lifecycle_assertions'] = 0;
 $failed = []; $skipped = 0; $executed = 0;
 try {

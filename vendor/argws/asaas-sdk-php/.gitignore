@@ -2,4 +2,8 @@
 /.phpunit.result.cache
 /.idea/
 /.vscode/
-/resources/openapi.json
+
+playground/.env
+playground/vendor/
+playground/storage/database.sqlite
+playground/storage/downloads/*

@@ -4,6 +4,7 @@ defined('BASEPATH') or exit('No direct script access allowed');
 
 require_once __DIR__ . '/asaas_diagnostics_helper.php';
 require_once __DIR__ . '/asaas_payment_validation_helper.php';
+require_once __DIR__ . '/asaas_card_helper.php';
 require_once __DIR__ . '/asaas_atomic_payment_helper.php';
 require_once __DIR__ . '/asaas_receipt_lock_helper.php';
 require_once __DIR__ . '/../libraries/Asaas/InvoiceTransaction.php';
@@ -133,6 +134,9 @@ function asaas_lifecycle_checkout_begin(int $invoiceId): void
     if (!$invoice || in_array((int) ($invoice->status ?? 1), [2, 5, 6], true)) {
         throw new RuntimeException('Esta fatura não está disponível para pagamento no Asaas.');
     }
+    if (asaas_card_attempt_blocks(asaas_lifecycle_cached_payment(asaas_lifecycle_map($invoiceId)))) {
+        throw new RuntimeException('Existe uma tentativa de cartão em acompanhamento. Concilie o pagamento antes de criar ou alterar outra cobrança.');
+    }
     // Each checkout builds a different payload; the Adapter validates its actual discount and installments.
     $state = &asaas_lifecycle_state();
     $state['checkout_invoice'] = $invoiceId;
@@ -249,6 +253,10 @@ function asaas_lifecycle_store_payment(int $invoiceId, array $payment, string $s
     }
     if ($oldId !== (string) ($payment['id'] ?? '')) {
         unset($metadata['atomic_handoff'], $metadata['cash_receipt_reverted'], $metadata['manual_received_value']);
+        if (empty($old['installment']) || ($old['installment'] ?? null) !== ($payment['installment'] ?? null)) {
+            // Reactivating a cancelled invoice creates a new debt, not another card attempt.
+            unset($metadata['card_attempt']);
+        }
     }
     if (in_array($status, ['manual_received', 'manual_deleted'], true)) {
         $metadata['cash_receipt_reverted'] = false;
@@ -390,13 +398,18 @@ function asaas_lifecycle_validate_invoice($invoice, bool $updating = false): voi
 function asaas_before_invoice_added(array $hook): array
 {
     $invoice = (object) ($hook['data'] ?? []);
-    if (!get_option('paymentmethod_asaas_billet_only') || empty($invoice->duedate)
+    if (empty($invoice->duedate)
         || !in_array('asaas', asaas_invoice_payment_modes($invoice->allowed_payment_modes ?? []), true)
         || in_array((int) ($invoice->status ?? 1), [2, 5, 6], true)) {
         return $hook;
     }
     try {
         asaas_lifecycle_validate_invoice($invoice);
+        // Card/Pix-only invoices still need a valid amount before the native INSERT.
+        // Automatic boleto creation keeps its existing opt-in and transaction path.
+        if (!get_option('paymentmethod_asaas_billet_only')) {
+            return $hook;
+        }
         asaas_lifecycle_begin('create:' . (string) ($invoice->hash ?? ''));
         $state = &asaas_lifecycle_state();
         $state['creating'][(string) ($invoice->hash ?? '')] = true;
@@ -418,6 +431,7 @@ function asaas_before_update_invoice(array $hook, $id = null): array
         if (!$original) {
             return $hook;
         }
+        asaas_card_assert_invoice_edit($original, $hook['data'] ?? []);
         $invoice = (object) array_merge(get_object_vars($original), $hook['data'] ?? []);
         if (empty($invoice->duedate)
             || !in_array('asaas', asaas_invoice_payment_modes($invoice->allowed_payment_modes ?? []), true)
@@ -432,6 +446,7 @@ function asaas_before_update_invoice(array $hook, $id = null): array
         if (!$original) {
             throw new RuntimeException('A fatura deixou de estar disponível durante a sincronização.');
         }
+        asaas_card_assert_invoice_edit($original, $hook['data'] ?? []);
         $invoice = (object) array_merge(get_object_vars($original), $hook['data'] ?? []);
         $state['snapshots'][$id] = $state['snapshots'][$id] ?? clone $original;
         asaas_after_invoice_updated(['invoice_id' => $id, '_asaas_preview' => $invoice]);
@@ -542,6 +557,7 @@ function asaas_lifecycle_charges($invoice): array
 
 function asaas_lifecycle_remove($invoice, string $reason): void
 {
+    asaas_card_assert_no_uncertain_payment((int) $invoice->id);
     $gateway = asaas_lifecycle_gateway();
     $charges = asaas_lifecycle_charges($invoice);
     foreach ($charges as $charge) {
@@ -678,6 +694,7 @@ function asaas_before_payment_recorded(array $data): array
         if (!$invoice) {
             throw new RuntimeException('A fatura deixou de estar disponível durante o recebimento.');
         }
+        asaas_card_assert_no_uncertain_payment($id);
         $amount = asaas_payment_amount_to_cents($data['amount'] ?? 0);
         $balance = asaas_payment_amount_to_cents(get_invoice_total_left_to_pay($id, $invoice->total));
         if ($amount <= 0 || $balance <= 0 || $amount < $balance) {

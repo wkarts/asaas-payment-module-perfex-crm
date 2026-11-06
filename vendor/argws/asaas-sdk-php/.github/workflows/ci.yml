@@ -24,7 +24,12 @@ jobs:
         with:
           php-version: ${{ matrix.php }}
           coverage: none
+          extensions: pdo_sqlite
       - run: composer install --no-interaction --prefer-dist
+      - name: Webhook token and receiver smoke (offline)
+        run: php playground/tests/webhook-smoke.php
+      - run: composer asaas:sdk-build
+      - run: git diff --exit-code
       - run: composer test
       - run: composer lint
       - run: php bin/verify-parity.php
@@ -36,16 +41,23 @@ jobs:
     needs: tests
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+
+    permissions:
+      contents: write
+
     env:
       PACKAGIST_USERNAME: ${{ secrets.PACKAGIST_USERNAME }}
       PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
       PACKAGIST_REPOSITORY: ${{ secrets.PACKAGIST_REPOSITORY }}
+
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Buscar tags
         run: git fetch --tags --force
+
       - name: Calcular próxima versão
         run: |
           LAST_TAG=$(git describe --tags --abbrev=0 --match "v*" 2>/dev/null || echo "")
@@ -56,11 +68,9 @@ jobs:
           fi
 
           MESSAGES=$(git log $RANGE --pretty=format:%B)
-          if echo "$MESSAGES" | grep -q "BREAKING CHANGE" || echo "$MESSAGES" | grep -q "!:"
-          then
+          if echo "$MESSAGES" | grep -q "BREAKING CHANGE" || echo "$MESSAGES" | grep -q "!:"; then
             BUMP="major"
-          elif echo "$MESSAGES" | grep -q "^feat"
-          then
+          elif echo "$MESSAGES" | grep -q "^feat"; then
             BUMP="minor"
           else
             BUMP="patch"
@@ -72,46 +82,79 @@ jobs:
             VERSION="${LAST_TAG#v}"
             IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
             case "$BUMP" in
-              major)
-                MAJOR=$((MAJOR + 1))
-                MINOR=0
-                PATCH=0
-                ;;
-              minor)
-                MINOR=$((MINOR + 1))
-                PATCH=0
-                ;;
-              patch)
-                PATCH=$((PATCH + 1))
-                ;;
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH + 1)) ;;
             esac
             NEXT_TAG="v${MAJOR}.${MINOR}.${PATCH}"
           fi
 
+          echo "LAST_TAG=$LAST_TAG" >> "$GITHUB_ENV"
           echo "NEXT_TAG=$NEXT_TAG" >> "$GITHUB_ENV"
-      - name: Criar tag
+
+      - name: Criar tag (se não existir)
         run: |
+          # IMPORTANTE:
+          # Mesmo que a tag já exista (por exemplo, criada manualmente ou por uma execução anterior),
+          # NÃO podemos encerrar o job aqui. O que precisa existir é o GitHub Release.
+          # Se a tag existir e o release não existir, o job deve continuar para criar o release.
           if git rev-parse "$NEXT_TAG" >/dev/null 2>&1; then
-            echo "Tag $NEXT_TAG já existe, saindo."
-            exit 0
+            echo "Tag $NEXT_TAG já existe."
+            echo "TAG_EXISTS=1" >> "$GITHUB_ENV"
+          else
+            echo "TAG_EXISTS=0" >> "$GITHUB_ENV"
+
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$NEXT_TAG" -m "Release $NEXT_TAG"
+            git push origin "$NEXT_TAG"
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$NEXT_TAG" -m "Release $NEXT_TAG"
-          git push origin "$NEXT_TAG"
-      - name: Criar release no GitHub
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.NEXT_TAG }}
-          generate_release_notes: true
-      - name: Atualizar Packagist
+
+      - name: Montar release notes (diff/mudanças)
+        id: notes
         run: |
-          if [ -z "$PACKAGIST_USERNAME" ] || [ -z "$PACKAGIST_TOKEN" ]; then
-            echo "Packagist secrets ausentes, pulando update."
+          if [ -z "${LAST_TAG}" ]; then
+            echo "NOTES<<EOF" >> $GITHUB_OUTPUT
+            echo "## Changes" >> $GITHUB_OUTPUT
+            git log --pretty=format:"- %s (%h)" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "NOTES<<EOF" >> $GITHUB_OUTPUT
+            echo "## Diff" >> $GITHUB_OUTPUT
+            echo "\`${LAST_TAG}..${NEXT_TAG}\`" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+            echo "## Changes" >> $GITHUB_OUTPUT
+            # Use o range fechado na tag alvo, para ficar determinístico (HEAD pode variar entre execuções).
+            git log "${LAST_TAG}..${NEXT_TAG}" --pretty=format:"- %s (%h)" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Criar GitHub Release (se não existir)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$NEXT_TAG" >/dev/null 2>&1; then
+            echo "Release $NEXT_TAG já existe."
             exit 0
           fi
-          REPO_URL="${PACKAGIST_REPOSITORY:-https://github.com/wkarts/asaas-sdk-argws}"
-          curl -sS -X POST "https://packagist.org/api/update-package" \
+
+          gh release create "$NEXT_TAG" \
+            --title "$NEXT_TAG" \
+            --notes "${{ steps.notes.outputs.NOTES }}" \
+            --latest
+
+      - name: Notificar Packagist (Composer)
+        if: env.PACKAGIST_USERNAME != '' && env.PACKAGIST_TOKEN != ''
+        run: |
+          REPO_URL="${PACKAGIST_REPOSITORY}"
+          if [ -z "$REPO_URL" ]; then
+            REPO_URL="https://github.com/${GITHUB_REPOSITORY}"
+          fi
+
+          curl -sS -X POST \
+            "https://packagist.org/api/update-package?username=${PACKAGIST_USERNAME}&apiToken=${PACKAGIST_TOKEN}" \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${PACKAGIST_USERNAME}:${PACKAGIST_TOKEN}" \
-            -d "{\"repository\":\"${REPO_URL}\"}"
+            -d "{\"repository\":{\"url\":\"${REPO_URL}\"}}"
+

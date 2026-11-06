@@ -10,6 +10,10 @@ Em **Configurações → Meios de pagamento → Asaas**, o botão **Ver logs da 
 
 Exclusão, cancelamento e reativação podem acompanhar a cobrança no Asaas. A quitação manual integral permite confirmar recebimento em dinheiro ou excluir a cobrança. Valores inválidos e rejeições da API interrompem a operação para evitar salvar uma fatura divergente. Consulte o [guia de comportamento, configuração, transações e atualização](docs/CICLO-FATURAS.md).
 
+## Cartão de crédito e ambiente do checkout
+
+O módulo distribui a SDK `argws/asaas-sdk-php` **0.2.64**, com checkout de cartão à vista ou em até 12 parcelas, conforme limite configurado e saldo da fatura. O processamento confere a resposta Asaas, acompanha parcelas individualmente e mantém proteção contra envio repetido. A opção **Exibir o ambiente em produção na área de pagamentos** permite ocultar a faixa no checkout; o aviso de sandbox permanece visível. Consulte [configuração, instalação e conciliação do cartão](docs/CARTAO-CREDITO.md).
+
 Refatorações:
 
 # Arquivo: modules/asaas/asaas.php

@@ -1,4 +1,15 @@
-<?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+defined('BASEPATH') or exit('No direct script access allowed');
+
+$cardHolderDefaults = isset($card_holder_defaults) && is_array($card_holder_defaults) ? $card_holder_defaults : [];
+$cardInstallmentOptions = isset($installment_options) && is_array($installment_options) ? $installment_options : [];
+$cardCheckoutBlocked = !empty($card_checkout_blocked) || $cardInstallmentOptions === [];
+$cardHolderValue = static function (string $name) use ($cardHolderDefaults): string {
+    return isset($cardHolderDefaults[$name]) && is_scalar($cardHolderDefaults[$name])
+        ? html_escape((string) $cardHolderDefaults[$name])
+        : '';
+};
+?>
 <div class="kt-container kt-grid__item kt-grid__item--fluid mt-3">
     <div class="col-lg-12">
         <div class="kt-portlet" id="kt_portlet">
@@ -39,6 +50,11 @@
                             -->
                             <div class="clearfix"></div>
                         </div>
+
+                        <?php
+                        $asaas_environment_hint = $cardCheckoutBlocked ? '' : 'Informe os dados do cartão para concluir o pagamento.';
+                        include __DIR__ . '/partials/payment_environment.php';
+                        ?>
 
                         <div class="panel-body">
         <div class="col-md-10 col-md-offset-1">
@@ -85,8 +101,6 @@
                     <?php } ?>
                 </div>
             </div>
-            <form action="" method="post">
-                <input type="hidden" name="<?php echo $this->security->get_csrf_token_name(); ?>" value="<?php echo $this->security->get_csrf_hash(); ?>">
                 <div class="row">
                     <div class="col-md-6 col-md-offset-6">
                         <table class="table text-right">
@@ -148,58 +162,92 @@
                         </table>
                     </div>
                     <div class="col-md-8 col-md-offset-2">
-                        <?= (!empty($mensagem_erro)) ? "<div class='alert alert-danger text-center'>ERRO: {$mensagem_erro}</div>" : ''; ?>
+                        <?php if (!empty($mensagem_erro)) { ?>
+                            <div class="alert alert-danger text-center" role="alert">ERRO: <?php echo html_escape($mensagem_erro); ?></div>
+                        <?php } ?>
+                        <?php if (!empty($mensagem_info)) { ?>
+                            <div class="alert alert-info text-center" role="status"><?php echo html_escape($mensagem_info); ?></div>
+                        <?php } elseif ($cardCheckoutBlocked) { ?>
+                            <div class="alert alert-info text-center" role="status">O pagamento por cartão não está disponível para esta cobrança. Volte à fatura para consultar a situação do pagamento.</div>
+                        <?php } ?>
+                        <?php if (!$cardCheckoutBlocked) { ?>
+                        <form id="asaas-card-checkout" action="" method="post">
+                        <input type="hidden" name="<?php echo html_escape($this->security->get_csrf_token_name()); ?>" value="<?php echo html_escape($this->security->get_csrf_hash()); ?>">
                         <h3 class="text-center">Informe os dados do cartão</h3>
-                        <input type="hidden" name="<?php echo $csrf['name']; ?>" value="<?php echo $csrf['hash']; ?>"/>
-                        <input type="hidden" id="cardHash" value=""/>
                         <div class="form-group">
-                            <label class="control-label" for="textinput">Nome do titular</label>
-                            <input id="holderName" name="holderName" type="text" placeholder="NOME DO TITULAR" class="form-control" value="">
+                            <label class="control-label" for="holderName">Nome do titular</label>
+                            <input id="holderName" name="holderName" type="text" placeholder="NOME DO TITULAR" class="form-control" autocomplete="cc-name" maxlength="100" value="<?php echo $cardHolderValue('holderName'); ?>" required>
                         </div>
                         <div class="form-group">
-                            <label class="control-label" for="textinput">Numero do cartão</label>
+                            <label class="control-label" for="cardNumber">Número do cartão</label>
                             <input id="cardNumber" name="cardNumber" type="text" placeholder="NUMERO DO CARTÃO" class="form-control"
-                                   pattern="[3-6][0-9 ]{15,18}">
+                                   autocomplete="cc-number" inputmode="numeric" pattern="[ ]*(?:[0-9][ ]*){13,19}" maxlength="37" required>
                         </div>
                         <div class="row">
                             <div class="col-xs-6 col-md-3">
                                 <div class="form-group">
-                                    <label class="control-label" for="textinput">Data de validade Mês</label>
-                                    <input id="expirationMonth" name="expirationMonth" type="number" placeholder="MES" class="form-control" maxlength="2">
+                                    <label class="control-label" for="expirationMonth">Validade: mês</label>
+                                    <input id="expirationMonth" name="expirationMonth" type="text" placeholder="MM" class="form-control" autocomplete="cc-exp-month" inputmode="numeric" pattern="(?:0?[1-9]|1[0-2])" maxlength="2" required>
                                 </div>
                             </div>
                             <div class="col-xs-6 col-md-3">
                                 <div class="form-group">
-                                    <label class="control-label" for="textinput">Data de validade Ano</label>
-                                    <input id="expirationYear" name="expirationYear" type="number" placeholder="ANO" class="form-control" maxlength="4">
+                                    <label class="control-label" for="expirationYear">Validade: ano</label>
+                                    <input id="expirationYear" name="expirationYear" type="text" placeholder="AAAA" class="form-control" autocomplete="cc-exp-year" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required>
                                 </div>
                             </div>
                             <div class="col-xs-2 col-md-2">
                                 <div class="form-group">
-                                    <label class="control-label" for="textinput">CVV</label>
-                                    <input id="securityCode" name="securityCode" type="number" placeholder="cvv" class="form-control" maxlength="4">
+                                    <label class="control-label" for="securityCode">CVV</label>
+                                    <input id="securityCode" name="securityCode" type="password" placeholder="CVV" class="form-control" autocomplete="cc-csc" inputmode="numeric" pattern="[0-9]{3,4}" minlength="3" maxlength="4" required>
                                 </div>
                             </div>
                             <div class="col-xs-4 col-md-4 pull-right">
                                 <div class="form-group">
-                                    <label class="control-label" for="textinput">Numero de parcelas</label>
-                                    <select class="form-control" name="installmentCount">
-                                        <?php for ($x = 1; $x <= $installmentCount; $x++) { ?>
-                                            <?php if ($invoice->total / intval($x) > '5.00') { ?>
-                                                <option value="<?php echo $x ?>">Em <?php echo $x ?>x
-                                                    de <?php echo app_format_money($invoice->total / intval($x), 'BRL'); ?></option>
-                                            <?php } ?>
+                                    <label class="control-label" for="installmentCount">Número de parcelas</label>
+                                    <select id="installmentCount" class="form-control" name="installmentCount" required>
+                                        <?php foreach ($cardInstallmentOptions as $cardInstallmentOption) { ?>
+                                            <option value="<?php echo (int) $cardInstallmentOption['count']; ?>"><?php echo html_escape($cardInstallmentOption['label']); ?></option>
                                         <?php } ?>
                                     </select>
                                 </div>
                             </div>
                         </div>
+                        <h4>Dados do titular do cartão</h4>
+                        <div class="form-group">
+                            <label class="control-label" for="holderEmail">E-mail do titular</label>
+                            <input id="holderEmail" name="holderEmail" type="email" class="form-control" autocomplete="email" maxlength="254" value="<?php echo $cardHolderValue('holderEmail'); ?>" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="control-label" for="holderDocument">CPF ou CNPJ do titular</label>
+                            <input id="holderDocument" name="holderDocument" type="text" class="form-control" inputmode="numeric" autocomplete="off" maxlength="18" value="<?php echo $cardHolderValue('holderDocument'); ?>" required>
+                        </div>
+                        <div class="row">
+                            <div class="col-sm-6">
+                                <div class="form-group">
+                                    <label class="control-label" for="holderPostalCode">CEP do titular</label>
+                                    <input id="holderPostalCode" name="holderPostalCode" type="text" class="form-control" inputmode="numeric" autocomplete="postal-code" maxlength="9" value="<?php echo $cardHolderValue('holderPostalCode'); ?>" required>
+                                </div>
+                            </div>
+                            <div class="col-sm-6">
+                                <div class="form-group">
+                                    <label class="control-label" for="holderAddressNumber">Número do endereço</label>
+                                    <input id="holderAddressNumber" name="holderAddressNumber" type="text" placeholder="Número ou S/N" class="form-control" autocomplete="off" maxlength="30" value="<?php echo $cardHolderValue('holderAddressNumber'); ?>" required>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="control-label" for="holderPhone">Telefone do titular com DDD</label>
+                            <input id="holderPhone" name="holderPhone" type="tel" class="form-control" autocomplete="tel" inputmode="tel" maxlength="20" value="<?php echo $cardHolderValue('holderPhone'); ?>" required>
+                        </div>
+                        <p id="asaas-card-checkout-status" class="alert alert-info hidden" role="status" aria-live="polite" aria-atomic="true"></p>
                         <div class="form-group">
                             <button id="payment" class="subscribe btn btn-success btn-lg btn-block" type="submit">Confirmar</button>
                         </div>
+                        </form>
+                        <?php } ?>
                     </div>
                 </div>
-            </form>
         </div>
     </div>
 </div>
@@ -208,3 +256,6 @@
         </div>
     </div>
 </div>
+<?php if (!$cardCheckoutBlocked) { ?>
+    <script src="<?php echo html_escape(site_url('modules/asaas/assets/js/asaas-card-checkout.js')); ?>"></script>
+<?php } ?>

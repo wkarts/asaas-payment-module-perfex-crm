@@ -6,9 +6,15 @@
     },
     "require": {
         "endroid/qr-code": "^5.0",
-        "argws/asaas-sdk-php": "^0.2.61"
+        "argws/asaas-sdk-php": "^0.2.64"
     },
     "require-dev": {
         "phpunit/phpunit": "^10.0"
-    }
+    },
+    "repositories": [{
+        "name": "asaas-sdk",
+        "type": "vcs",
+        "url": "https://github.com/wkarts/asaas-sdk-argws",
+        "only": ["argws/asaas-sdk-php"]
+    }]
 }
