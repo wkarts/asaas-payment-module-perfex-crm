@@ -112,7 +112,7 @@ function parseView(parent, document) {
 function response(payload, status = 200) { return {ok: status >= 200 && status < 300, status, json: async () => payload}; }
 function csrf(hash) { return {name: 'csrf_fixture', hash}; }
 function overview(hash = 'overview_hash') {
-    return {ok: true, csrf: csrf(hash), data: {linked_open_invoices: 3, webhook_errors: 4, webhook_event_errors: 2, log_errors: 5,
+    return {ok: true, csrf: csrf(hash), data: {eligible_open_invoices: 4, linked_open_invoices: 3, unlinked_open_invoices: 1, webhook_errors: 4, webhook_event_errors: 2, log_errors: 5,
         last_webhook_at: '2026-11-06 12:00:00', cron: {enabled: 1, days: 10, limit: 30,
             last_run: {finished_at: '2026-11-06 12:05:00', status: 'partial', processed: 3, reconciled: 2, errors: 0, remaining: 5}}}};
 }
@@ -120,6 +120,11 @@ function invoice(id, extra = {}) {
     return {invoice_id: id, invoice_number: 'TEST-' + id, client_name: 'Cliente de teste', crm_status: 1,
         total: '21.45', balance: '21.45', asaas_payment_id: 'pay_fixture_' + id, asaas_status: 'PENDING', billing_type: 'PIX',
         last_sync_at: null, last_webhook_at: null, webhook_status: null, suspected_divergence: false, ...extra};
+}
+function payment(id, extra = {}) {
+    return {payment_id: 'pay_remote_' + id, invoice_id: id, invoice_number: 'TEST-' + id, status: 'CONFIRMED', billing_type: 'CREDIT_CARD',
+        value: '21.45', original_value: null, payment_date: '2026-11-06', due_date: '2026-11-05', date_created: '2026-11-01',
+        installment: null, installment_number: null, binding_status: 'linked', binding_message: 'Vínculo validado.', action_eligible: true, ...extra};
 }
 function listing(rows = [invoice(101), invoice(102), invoice(103)], hash = 'list_hash', pagination = {}) {
     return {ok: true, data: rows, csrf: csrf(hash), pagination: {page: 1, per_page: 25, has_more: false, total: rows.length, ...pagination}};
@@ -207,9 +212,38 @@ async function main() {
     check(lazy.body('invoices').querySelectorAll('a').length === 1 && lazy.body('invoices').querySelector('a').href.endsWith('/101'), 'Only validated positive invoice IDs produce native links.');
     check(lazy.body('invoices').querySelectorAll('[data-monitor-invoice-action]').length === 2, 'Malformed identifiers cannot create invoice actions.');
     check(lazy.get('[data-monitor-metric="webhook_errors"]').textContent === '4' && lazy.get('[data-monitor-metric="webhook_event_errors"]').textContent === '2', 'Delivery failures and event processing failures stay separate.');
+    check(lazy.get('[data-monitor-metric="eligible_open_invoices"]').textContent === '4'
+        && lazy.get('[data-monitor-metric="linked_open_invoices"]').textContent === '3'
+        && lazy.get('[data-monitor-metric="unlinked_open_invoices"]').textContent === '1', 'The overview includes eligible legacy invoices and explains linked and missing counts.');
+    check(lazy.get('[data-monitor-metric="cron_configuration"]').textContent.includes('Faturas em aberto não têm corte por idade')
+        && lazy.get('[data-monitor-metric="cron_configuration"]').textContent.includes('quitadas recentes: 10 dias'), 'The cron limit and recent settled window cannot imply that older open invoices are excluded.');
     check(lazy.get('[data-monitor-metric="cron_last_run"]').textContent.includes('2 conciliadas'), 'The last cron outcome is shown without an extra Asaas call.');
     check(lazy.get('[data-monitor-metric="cron_last_run"]').textContent.includes('5 aguardando a próxima rodada'), 'A partial cron run explains its remaining workload.');
     assertSecretsPreserved(lazy);
+
+    scenarios++;
+    const legacyMetrics = fixture();
+    const oldOverview = overview(); delete oldOverview.data.eligible_open_invoices; delete oldOverview.data.unlinked_open_invoices;
+    legacyMetrics.queue(oldOverview); legacyMetrics.queue(listing([])); legacyMetrics.shown(); await settle();
+    check(legacyMetrics.get('[data-monitor-metric="eligible_open_invoices"]').textContent === '3'
+        && legacyMetrics.get('[data-monitor-metric="unlinked_open_invoices"]').textContent === '—', 'An older overview response keeps its linked count without inventing a missing count.');
+
+    scenarios++;
+    const missing = fixture();
+    await missing.open([invoice(401, {asaas_payment_id: null, asaas_status: null, billing_type: null,
+        binding_status: 'missing', binding_message: 'Comparar consulta a referência desta fatura.'})]);
+    check(missing.body('invoices').textContent.includes('Vínculo a recuperar') && missing.body('invoices').textContent.includes('Ainda não consultada'), 'A missing local mapping is distinct from a payment that is pending at Asaas.');
+    check(!missing.body('invoices').textContent.includes('Recebimento confirmado'), 'Legacy invoices without evidence cannot look paid.');
+    check(missing.get('[data-monitor-invoice-id="401"]') && missing.get('[data-monitor-invoice-action="compare"]'), 'A valid legacy CRM invoice can be selected and compared to recover its mapping.');
+    missing.get('#asaas-monitor-invoice-status').value = 'missing'; missing.queue(listing([invoice(401, {asaas_payment_id: null, binding_status: 'missing'})]));
+    missing.action('filter', 'invoices').click(); await settle();
+    check(missing.calls[2].url.searchParams.get('status') === 'missing', 'The missing-link filter uses the agreed server contract.');
+    const recovered = result(401, 'divergent'); recovered.data[0].binding_recovered = true;
+    recovered.data[0].message = 'Cobrança confirmada localizada; vínculo recuperado sem registrar pagamento.';
+    missing.queue(recovered); missing.get('[data-monitor-invoice-action="compare"]').click(); await settle();
+    check(missing.calls[3].url.pathname.endsWith('/compare') && new URLSearchParams(missing.calls[3].settings.body).get('invoice_ids[]') === '401', 'Legacy comparison uses the existing per-invoice endpoint and native CSRF.');
+    check(missing.get('[data-monitor-results]').textContent.includes('vínculo recuperado') && missing.get('[data-monitor-results]').textContent.includes('0 registrado(s)'), 'The recovered binding does not claim a receipt was registered by comparison.');
+    check(missing.get('[data-monitor-results]').textContent.includes('Vínculo recuperado'), 'A verified recovery flag adds an explicit result label independently of the operation message.');
 
     scenarios++;
     const evidence = fixture();
@@ -380,6 +414,124 @@ async function main() {
     audit.get('#asaas-monitor-event-status').value = 'received'; audit.queue(listing([], 'events_filter_hash')); audit.action('filter', 'events').click(); await settle();
     check(audit.calls[5].url.searchParams.get('status') === 'received', 'Pending/retry events use the agreed received filter.');
     check(audit.calls.length === 6 && audit.calls.every(call => call.settings.method === 'GET'), 'Browsing logs and events performs no financial mutation.');
+
+    scenarios++;
+    const errors = fixture(); await errors.open();
+    errors.get('#asaas-monitor-log-level').value = 'warning'; errors.get('#asaas-monitor-log-source').value = 'api';
+    errors.queue(listing([{level: 'error', message: 'Falha de consulta', created_at: '2026-11-06', correlation_id: 'fixture-error',
+        context: {http_status: 400, error_code: 'invalid_value', details: html, long_detail: 'x'.repeat(4500)}}], 'error_detail_hash'));
+    errors.get('[data-monitor-action="show-errors"][data-monitor-source="all"]').click(); await settle();
+    check(errors.calls[2].url.searchParams.get('level') === 'error' && errors.calls[2].url.searchParams.get('source') === 'all'
+        && errors.calls[2].url.searchParams.get('page') === '1', 'Ver erros opens the first diagnostic page with all error sources.');
+    check(!errors.get('[data-monitor-panel="logs"]').hidden && errors.tab('logs').getAttribute('aria-selected') === 'true', 'The diagnostic shortcut activates the corresponding accessible tab.');
+    check(errors.body('logs').textContent.includes('HTTP 400') && errors.body('logs').textContent.includes('Código: invalid_value'), 'HTTP status and API code are readable without opening JSON.');
+    check(errors.body('logs').querySelector('pre').textContent.includes('x'.repeat(4500))
+        && errors.body('logs').querySelectorAll('img').length === 0, 'Diagnostic details are preserved beyond the generic cell limit and remain inert text.');
+    errors.queue(listing([], 'webhook_error_hash'));
+    errors.get('[data-monitor-action="show-errors"][data-monitor-source="webhook"]').click(); await settle();
+    check(errors.calls[3].url.searchParams.get('level') === 'error' && errors.calls[3].url.searchParams.get('source') === 'webhook', 'The webhook error shortcut filters delivery diagnostics separately.');
+    check(errors.calls.every(call => call.settings.method === 'GET'), 'Opening an error count does not modify a payment.');
+
+    scenarios++;
+    const remote = fixture(); await remote.open();
+    const remoteRows = [
+        payment(101, {payment_id: html, installment: 'ins_fixture', installment_number: 1}),
+        payment(101, {payment_id: 'pay_remote_101_part_2', status: 'PENDING', installment: 'ins_fixture', installment_number: 2}),
+        payment(104, {binding_status: 'recoverable', binding_message: 'Vínculo seguro a recuperar.', status: 'RECEIVED'}),
+        payment(null, {binding_status: 'unmatched', action_eligible: false, invoice_number: null}),
+        payment(105, {binding_status: 'ambiguous', action_eligible: false}),
+        payment(106, {binding_status: 'blocked', action_eligible: false, binding_message: 'Consulta incompleta.', error_code: 'provider_unavailable', http_status: 429}),
+        payment(107, {binding_status: 'recoverable', action_eligible: undefined}),
+        payment('javascript:alert(1)')
+    ];
+    remote.queue({...listing(remoteRows, 'remote_list_hash', {has_more: true, total: 40}),
+        message: 'Consulta parcial: parte dos vínculos exige nova conferência por limite de tempo. ' + html});
+    remote.tab('payments').click(); await settle();
+    check(remote.calls.length === 3, 'The remote catalog is fetched only after its tab is opened.');
+    assertSafeRequest(remote.calls[2], 'GET', 'payments');
+    check(remote.calls[2].url.searchParams.get('status') === 'all' && remote.calls[2].url.searchParams.get('date_field') === 'payment'
+        && !remote.calls[2].url.searchParams.has('date_from') && !remote.calls[2].url.searchParams.has('date_to'), 'An unfiltered catalog does not silently restrict history by date.');
+    check(remote.body('payments').textContent.includes('Recebimento confirmado') && remote.body('payments').textContent.includes('Sem confirmação de pagamento')
+        && remote.body('payments').textContent.includes('Parcelamento: ins_fixture'), 'Remote payment evidence and installment membership remain explicit.');
+    check(remote.body('payments').querySelectorAll('[data-monitor-payment-invoice-id]').length === 3
+        && remote.body('payments').querySelectorAll('[data-monitor-invoice-action]').length === 6, 'Only positively eligible linked/recoverable rows expose batch selection and financial actions.');
+    check(remote.body('payments').querySelectorAll('img').length === 0 && remote.body('payments').textContent.includes(html), 'Remote fields cannot create HTML or arbitrary destinations.');
+    check(remote.get('[data-monitor-feedback]').textContent.includes('limite de tempo')
+        && remote.get('[data-monitor-feedback]').textContent.includes(html) && remote.get('[data-monitor-feedback]').querySelectorAll('img').length === 0,
+        'A partial lookup notice remains visible as inert text without discarding the returned rows.');
+    check(remote.body('payments').textContent.includes('Consulta incompleta.') && remote.body('payments').textContent.includes('HTTP 429')
+        && remote.body('payments').textContent.includes('Código: provider_unavailable'), 'A blocked remote row exposes its safe code/status beside the binding reason.');
+    const paymentAll = remote.get('#asaas-monitor-payment-select-all'); paymentAll.checked = true; paymentAll.dispatchEvent(event('change'));
+    check(remote.get('[data-monitor-payment-selected-count]').textContent.includes('2 faturas')
+        && remote.body('payments').querySelectorAll('[data-monitor-payment-invoice-id]').every(box => box.checked), 'Selecting multiple installments deduplicates the selected CRM invoice while keeping its rows synchronized.');
+    check(!remote.action('reconcile-selected', 'payments').disabled && remote.action('reconcile-selected').disabled, 'The remote selection never changes the separate CRM invoice selection.');
+    remote.queue(result(101, 'reconciled', 'remote_first_hash')); remote.queue(result(104, 'reconciled', 'remote_second_hash'));
+    remote.action('reconcile-selected', 'payments').click(); await settle();
+    check(remote.calls.length === 5 && new URLSearchParams(remote.calls[3].settings.body).get('invoice_ids[]') === '101'
+        && new URLSearchParams(remote.calls[4].settings.body).get('invoice_ids[]') === '104', 'Remote batches use the existing per-invoice reconciliation once per invoice, never a payment ID.');
+    check(new URLSearchParams(remote.calls[3].settings.body).get('csrf_fixture') === 'remote_list_hash'
+        && new URLSearchParams(remote.calls[4].settings.body).get('csrf_fixture') === 'remote_first_hash', 'Remote actions retain sequential native CSRF rotation.');
+    assertSecretsPreserved(remote);
+
+    scenarios++;
+    const remoteFilters = fixture(); await remoteFilters.open(); remoteFilters.queue(listing([payment(501)], 'remote_filter_initial'));
+    remoteFilters.tab('payments').click(); await settle();
+    const selectedPayment = remoteFilters.get('[data-monitor-payment-invoice-id="501"]'); selectedPayment.checked = true; selectedPayment.dispatchEvent(event('change'));
+    remoteFilters.get('#asaas-monitor-payment-status').value = 'CONFIRMED'; remoteFilters.get('#asaas-monitor-payment-date-field').value = 'due';
+    remoteFilters.get('#asaas-monitor-payment-date-from').value = '2026-01-01'; remoteFilters.get('#asaas-monitor-payment-date-to').value = '2026-11-06';
+    remoteFilters.get('#asaas-monitor-payment-per-page').value = '50';
+    remoteFilters.queue(listing([], 'remote_filtered_hash', {has_more: true, per_page: 50, total: 60})); remoteFilters.action('filter', 'payments').click(); await settle();
+    const remoteQuery = remoteFilters.calls[3].url.searchParams;
+    check(remoteQuery.get('status') === 'CONFIRMED' && remoteQuery.get('date_field') === 'due'
+        && remoteQuery.get('date_from') === '2026-01-01' && remoteQuery.get('date_to') === '2026-11-06'
+        && remoteQuery.get('per_page') === '50' && remoteQuery.get('page') === '1', 'Remote date, status and size filters use the agreed API parameters.');
+    check(remoteFilters.action('reconcile-selected', 'payments').disabled && remoteFilters.body('payments').textContent.includes('Nenhuma cobrança'), 'Filtering clears remote selections and handles an empty catalog.');
+    remoteFilters.queue(listing([payment(502)], 'remote_page_hash', {page: 2, per_page: 50, total: 60})); remoteFilters.action('next', 'payments').click(); await settle();
+    check(remoteFilters.calls[4].url.searchParams.get('page') === '2' && !remoteFilters.action('previous', 'payments').disabled
+        && remoteFilters.action('next', 'payments').disabled, 'Remote paging follows server boundaries independently from CRM invoice pages.');
+    remoteFilters.get('#asaas-monitor-payment-date-from').value = '2026-11-07';
+    remoteFilters.action('filter', 'payments').click(); await settle();
+    check(remoteFilters.calls.length === 5 && remoteFilters.get('[data-monitor-feedback]').textContent.includes('data inicial'), 'An inverted date interval is explained before any remote request.');
+    remoteFilters.get('#asaas-monitor-payment-date-from').value = '2026-02-30';
+    remoteFilters.action('filter', 'payments').click(); await settle();
+    check(remoteFilters.calls.length === 5 && remoteFilters.get('[data-monitor-feedback]').textContent.includes('data válida'), 'An invalid calendar date cannot reach the provider.');
+    remoteFilters.get('#asaas-monitor-payment-date-from').value = '';
+    remoteFilters.get('#asaas-monitor-payment-date-from').validity = {badInput: true};
+    remoteFilters.action('filter', 'payments').click(); await settle();
+    check(remoteFilters.calls.length === 5 && remoteFilters.get('[data-monitor-feedback]').textContent.includes('data válida'), 'A partially typed native date is not treated as an intentionally empty filter.');
+
+    scenarios++;
+    const remoteFailure = fixture(); await remoteFailure.open();
+    remoteFailure.queue({ok: false, csrf: csrf('remote_error_hash'), message: 'private_fixture', error: {
+        code: 'provider_unavailable', http_status: 429, message: 'A consulta no Asaas está temporariamente indisponível.'}}, 503);
+    remoteFailure.tab('payments').click(); await settle();
+    check(remoteFailure.calls.length === 3 && remoteFailure.get('[data-monitor-feedback]').textContent.includes('HTTP 429')
+        && remoteFailure.get('[data-monitor-feedback]').textContent.includes('provider_unavailable'), 'A catalog failure surfaces the explicit safe error code/status without retrying.');
+    check(!remoteFailure.root.textContent.includes('private_fixture') && remoteFailure.token.value === 'remote_error_hash'
+        && !remoteFailure.action('refresh').disabled, 'Failed remote reads preserve the renewed native token and expose a manual recovery path.');
+    remoteFailure.queue(overview()); remoteFailure.queue(listing([payment(503)], 'remote_recovered_hash')); remoteFailure.action('refresh').click(); await settle();
+    check(remoteFailure.body('payments').textContent.includes('pay_remote_503') && remoteFailure.get('[data-monitor-feedback]').hidden,
+        'An explicit refresh recovers the remote catalog without creating a receipt.');
+    remoteFailure.queue({ok: false, csrf: csrf('overview_error_hash'), error: {code: 'overview_unavailable', message: 'Resumo temporariamente indisponível.'}}, 503);
+    remoteFailure.queue({...listing([payment(503)], 'partial_catalog_hash'), message: 'Consulta parcial: confira os vínculos restantes.'});
+    remoteFailure.action('refresh').click(); await settle();
+    check(remoteFailure.get('[data-monitor-feedback]').textContent.includes('Resumo temporariamente indisponível')
+        && remoteFailure.get('[data-monitor-feedback]').textContent.includes('Consulta parcial')
+        && remoteFailure.get('[data-monitor-feedback]').className.includes('alert-danger'), 'A partial catalog notice cannot hide an overview error from the same refresh.');
+
+    scenarios++;
+    const remoteLogs = fixture(); await remoteLogs.open(); remoteLogs.queue(listing([payment(504)])); remoteLogs.tab('payments').click(); await settle();
+    remoteLogs.form.setAttribute('data-asaas-logs-loading', '1'); remoteLogs.document.dispatchEvent(event('asaas:logs:busy'));
+    remoteLogs.body('payments').querySelector('[data-monitor-invoice-action="reconcile"]').dispatchEvent(event('click'));
+    check(remoteLogs.calls.length === 3 && remoteLogs.body('payments').querySelector('[data-monitor-invoice-action="reconcile"]').disabled,
+        'Remote financial actions cannot race an in-flight Logs response, including synthetic clicks.');
+    remoteLogs.form.setAttribute('data-asaas-logs-loading', '0'); remoteLogs.document.dispatchEvent(event('asaas:logs:idle'));
+    const failedAction = result(504, 'error'); Object.assign(failedAction.data[0], {http_status: 400, error_code: 'ambiguous_binding', details: html});
+    remoteLogs.queue(failedAction); remoteLogs.body('payments').querySelector('[data-monitor-invoice-action="reconcile"]').click(); await settle();
+    check(remoteLogs.get('[data-monitor-results]').textContent.includes('HTTP 400')
+        && remoteLogs.get('[data-monitor-results]').textContent.includes('ambiguous_binding')
+        && remoteLogs.get('[data-monitor-results]').textContent.includes(html)
+        && remoteLogs.get('[data-monitor-results]').querySelectorAll('img').length === 0, 'An individual recovery error preserves safe provider diagnostics as inert text.');
 
     scenarios++;
     const single = fixture(); await single.open([invoice(101)]); single.queue(result(101, 'divergent'));

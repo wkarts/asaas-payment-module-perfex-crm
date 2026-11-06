@@ -37,13 +37,18 @@ A leitura é administrativa, sob demanda, sem inicializar a SDK nem fazer chamad
 
 ## Histórico disponível
 
-Monitoramento carrega dados somente quando a subguia é aberta. As listas consultam o banco local, com paginação e filtros. Abrir a tela ou clicar em **Atualizar registros** não faz consultas ao Asaas.
+Monitoramento carrega dados somente quando a subguia é aberta. **Faturas**, **Webhooks** e **API e conciliações** consultam o banco local, com paginação e filtros. **Cobranças no Asaas** consulta a API da conta configurada ao abrir a guia, filtrar ou navegar entre páginas. Atualizar uma lista local não inicia uma varredura remota.
 
-- **Faturas:** vínculo com a cobrança, saldo local, último estado conhecido do Asaas, última consulta e último webhook registrado.
+- **Faturas:** inclui faturas com vínculo, com Asaas nos meios de pagamento permitidos ou com histórico inequívoco de recebimento Asaas. Inclui antigas e parcialmente recebidas, mesmo quando não há mapa local ou webhook. Mostra saldo, último estado conhecido, última consulta e último webhook.
+- **Cobranças no Asaas:** consulta remota paginada, com situação e período por pagamento, vencimento ou criação; mostra cada cobrança/parcela e a possibilidade de associá-la a uma fatura do CRM.
 - **Webhooks:** identificador e tipo do evento, cobrança, fatura, recebimento, processamento e diagnóstico disponível.
 - **API e conciliações:** mensagens sanitizadas e metadados permitidos, filtrados por nível e origem.
 
 O estado exibido na coluna **Pagamento no Asaas** é o último estado local registrado. Use **Comparar** para consultar o estado atual. **Possíveis divergências** filtra faturas ainda abertas cujo histórico local indica recebimento confirmado; esse filtro não substitui uma consulta atual à API.
+
+**Vínculo a recuperar** indica que a fatura ainda não possui um identificador local de cobrança. **Ainda não consultada** não significa que o cliente deixou de pagar. Comparar ou Conciliar procura a cobrança pela referência exata da fatura no Asaas. O resumo distingue todas as faturas elegíveis em aberto, as vinculadas e as que precisam recuperar o vínculo.
+
+O botão **Ver erros** no resumo abre os diagnósticos filtrados. Os resultados individuais mostram o motivo, o código de diagnóstico e o status HTTP quando disponíveis. Os registros continuam sanitizados; chaves, tokens e corpos brutos de respostas não são exibidos.
 
 ### Como saber se houve pagamento
 
@@ -72,7 +77,27 @@ O histórico depende dos registros efetivamente existentes na instalação. A at
 
 As operações remotas desse recurso são consultas `GET`. A conciliação não cria cobranças, não captura cartões, não exclui cobranças e não solicita estornos. O recebimento local utiliza o gateway existente, seus bloqueios e sua verificação de duplicidade. Uma nova consulta ao saldo ocorre antes da gravação.
 
-São elegíveis estados de recebimento confirmado (`CONFIRMED`, `RECEIVED` e `RECEIVED_IN_CASH`). Uma mera autorização de cartão não é tratada como quitação. Parcelamentos são conferidos como grupo e cada parcela recebida tem seu próprio identificador; somente o valor bruto da parcela elegível é registrado. Valores acima do saldo atual exigem conferência e não são cortados silenciosamente pelo monitoramento.
+São elegíveis estados de recebimento confirmado (`CONFIRMED`, `RECEIVED` e `RECEIVED_IN_CASH`). Uma mera autorização de cartão não é tratada como quitação. Parcelamentos são conferidos como grupo e cada parcela recebida tem seu próprio identificador. Quando existe composição de encargos do cartão, o recibo usa exclusivamente o principal daquela parcela, preservando o snapshot da captura. Cobranças legadas sem composição usam o valor da cobrança segundo o contrato existente. Valores acima do saldo atual exigem conferência e não são cortados silenciosamente pelo monitoramento.
+
+### Recuperação sem webhook
+
+Uma queda da VPS ou falha na entrega do webhook não precisa ser reparada por um evento artificial. O módulo consulta o estado atual no Asaas e usa o mesmo escritor de recebimentos do gateway, com bloqueio e conferência de duplicidade.
+
+Quando falta o mapa, a consulta usa `GET /payments` com `externalReference` igual ao hash da fatura. A recuperação exige referência exata e única, cobrança válida, cliente coerente e grupo completo quando houver parcelamento. Mais de uma cobrança independente para a mesma referência exige conferência; o módulo não escolhe a primeira arbitrariamente.
+
+Se o cliente também não tem vínculo local, a recuperação consulta `GET /customers/{id}` e exige o identificador esperado, a referência externa do cliente igual ao seu ID no CRM e CPF/CNPJ não vazio e igual ao cadastro. Não cria nem altera clientes. Clientes antigos com referência ausente ou divergente podem exigir conferência de identidade. Um vínculo local conflitante não é sobrescrito.
+
+O vínculo recuperado registra somente informações operacionais permitidas e preserva as proteções do ciclo de vida. A leitura remota é seguida por nova verificação local sob bloqueio. Alteração de ambiente/credencial durante a conferência ou contexto de empresa que não pode ser comprovado impede a associação. Quando a fatura identifica uma empresa e o provider resolve comprovadamente a mesma conta e ambiente globais, a recuperação permanece permitida; isso não introduz roteamento automático entre contas distintas. Uma cobrança previamente vinculada que retorna erro não é substituída automaticamente por outra encontrada com a mesma referência.
+
+### Conferência de um período no Asaas
+
+1. Abrir **Monitoramento → Cobranças no Asaas**.
+2. Para recuperar recebimentos de uma indisponibilidade, selecionar **Data de pagamento** e informar o início/fim do período. O filtro não depende da emissão da fatura.
+3. Consultar as páginas e conferir situação, parcela, valor e vínculo. Para procurar cobranças ainda pendentes, deixar o período de pagamento vazio ou usar vencimento/criação.
+4. Usar **Comparar** nas faturas identificadas. O servidor consulta novamente e pode recuperar um vínculo comprovado; a listagem remota, sozinha, não grava mapa nem recibo.
+5. Usar **Conciliar** somente para os recebimentos confirmados e ainda ausentes. A mesma ação está disponível em lote para faturas elegíveis da página.
+
+Cobranças de outros sistemas na mesma conta, referências ausentes, identidades conflitantes e vínculos ambíguos permanecem visíveis com o motivo e sem ação financeira habilitada. Não são criadas faturas no CRM a partir de registros desconhecidos. Uma fatura pode possuir várias parcelas remotas; a seleção em lote evita executar repetidamente a mesma fatura na página.
 
 ### Operações em lote
 
@@ -89,7 +114,7 @@ Em **Sincronização**, configure:
 | Parâmetro | Comportamento |
 | --- | --- |
 | Conciliar recebimentos automaticamente pelo CRON | Habilita o processamento; padrão desabilitado. |
-| Janela de dias | Seleciona faturas pela data de emissão ou vencimento dentro da janela; de 1 a 365 dias, padrão 7. |
+| Janela de revisão das faturas quitadas | Revisa faturas com recebimentos locais recentes; de 1 a 365 dias, padrão 7. Não limita as faturas em aberto. |
 | Limite de faturas por execução | De 1 a 100, padrão 50. |
 
 O módulo usa o hook `after_cron_run` do CRON nativo do Perfex. Não é necessário criar outro endpoint público ou um agendamento externo para o módulo. O CRON do próprio CRM precisa estar configurado e funcionando.
@@ -98,15 +123,21 @@ Habilitar essa opção executa **conciliação**, e não apenas uma listagem de 
 
 Não há garantia de ausência de erros externos. Falhas de API, credenciais, vínculo ou valores são registradas para conferência; não são tratadas como confirmação de pagamento. Uma falha depois de iniciar a gravação pode exigir conferir o recibo efetivamente persistido, conforme o resultado indicado no histórico.
 
-A rotina processa faturas vinculadas e abertas, usa um cursor para continuar de onde parou e impede duas execuções automáticas simultâneas com um bloqueio no banco. Há intervalo mínimo de cinco minutos entre execuções automáticas e trinta minutos entre consultas bem-sucedidas da mesma fatura. O processamento respeita o limite configurado e verifica um orçamento de 45 segundos antes de iniciar a próxima fatura. Uma consulta já iniciada pode ultrapassar esse orçamento até o timeout do cliente HTTP existente; ela não é interrompida no meio.
+A rotina percorre todas as faturas Asaas elegíveis em aberto, incluindo antigas sem mapa, e as quitadas com recebimentos Asaas locais dentro da janela de revisão. Usa um cursor para continuar de onde parou e impede duas execuções automáticas simultâneas com um bloqueio no banco. Há intervalo mínimo de cinco minutos entre execuções automáticas e trinta minutos entre tentativas da mesma fatura. Um registro interno limitado e limpo a cada rodada aplica esse intervalo também às tentativas sem mapa ou com falha. O processamento respeita o limite configurado e verifica um orçamento de 45 segundos antes de iniciar a próxima fatura. Uma consulta já iniciada pode ultrapassar esse orçamento até o timeout do cliente HTTP existente; ela não é interrompida no meio.
 
 O painel mostra a última execução, suas contagens e se restaram itens para as próximas rodadas. A janela do CRON não limita a comparação manual, que pode ser usada para conferir faturas antigas. Se houver erro na rotina opcional, o diagnóstico é registrado sem interromper as demais atividades do CRON do CRM.
 
-A janela considera **emissão ou vencimento**, não a data de pagamento. Uma fatura emitida e vencida há 90 dias, paga hoje, não é selecionada pela janela de 7 dias; seu webhook e a consulta manual continuam disponíveis. O cursor continua a partir das candidatas elegíveis, sem ampliar automaticamente a janela para todo o histórico.
+Uma fatura emitida e vencida há 90 dias que continua aberta no CRM entra na fila, mesmo com janela de 7 dias. Se foi paga no Asaas durante uma queda, a consulta pode recuperar o recebimento depois que o CRM e seu cron voltarem a funcionar. O limite de 50, por exemplo, é o tamanho máximo da rodada; não restringe a recuperação às 50 faturas mais recentes.
+
+O cron não executa uma importação indiscriminada de todas as cobranças da conta. Ele parte das faturas elegíveis do CRM; a guia remota serve também para investigar registros sem referência local. API indisponível, credencial revogada, identidade ambígua ou retorno incompleto permanecem pendentes com diagnóstico. Pagamentos estornados ou cobranças canceladas não geram recebimento positivo; a rotina não reverte recibos automaticamente.
 
 ## Desempenho e armazenamento
 
 As páginas têm 25 registros por padrão, com limite de 50 no servidor. O histórico de webhook mais recente é consultado para o conjunto da página, sem carregar o histórico inteiro em PHP. O Perfex padrão calcula os saldos da listagem por agregados de recebimentos e créditos. Quando o núcleo possui regras próprias de escopo de emissor, a leitura financeira nativa é preservada. A decisão de baixar uma fatura sempre usa a apuração nativa atual.
+
+A consulta remota usa a paginação oficial `limit`, `offset` e `hasMore`. Um limite por página não significa fim do histórico. A recuperação por referência rejeita respostas incompletas e grupos ambíguos em vez de interpretar uma página parcial como todas as cobranças existentes. Erros de autenticação, permissão, limite da API e indisponibilidade recebem códigos próprios; a interface não repete uma baixa automaticamente após resposta incerta.
+
+As consultas diretas do monitoramento usam transporte próprio de leitura, sem repetição imediata em `429` ou falhas do servidor e sem seguir redirecionamentos. O cliente padrão da SDK e o fluxo existente de recuperação de tentativas ambíguas de cartão mantêm seus contratos. A SDK, o webhook e os demais recursos não foram refatorados para aplicar essa opção globalmente.
 
 A migration `151` cria os índices `asaas_monitor_invoice` e `asaas_monitor_status` nos eventos e `asaas_monitor_level` nos logs. Ela não modifica colunas ou registros. A criação ocorre na instalação/atualização do módulo; abrir Monitoramento não executa alterações de estrutura.
 
@@ -123,3 +154,5 @@ Os filtros de origem dos diagnósticos suportam as colunas históricas `context_
 Para interromper a automação, desabilite a opção de conciliação pelo CRON. Os índices adicionados são compatíveis com o código anterior e não exigem remoção em um retorno de arquivos. Recibos já conciliados são registros financeiros do CRM e não são desfeitos ao retornar o código; confira o histórico antes de qualquer ajuste financeiro manual.
 
 Consulte também [DIAGNOSTICO.md](DIAGNOSTICO.md), [CICLO-FATURAS.md](CICLO-FATURAS.md), [CARTAO-CREDITO.md](CARTAO-CREDITO.md) e [RELEASING.md](RELEASING.md).
+
+Referências oficiais: [Listar cobranças](https://docs.asaas.com/reference/listar-cobrancas), [Listagem e paginação](https://docs.asaas.com/reference/listagem-e-paginacao) e [Polling vs. Webhooks](https://docs.asaas.com/docs/polling-vs-webhooks). A SDK distribuída já suporta essas consultas; essa recuperação não exige atualização da SDK.

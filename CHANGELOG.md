@@ -2,6 +2,9 @@
 
 ## Não publicado
 
+- Recupera vínculos e recebimentos pela API sem depender de webhook, incluindo faturas Asaas antigas e parciais; o cron passa a percorrer abertas sem corte de emissão/vencimento, preservando bloqueios e verificação de duplicidade.
+- Acrescenta **Cobranças no Asaas** ao monitoramento, com paginação remota, filtros por situação e período, associação conservadora e ações individuais/em lote para faturas identificadas.
+- Torna os erros do resumo acessíveis diretamente e detalha falhas de consulta/conciliação com códigos seguros, sem expor credenciais ou dados de cartão.
 - Inclui antecipação avulsa/automática na precificação do cartão, com taxas mensais próprias para à vista/parcelado e prazo inicial ajustável. O cliente vê somente os encargos agregados; a opção inicia desabilitada e não solicita antecipação nem altera a conta Asaas.
 - Preserva as condições da tentativa já capturada e exige nova conferência quando modalidade, taxa ou prazo de antecipação mudam antes do pagamento.
 - Corrige o clique em **Pagar agora** para reapresentar uma cobrança existente, inclusive boleto vencido pagável, sem alterar a fatura ou reenviar vencimento/valor ao Asaas. Remove saídas públicas de debug do gateway.

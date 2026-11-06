@@ -15,6 +15,7 @@ class Monitor extends AdminController
 
     public function overview(): void { $this->read('overview'); }
     public function invoices(): void { $this->read('invoices'); }
+    public function payments(): void { $this->read('payments'); }
     public function events(): void { $this->read('events'); }
     public function logs(): void { $this->read('logs'); }
     public function compare(): void { $this->write(false); }
@@ -39,16 +40,27 @@ class Monitor extends AdminController
         if (!$this->authorize('GET')) { return; }
         try {
             $filters = [];
-            foreach (['page', 'per_page', 'q', 'status', 'level', 'source'] as $field) {
+            foreach (['page', 'per_page', 'q', 'status', 'level', 'source', 'date_field', 'date_from', 'date_to'] as $field) {
                 $value = $this->input->get($field);
                 if ($value !== null && !is_scalar($value)) { throw new InvalidArgumentException('Os filtros informados são inválidos.'); }
                 if ($value !== null) { $filters[$field] = $value; }
             }
             $service = new \Asaas\AsaasReconciliation(get_instance());
-            $this->respond($method === 'overview' ? $service->overview() : $service->$method($filters));
+            $payload = $method === 'overview' ? $service->overview() : $service->$method($filters);
+            $this->respond($payload, ($payload['ok'] ?? true) === false ? 503 : 200);
         } catch (InvalidArgumentException $error) {
             $this->respond(['ok' => false, 'message' => 'Os filtros informados são inválidos.'], 422);
         } catch (Throwable $error) {
+            if ($method === 'payments') {
+                $message = 'Não foi possível consultar as cobranças no Asaas. Confira o ambiente, as credenciais e o diagnóstico da integração.';
+                asaas_diagnostic_log('error', $message, [
+                    'source' => 'reconciliation', 'operation' => 'list_payments', 'result' => 'error',
+                    'error_code' => 'remote_query_failed',
+                ]);
+                $this->respond(['ok' => false, 'message' => $message,
+                    'error' => ['code' => 'remote_query_failed', 'http_status' => null, 'message' => $message]], 503);
+                return;
+            }
             $this->respond(['ok' => false, 'message' => 'Não foi possível consultar o histórico. Verifique se o módulo e suas tabelas estão atualizados.'], 503);
         }
     }

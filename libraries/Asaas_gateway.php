@@ -104,15 +104,16 @@ class Asaas_gateway extends App_gateway
                 'label' => 'Conciliar recebimentos automaticamente pelo CRON',
                 'type' => 'yes_no',
                 'default_value' => 0,
-                'after' => '<p class="help-block">Consulta as cobranças vinculadas e registra os recebimentos confirmados no Asaas. Acompanhe os resultados na guia Monitoramento.</p>',
+                'after' => '<p class="help-block">Consulta o Asaas e registra os recebimentos confirmados que faltam no CRM, inclusive de faturas antigas sem webhook. Recupera os vínculos quando a identidade da cobrança pode ser comprovada. Acompanhe os resultados na guia Monitoramento.</p>',
             ),
             array(
                 'name' => 'sync_days',
-                'label' => 'Janela de dias para conciliação automática',
+                'label' => 'Janela de revisão das faturas quitadas (dias)',
                 'type' => 'input',
                 'input_type' => 'number',
                 'field_attributes' => ['min' => '1', 'max' => '365', 'step' => '1'],
                 'default_value' => 7,
+                'after' => '<p class="help-block">Revisa faturas com recebimentos locais recentes nesta janela. Faturas Asaas em aberto são conferidas independentemente da data de emissão ou vencimento.</p>',
             ),
             array(
                 'name' => 'sync_limit',
@@ -121,6 +122,7 @@ class Asaas_gateway extends App_gateway
                 'input_type' => 'number',
                 'field_attributes' => ['min' => '1', 'max' => '100', 'step' => '1'],
                 'default_value' => 50,
+                'after' => '<p class="help-block">Limita o trabalho de cada execução. O cursor continua nas próximas faturas nas execuções seguintes; o limite não reduz o histórico disponível.</p>',
             ),
             array(
                 'name' => 'currencies',
@@ -416,6 +418,12 @@ class Asaas_gateway extends App_gateway
         ?int $companyId = null
     ): array {
         return $this->adapter->request($method, $path, $query, $headers, $payload, $expectsBinary, $companyId);
+    }
+
+    /** Administrative recovery reads do not repeat requests on rate limits or server errors. */
+    public function reconciliation_request(string $path, array $query = []): array
+    {
+        return $this->adapter->request('GET', $path, $query, [], null, false, null, true);
     }
 
     public function process_payment($data)
