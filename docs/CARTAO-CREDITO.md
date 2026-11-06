@@ -12,6 +12,8 @@ Em **Configurações → Meios de pagamento → Asaas**:
 
 O checkout de cartão requer HTTPS. O servidor apura o IP do pagador pelo mecanismo do CodeIgniter; instalações com proxy devem manter corretamente a configuração de proxies confiáveis. O navegador não informa livremente esse IP no POST.
 
+A validação de valor mínimo também ocorre antes de salvar uma nova fatura que permite Asaas quando boleto está desabilitado e o pagamento será por cartão/Pix. Rascunhos e faturas que não usam Asaas mantêm o comportamento anterior. A criação automática de boleto continua obedecendo à sua própria configuração.
+
 O formulário solicita nome, número, validade e CVV do cartão, além de e-mail, CPF/CNPJ, CEP, número do endereço e telefone do titular. Os dados do titular atendem à autorização do cartão; não alteram as preferências nem o cadastro de e-mail/telefone do cliente no CRM ou no Asaas.
 
 ## Atualização da SDK e instalação

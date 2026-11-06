@@ -873,6 +873,17 @@ lifecycleTest('new debt after a cancelled card does not inherit its attempt lock
     lifecycleCheck(asaas_lifecycle_should_ignore_payment(42, 'pay_original'), 'Cancelled card ID remains retired.');
 });
 
+
+lifecycleTest('card or Pix without boleto rejects an invoice below the minimum before INSERT', static function (): void {
+    $ci = lifecycleReset(false, false);
+    $GLOBALS['lifecycle_options']['paymentmethod_asaas_billet_only'] = '0';
+    $GLOBALS['lifecycle_options']['paymentmethod_asaas_card_only'] = '1';
+    $GLOBALS['lifecycle_options']['paymentmethod_asaas_pix_only'] = '1';
+    lifecycleReject(static fn () => lifecycleCreate(['total' => '1.00', 'subtotal' => '1.00']), 400);
+    lifecycleSame([], $ci->db->tables['tblinvoices'], 'Native invoice cannot remain saved when Asaas amount is invalid.');
+    lifecycleSame([], $ci->asaas_gateway->calls, 'Minimum validation precedes any remote request.');
+});
+
 $GLOBALS['lifecycle_assertions'] = 0;
 $failed = []; $skipped = 0; $executed = 0;
 try {

@@ -398,13 +398,18 @@ function asaas_lifecycle_validate_invoice($invoice, bool $updating = false): voi
 function asaas_before_invoice_added(array $hook): array
 {
     $invoice = (object) ($hook['data'] ?? []);
-    if (!get_option('paymentmethod_asaas_billet_only') || empty($invoice->duedate)
+    if (empty($invoice->duedate)
         || !in_array('asaas', asaas_invoice_payment_modes($invoice->allowed_payment_modes ?? []), true)
         || in_array((int) ($invoice->status ?? 1), [2, 5, 6], true)) {
         return $hook;
     }
     try {
         asaas_lifecycle_validate_invoice($invoice);
+        // Card/Pix-only invoices still need a valid amount before the native INSERT.
+        // Automatic boleto creation keeps its existing opt-in and transaction path.
+        if (!get_option('paymentmethod_asaas_billet_only')) {
+            return $hook;
+        }
         asaas_lifecycle_begin('create:' . (string) ($invoice->hash ?? ''));
         $state = &asaas_lifecycle_state();
         $state['creating'][(string) ($invoice->hash ?? '')] = true;
