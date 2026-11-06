@@ -601,6 +601,82 @@ cardCheckoutTest('priced installments preserve cent totals and do not settle pri
         'Changing settings after capture must not reprice or reallocate the existing debt.');
     cardCheckoutAssert(count($api->posts) === 1 && $recovered !== null, 'Recovery remains GET-only.');
 });
+// Independent decimal reference vectors: net card proceeds are discounted by the
+// monthly anticipation rate and average commercial term, then the gross is ceiled.
+foreach ([
+    'manual' => [1 => '104.90', 3 => '107.78', 6 => '110.68', 12 => '117.61', 21 => '129.03'],
+    'automatic' => [1 => '104.79', 3 => '107.55', 6 => '110.28', 12 => '116.76', 21 => '127.32'],
+] as $mode => $totals) {
+    foreach ($totals as $count => $total) {
+        cardCheckoutTest('anticipation ' . $mode . ' ' . $count . 'x is aggregated and frozen before capture', static function () use ($mode, $count, $total): void {
+            [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture([], [
+                'installmentCount' => '21', 'card_fee_mode' => 'customer', 'card_anticipation_mode' => $mode,
+            ]);
+            $offers = array_column($service->installmentOptions($invoice), null, 'count');
+            $offer = $offers[$count];
+            cardCheckoutAssert($offer['total'] === $total
+                && asaas_payment_amount_to_cents($offer['fee']) === asaas_payment_amount_to_cents($total) - 10000,
+                'The accepted offer must contain one total fee including the anticipation estimate.');
+            cardCheckoutAssert(array_keys($offer) === ['count', 'label', 'principal', 'fee', 'total', 'schedule', 'quote'],
+                'Internal anticipation rates, mode and cost must not be returned to the payment view.');
+            cardCheckoutAssert($api->posts === [] && $GLOBALS['card_checkout_trace'] === [],
+                'Quoting anticipation cannot contact or configure the Asaas account.');
+            $payment = $service->pay(cardCheckoutData($invoice, ['installmentCount' => (string) $count, 'quote' => $offer['quote']]));
+            $cache = $db->cache();
+            $price = $cache['_asaas_lifecycle']['card_attempt']['pricing'];
+            $payload = $api->posts[0]['payload'];
+            cardCheckoutAssert(count($api->posts) === 1 && $api->posts[0]['operation'] === 'create'
+                && ($payload['totalValue'] ?? $payload['value']) === $total,
+                'Only the existing card capture can be sent, with the acknowledged aggregate total.');
+            cardCheckoutAssert(!array_key_exists('anticipation', $payload) && !array_key_exists('creditCardAutomaticEnabled', $payload)
+                && !array_filter(array_keys($payload), static fn (string $key): bool => str_contains(strtolower($key), 'anticip')),
+                'Pricing configuration must not become a financial API instruction.');
+            cardCheckoutAssert($price['anticipation']['mode'] === $mode
+                && array_sum(array_column($price['allocations'], 'principal_cents')) === 10000,
+                'Immutable financial metadata must allocate only the original invoice principal.');
+            $receipt = asaas_card_receipt_amount($payment, '100.00', $cache);
+            cardCheckoutAssert(asaas_payment_amount_to_cents($receipt) === $price['allocations'][$payment['id']]['principal_cents'],
+                'A confirmed installment must settle only its principal, never the anticipation fee.');
+            cardCheckoutAssert(!str_contains(strtolower(asaas_card_receipt_note($payment, $cache)), 'antecipa'),
+                'The receipt must keep the aggregate card surcharge, without a separate anticipation line.');
+            $gateway->settings['card_anticipation_mode'] = 'none';
+            $gateway->settings['card_anticipation_manual_rate_installments'] = '2.00';
+            $recovered = $service->reconcile($invoice);
+            cardCheckoutAssert($recovered !== null && count($api->posts) === 1
+                && $db->cache()['_asaas_lifecycle']['card_attempt']['pricing'] === $price,
+                'Changing anticipation settings must not recapture or reprice a recorded attempt.');
+            cardCheckoutAssert(get_instance()->invoices_model->get(42) == $invoice,
+                'Calculating and capturing the surcharge cannot modify invoice values or dates.');
+        });
+    }
+}
+foreach (['card_anticipation_mode' => 'automatic', 'card_anticipation_manual_rate_1' => '1.26',
+    'card_anticipation_first_days' => '31'] as $field => $changed) {
+    cardCheckoutTest('changed anticipation ' . $field . ' rejects the previous quote before side effects', static function () use ($field, $changed): void {
+        [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture([], [
+            'card_fee_mode' => 'customer', 'card_anticipation_mode' => 'manual',
+            // Equal rates prove that changing the chosen mode invalidates even an equal total.
+            'card_anticipation_automatic_rate_1' => '1.25',
+        ]);
+        $offer = $service->installmentOptions($invoice)[0];
+        $gateway->settings[$field] = $changed;
+        cardCheckoutThrows(static fn () => $service->pay(cardCheckoutData($invoice, ['quote' => $offer['quote']])), 'condições');
+        cardCheckoutAssert($api->posts === [] && $db->cache() === [] && $GLOBALS['card_checkout_trace'] === [],
+            'A stale anticipation quote cannot reach lookup, capture or durable writes.');
+    });
+}
+foreach (['absorb' => ['card_fee_mode' => 'absorb'], 'exempt' => ['card_fee_mode' => 'customer', 'card_free_installments' => '3']] as $name => $settings) {
+    cardCheckoutTest('anticipation respects ' . $name . ' without increasing the charge', static function () use ($settings): void {
+        [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture([], $settings + ['card_anticipation_mode' => 'automatic']);
+        $offer = $service->installmentOptions($invoice)[0];
+        $payment = $service->pay(cardCheckoutData($invoice, ['quote' => $offer['quote']]));
+        cardCheckoutAssert($offer['total'] === '100.00' && $offer['fee'] === '0.00'
+            && $api->posts[0]['payload']['value'] === '100.00', 'Absorbed anticipation costs cannot increase the customer charge.');
+        cardCheckoutAssert(!isset($db->cache()['_asaas_lifecycle']['card_attempt']['pricing'])
+            && asaas_card_receipt_amount($payment, '100.00', $db->cache()) === '100.00',
+            'The established receipt flow must stay intact when no surcharge is passed through.');
+    });
+}
 cardCheckoutTest('declined surcharge restores the original boleto without card pricing', static function (): void {
     [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture([], ['card_fee_mode' => 'customer']);
     cardCheckoutSeed($gateway, cardCheckoutPayment());

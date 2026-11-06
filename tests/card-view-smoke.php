@@ -14,6 +14,7 @@ set_error_handler(static function (int $severity, string $message, string $file,
     throw new ErrorException($message, 0, $severity, $file, $line);
 });
 define('BASEPATH', __DIR__);
+require_once dirname(__DIR__) . '/helpers/asaas_card_pricing_helper.php';
 
 $GLOBALS['card_view_options'] = [];
 $GLOBALS['card_view_scenarios'] = 0;
@@ -296,6 +297,25 @@ cardViewTest('priced offers disclose charges and preserve acknowledgements witho
     cardViewAssert(str_contains($html, '<noscript>') && str_contains($html, 'R$ 103,59') && str_contains($html, 'R$ 3,59'),
         'The no-JavaScript form must show the total and surcharge before confirmation.');
     cardViewAssert(strpos($html, 'Como deseja pagar?') < strpos($html, 'id="cardNumber"'), 'The financial offer must appear before entering a card number.');
+});
+
+cardViewTest('anticipation cost appears only in the aggregate card charge', static function () use ($renderer): void {
+    $price = asaas_card_price('100.00', 1, ['card_fee_mode' => 'customer', 'card_anticipation_mode' => 'manual']);
+    $offer = ['count' => 1, 'label' => 'À vista — R$ 104,90',
+        'principal' => '100.00', 'fee' => asaas_card_pricing_money($price['fee_cents']),
+        'total' => asaas_card_pricing_money($price['charged_cents']), 'schedule' => 'Pagamento à vista.',
+        'quote' => asaas_card_pricing_token($price, 'view-fixture')];
+    $html = $renderer->render('cartao', ['installment_options' => [$offer]]);
+    $document = cardViewDocument($html);
+    cardViewAssert($price['charged_cents'] === 10490 && str_contains($html, 'Encargos do cartão')
+        && str_contains($html, 'R$ 104,90') && str_contains($html, 'R$ 4,90'),
+        'The visible amount must include the complete surcharge, before the customer enters card data.');
+    cardViewAssert($document->query('//select[@name="installmentCount"]/option[@data-card-fee="4.90" and @data-card-total="104.90"]')->length === 1,
+        'JavaScript receives the same aggregate total calculated by the server.');
+    cardViewAssert(!preg_match('/antecipa|monthly_rate|first_days|automatic|manual_rate/i', $html),
+        'No separate anticipation label, rate, mode or hidden data may be rendered to the payer.');
+    cardViewAssert($document->query('//noscript')->length === 1,
+        'The aggregate charge remains available without JavaScript.');
 });
 
 echo sprintf(

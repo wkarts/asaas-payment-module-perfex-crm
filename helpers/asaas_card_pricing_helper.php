@@ -20,6 +20,12 @@ function asaas_card_pricing_defaults(): array
         'card_fee_fixed_mode' => 'charge',
         'card_min_installment' => '5.00',
         'card_free_installments' => 0,
+        'card_anticipation_mode' => 'none',
+        'card_anticipation_manual_rate_1' => '1.25',
+        'card_anticipation_manual_rate_installments' => '1.70',
+        'card_anticipation_automatic_rate_1' => '1.15',
+        'card_anticipation_automatic_rate_installments' => '1.60',
+        'card_anticipation_first_days' => 30,
     ];
 }
 
@@ -59,10 +65,20 @@ function asaas_card_pricing_normalize_settings(array $settings): array
     if ($normalized['card_free_installments'] > $normalized['installmentCount']) {
         throw new InvalidArgumentException('As parcelas sem repasse não podem ultrapassar o limite de parcelas do cartão.');
     }
+    $days = $normalized['card_anticipation_first_days'];
+    if ((!is_int($days) && !is_string($days)) || !preg_match('/^\d{1,3}$/D', trim((string) $days))
+        || (int) $days < 0 || (int) $days > 365) {
+        throw new InvalidArgumentException('O prazo estimado da primeira parcela deve estar entre 0 e 365 dias inteiros.');
+    }
+    $normalized['card_anticipation_first_days'] = (int) $days;
     foreach (['card_fee_mode' => ['absorb', 'customer'], 'card_fee_fixed_mode' => ['charge', 'installment']] as $name => $choices) {
         if (!is_string($normalized[$name]) || !in_array($normalized[$name], $choices, true)) {
             throw new InvalidArgumentException('Confira o modo de repasse e a incidência da taxa fixa do cartão.');
         }
+    }
+    if (!is_string($normalized['card_anticipation_mode'])
+        || !in_array($normalized['card_anticipation_mode'], ['none', 'manual', 'automatic'], true)) {
+        throw new InvalidArgumentException('Escolha não incluir antecipação, avulsa ou automática no cálculo do cartão.');
     }
     foreach (['card_fee_percent_1', 'card_fee_percent_2_6', 'card_fee_percent_7_12', 'card_fee_percent_13_21'] as $name) {
         $bps = asaas_card_pricing_decimal_cents($normalized[$name], 'Percentual da taxa de cartão');
@@ -70,6 +86,24 @@ function asaas_card_pricing_normalize_settings(array $settings): array
             throw new InvalidArgumentException('O percentual da taxa de cartão deve estar entre 0% e 99%.');
         }
         $normalized[$name] = asaas_card_pricing_money($bps);
+    }
+    foreach (['card_anticipation_manual_rate_1', 'card_anticipation_manual_rate_installments',
+        'card_anticipation_automatic_rate_1', 'card_anticipation_automatic_rate_installments'] as $name) {
+        $bps = asaas_card_pricing_decimal_cents($normalized[$name], 'Taxa mensal de antecipação');
+        if ($bps > 9900) {
+            throw new InvalidArgumentException('A taxa mensal de antecipação deve estar entre 0% e 99%.');
+        }
+        $normalized[$name] = asaas_card_pricing_money($bps);
+    }
+    if ($normalized['card_anticipation_mode'] !== 'none') {
+        // The single-payment rate is independent from the rate used for installments.
+        // With a fixed 30-day interval, the last allowed count has the longest term.
+        foreach (array_unique([1, $normalized['installmentCount']]) as $count) {
+            $rateName = 'card_anticipation_' . $normalized['card_anticipation_mode']
+                . '_rate_' . ($count === 1 ? '1' : 'installments');
+            asaas_card_pricing_anticipation_factor(asaas_card_pricing_decimal_cents($normalized[$rateName],
+                'Taxa mensal de antecipação'), $normalized['card_anticipation_first_days'], $count);
+        }
     }
     foreach (['card_fee_fixed' => 'Taxa fixa do cartão', 'card_min_installment' => 'Valor mínimo da parcela'] as $name => $label) {
         $cents = asaas_card_pricing_decimal_cents($normalized[$name], $label);
@@ -105,7 +139,7 @@ function asaas_card_pricing_money(int $cents): string
 /** Division by a small positive integer; the dividend can exceed native integer width. */
 function asaas_card_pricing_divide(string $digits, int $divisor): array
 {
-    if ($divisor < 1 || $divisor > 10000 || !preg_match('/^\d+$/D', $digits)) {
+    if ($divisor < 1 || $divisor > 600000 || !preg_match('/^\d+$/D', $digits)) {
         throw new InvalidArgumentException('Não foi possível calcular a taxa do cartão.');
     }
     $quotient = '';
@@ -124,6 +158,26 @@ function asaas_card_pricing_integer(string $digits): int
         throw new InvalidArgumentException('O cálculo do cartão excede a precisão monetária suportada.');
     }
     return (int) $digits;
+}
+
+/**
+ * Estimated simple monthly discount on the net card receivable, using a 30-day month.
+ * Equal installments have average term firstDays + 30 * (count - 1) / 2.
+ * The result is a numerator over 600000, retaining half-days and fractional basis points.
+ * This local price model neither requests anticipation nor promises the provider's final fee.
+ */
+function asaas_card_pricing_anticipation_factor(int $monthlyRate, int $firstDays, int $count): int
+{
+    if ($monthlyRate < 0 || $monthlyRate > 9900 || $firstDays < 0 || $firstDays > 365 || $count < 1 || $count > 21) {
+        throw new InvalidArgumentException('Confira a taxa mensal e o prazo estimado de antecipação do cartão.');
+    }
+    $factor = $monthlyRate * (2 * $firstDays + 30 * ($count - 1));
+    // Checking only the average could hide a zero/negative net value in the final installment.
+    $lastFactor = $monthlyRate * ($firstDays + 30 * ($count - 1));
+    if ($factor >= 600000 || $lastFactor >= 300000) {
+        throw new InvalidArgumentException('A taxa mensal e o prazo de antecipação devem resultar em um custo inferior a 100% de cada parcela.');
+    }
+    return $factor;
 }
 
 /** Apply the administrative minimum after the same discount semantics as the API validator. */
@@ -176,17 +230,47 @@ function asaas_card_price($balance, int $count, array $settings, array $discount
     $fixedTotal = asaas_card_pricing_integer(asaas_payment_integer_multiply((string) $fixed,
         (string) ($settings['card_fee_fixed_mode'] === 'installment' ? $count : 1)));
     $mode = $settings['card_fee_mode'] === 'customer' && $count > $settings['card_free_installments'] ? 'customer' : 'absorb';
+    $anticipation = null;
+    $anticipationFactor = 0;
+    if ($settings['card_anticipation_mode'] !== 'none') {
+        $rateName = 'card_anticipation_' . $settings['card_anticipation_mode'] . '_rate_' . ($count === 1 ? '1' : 'installments');
+        $monthlyRate = asaas_card_pricing_decimal_cents($settings[$rateName], 'Taxa mensal de antecipação');
+        $anticipationFactor = asaas_card_pricing_anticipation_factor($monthlyRate, $settings['card_anticipation_first_days'], $count);
+        $anticipation = ['mode' => $settings['card_anticipation_mode'], 'monthly_rate_bps' => $monthlyRate,
+            'first_days' => $settings['card_anticipation_first_days'], 'estimated_fee_cents' => 0];
+    }
     $charged = $principal;
     if ($mode === 'customer') {
-        $numerator = asaas_payment_integer_multiply(asaas_payment_integer_add((string) $principal, (string) $fixedTotal), '10000');
+        if ($anticipationFactor > 0) {
+            // G = (P / (1 - a) + F) / (1 - c). The anticipation fee applies after card costs.
+            // Divide twice without rounding either quotient; any remainder means a final cent is needed.
+            $retained = 600000 - $anticipationFactor;
+            $numerator = asaas_payment_integer_multiply(asaas_payment_integer_add(
+                asaas_payment_integer_multiply((string) $principal, '600000'),
+                asaas_payment_integer_multiply((string) $fixedTotal, (string) $retained)
+            ), '10000');
+            [$numerator, $anticipationRemainder] = asaas_card_pricing_divide($numerator, $retained);
+        } else {
+            $numerator = asaas_payment_integer_multiply(asaas_payment_integer_add((string) $principal, (string) $fixedTotal), '10000');
+            $anticipationRemainder = 0;
+        }
         [$gross, $remainder] = asaas_card_pricing_divide($numerator, 10000 - $rate);
-        $charged = asaas_card_pricing_integer($remainder > 0 ? asaas_payment_integer_add($gross, '1') : $gross);
+        $charged = asaas_card_pricing_integer($remainder > 0 || $anticipationRemainder > 0 ? asaas_payment_integer_add($gross, '1') : $gross);
     }
     [$percentageFee, $remainder] = asaas_card_pricing_divide(asaas_payment_integer_multiply((string) $charged, (string) $rate), 10000);
     if ($remainder >= 5000) {
         $percentageFee = asaas_payment_integer_add($percentageFee, '1');
     }
     $estimatedFee = asaas_card_pricing_integer(asaas_payment_integer_add($percentageFee, (string) $fixedTotal));
+    if ($anticipation !== null) {
+        // A fee larger than the balance in absorb mode does not create a negative anticipated value.
+        $netReceivable = max(0, $charged - $estimatedFee);
+        [$anticipationFee, $remainder] = asaas_card_pricing_divide(
+            asaas_payment_integer_multiply((string) $netReceivable, (string) $anticipationFactor), 600000);
+        if ($remainder >= 300000) { $anticipationFee = asaas_payment_integer_add($anticipationFee, '1'); }
+        $anticipation['estimated_fee_cents'] = asaas_card_pricing_integer($anticipationFee);
+        $estimatedFee = asaas_card_pricing_integer(asaas_payment_integer_add((string) $estimatedFee, $anticipationFee));
+    }
     $minimum = $count === 1 ? 500 : asaas_card_pricing_decimal_cents($settings['card_min_installment'], 'Valor mínimo da parcela');
     $amount = asaas_card_pricing_money($charged);
     $payload = ['billingType' => 'CREDIT_CARD', 'discount' => $discount]
@@ -199,7 +283,7 @@ function asaas_card_price($balance, int $count, array $settings, array $discount
         $formatted = str_replace('.', ',', asaas_card_pricing_money($minimum));
         throw new InvalidArgumentException('O valor líquido de cada parcela deve ser de pelo menos R$ ' . $formatted . ', considerando o desconto.', 400);
     }
-    return [
+    $pricing = [
         'version' => 1,
         'principal_cents' => $principal,
         'charged_cents' => $charged,
@@ -211,6 +295,9 @@ function asaas_card_price($balance, int $count, array $settings, array $discount
         'fee_mode' => $mode,
         'minimum_cents' => $minimum,
     ];
+    // Preserve the legacy snapshot and fingerprint exactly when anticipation is not included.
+    if ($anticipation !== null) { $pricing['anticipation'] = $anticipation; }
+    return $pricing;
 }
 
 /** A stable quote fingerprint, compared against a newly computed server-side quote. */
@@ -230,5 +317,24 @@ function asaas_card_pricing_token(array $pricing, string $context): string
         throw new InvalidArgumentException('A simulação do cartão está inválida. Atualize a página de pagamento.');
     }
     $quote['fee_mode'] = $pricing['fee_mode'];
+    if (array_key_exists('anticipation', $pricing)) {
+        $anticipation = $pricing['anticipation'];
+        if (!is_array($anticipation) || !is_string($anticipation['mode'] ?? null)
+            || !in_array($anticipation['mode'], ['manual', 'automatic'], true)) {
+            throw new InvalidArgumentException('A simulação da antecipação está inválida. Atualize a página de pagamento.');
+        }
+        $quote['anticipation'] = ['mode' => $anticipation['mode']];
+        foreach (['monthly_rate_bps', 'first_days', 'estimated_fee_cents'] as $name) {
+            if (!isset($anticipation[$name]) || !is_int($anticipation[$name]) || $anticipation[$name] < 0) {
+                throw new InvalidArgumentException('A simulação da antecipação está inválida. Atualize a página de pagamento.');
+            }
+            $quote['anticipation'][$name] = $anticipation[$name];
+        }
+        asaas_card_pricing_anticipation_factor($anticipation['monthly_rate_bps'], $anticipation['first_days'], $quote['installment_count']);
+        if ($anticipation['estimated_fee_cents'] > $quote['estimated_fee_cents']
+            || $anticipation['estimated_fee_cents'] > $quote['charged_cents']) {
+            throw new InvalidArgumentException('A simulação da antecipação está inválida. Atualize a página de pagamento.');
+        }
+    }
     return hash('sha256', "asaas-card-pricing-v1\0" . json_encode(['pricing' => $quote, 'context' => $context], JSON_THROW_ON_ERROR));
 }

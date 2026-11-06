@@ -2,6 +2,8 @@
 
 ## Não publicado
 
+- Inclui antecipação avulsa/automática na precificação do cartão, com taxas mensais próprias para à vista/parcelado e prazo inicial ajustável. O cliente vê somente os encargos agregados; a opção inicia desabilitada e não solicita antecipação nem altera a conta Asaas.
+- Preserva as condições da tentativa já capturada e exige nova conferência quando modalidade, taxa ou prazo de antecipação mudam antes do pagamento.
 - Corrige o clique em **Pagar agora** para reapresentar uma cobrança existente, inclusive boleto vencido pagável, sem alterar a fatura ou reenviar vencimento/valor ao Asaas. Remove saídas públicas de debug do gateway.
 - Acrescenta parâmetros de taxas e parcelamento em **Cobranças → Cartão de crédito**, com repasse opcional, mínimo por parcela, faixas de taxas e até 21 parcelas para Visa/Mastercard. A empresa absorve o custo por padrão.
 - Confere o preço apresentado antes da captura e distribui somente o principal entre recibos com repasse, preservando centavos, duplicidade e recuperação por webhook/conciliação.

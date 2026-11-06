@@ -90,6 +90,9 @@ cardSettingsTest('valid complete group uses the runtime decimal and integer cont
         'card_min_installment' => ' 12,50 ', 'card_fee_fixed' => ',49',
         'card_fee_percent_1' => '0', 'card_fee_percent_2_6' => '3,4',
         'card_fee_percent_7_12' => '3.99', 'card_fee_percent_13_21' => '4.29',
+        'card_anticipation_mode' => 'manual', 'card_anticipation_first_days' => '030',
+        'card_anticipation_manual_rate_1' => ' 1,25 ', 'card_anticipation_manual_rate_installments' => '1,7',
+        'card_anticipation_automatic_rate_1' => '1.15', 'card_anticipation_automatic_rate_installments' => '1.60',
     ];
     $payload = cardSettingsPayload(cardSettingsFields($values));
     $expected = cardSettingsPayload(cardSettingsFields([
@@ -98,6 +101,9 @@ cardSettingsTest('valid complete group uses the runtime decimal and integer cont
         'card_min_installment' => '12.50', 'card_fee_fixed' => '0.49',
         'card_fee_percent_1' => '0.00', 'card_fee_percent_2_6' => '3.40',
         'card_fee_percent_7_12' => '3.99', 'card_fee_percent_13_21' => '4.29',
+        'card_anticipation_mode' => 'manual', 'card_anticipation_first_days' => 30,
+        'card_anticipation_manual_rate_1' => '1.25', 'card_anticipation_manual_rate_installments' => '1.70',
+        'card_anticipation_automatic_rate_1' => '1.15', 'card_anticipation_automatic_rate_installments' => '1.60',
     ]));
     cardSettingsAssert(asaas_validate_card_settings($payload) === $expected, 'Normalize only this group, preserving secrets and native envelope.');
     cardSettingsAssert($GLOBALS['card_settings_reads'] === [], 'Full settings form does not require extra option reads.');
@@ -148,6 +154,13 @@ $invalid = [
     ['card_fee_fixed', ['unexpected-secret']], ['installmentCount', ['value' => '2']],
     ['card_fee_percent_2_6', (object) ['value' => '3.49']], ['card_fee_percent_7_12', 3.99],
     ['card_fee_percent_13_21', true], ['card_fee_mode', false], ['installmentCount', 1.0],
+    ['card_anticipation_mode', 'unexpected-secret'], ['card_anticipation_mode', ''], ['card_anticipation_mode', true],
+    ['card_anticipation_first_days', '-1'], ['card_anticipation_first_days', '366'], ['card_anticipation_first_days', '1.5'],
+    ['card_anticipation_first_days', '1e1'], ['card_anticipation_first_days', 30.0], ['card_anticipation_first_days', null],
+    ['card_anticipation_manual_rate_1', '99.01'], ['card_anticipation_manual_rate_installments', '-0.01'],
+    ['card_anticipation_automatic_rate_1', '1.155'], ['card_anticipation_automatic_rate_installments', '1e1'],
+    ['card_anticipation_manual_rate_1', 1.25], ['card_anticipation_manual_rate_installments', ['unexpected-secret']],
+    ['card_anticipation_automatic_rate_1', false], ['card_anticipation_automatic_rate_installments', ''],
 ];
 foreach ($invalid as $index => [$field, $value]) {
     cardSettingsTest('invalid card group remains unchanged ' . $index . ' (' . $field . ')', static function () use ($field, $value): void {
@@ -186,11 +199,83 @@ cardSettingsTest('invalid company does not discard other card groups or credenti
     cardSettingsSafeAlert();
 });
 
+cardSettingsTest('anticipation remains opt-in for existing installations', static function (): void {
+    $defaults = asaas_card_pricing_defaults();
+    cardSettingsAssert($defaults['card_anticipation_mode'] === 'none', 'No anticipation surcharge is enabled by an upgrade.');
+    $payload = cardSettingsPayload(cardSettingsFields(['card_fee_mode' => 'customer']));
+    cardSettingsAssert(asaas_validate_card_settings($payload) === $payload, 'Existing card configuration saves without inserting or enabling anticipation.');
+    cardSettingsAssert($GLOBALS['card_settings_alerts'] === [], 'Absent new options must retain compatible defaults.');
+});
+
+cardSettingsTest('all anticipation modes and monthly zero rates can be saved independently', static function (): void {
+    foreach (['none', 'manual', 'automatic'] as $mode) {
+        $values = [
+            'card_anticipation_mode' => $mode, 'card_anticipation_first_days' => '0',
+            'card_anticipation_manual_rate_1' => '0', 'card_anticipation_manual_rate_installments' => '0,00',
+            'card_anticipation_automatic_rate_1' => '0.00', 'card_anticipation_automatic_rate_installments' => 0,
+        ];
+        $expected = $values;
+        $expected['card_anticipation_first_days'] = 0;
+        foreach (array_keys($values) as $field) {
+            if (str_contains($field, '_rate_')) { $expected[$field] = '0.00'; }
+        }
+        cardSettingsAssert(asaas_validate_card_settings(cardSettingsPayload(cardSettingsFields($values)))
+            === cardSettingsPayload(cardSettingsFields($expected)), 'Normalize anticipation values without inventing other settings.');
+    }
+    cardSettingsAssert($GLOBALS['card_settings_alerts'] === [], 'The three explicit modes must be accepted.');
+});
+
+cardSettingsTest('anticipation day boundaries are inclusive', static function (): void {
+    foreach ([0, 365] as $days) {
+        $payload = cardSettingsPayload(cardSettingsFields(['card_anticipation_first_days' => (string) $days]));
+        cardSettingsAssert(asaas_validate_card_settings($payload)
+            === cardSettingsPayload(cardSettingsFields(['card_anticipation_first_days' => $days])), 'The configured day boundary must remain exact.');
+    }
+    cardSettingsAssert($GLOBALS['card_settings_alerts'] === [], 'The two day boundaries must not alert.');
+});
+
+cardSettingsTest('partial anticipation switch validates the stored monthly rate in the same company', static function (): void {
+    $GLOBALS['card_settings_options'] = cardSettingsFields(['card_anticipation_manual_rate_1' => '100'], '_company_7');
+    $payload = cardSettingsPayload(cardSettingsFields(['card_anticipation_mode' => 'automatic'])
+        + cardSettingsFields(['card_anticipation_mode' => 'manual', 'card_fee_mode' => 'customer'], '_company_7')
+        + cardSettingsFields(['card_anticipation_mode' => 'automatic', 'card_anticipation_automatic_rate_1' => '1,05'], '_company_9')
+        + ['paymentmethod_asaas_api_key_company_7' => 'production-secret-fixture']);
+    $expected = cardSettingsPayload(cardSettingsFields(['card_anticipation_mode' => 'automatic'])
+        + cardSettingsFields(['card_anticipation_mode' => 'automatic', 'card_anticipation_automatic_rate_1' => '1.05'], '_company_9')
+        + ['paymentmethod_asaas_api_key_company_7' => 'production-secret-fixture']);
+    cardSettingsAssert(asaas_validate_card_settings($payload) === $expected, 'Reject the affected company only and retain all other fields.');
+    cardSettingsAssert(in_array('paymentmethod_asaas_card_anticipation_manual_rate_1_company_7', $GLOBALS['card_settings_reads'], true), 'Load the rate from the company that requested the mode switch.');
+    cardSettingsSafeAlert();
+});
+
+cardSettingsTest('an unviable anticipation term preserves the complete submitted card group', static function (): void {
+    $values = asaas_card_pricing_defaults();
+    $values['installmentCount'] = 10;
+    $values['card_fee_mode'] = 'customer';
+    $values['card_anticipation_mode'] = 'manual';
+    $values['card_anticipation_manual_rate_installments'] = '10.00';
+    cardSettingsAssert(asaas_validate_card_settings(cardSettingsPayload(cardSettingsFields($values))) === cardSettingsPayload(),
+        'A monthly rate reaching 100% on the last installment must not be saved with a new pass-through mode.');
+    cardSettingsSafeAlert();
+});
+
+cardSettingsTest('increasing installment count cannot bypass the stored anticipation term', static function (): void {
+    $GLOBALS['card_settings_options'] = cardSettingsFields([
+        'installmentCount' => '9', 'card_anticipation_mode' => 'automatic',
+        'card_anticipation_automatic_rate_installments' => '10.00', 'card_anticipation_first_days' => '30',
+    ]);
+    $payload = cardSettingsPayload(cardSettingsFields(['installmentCount' => '10']));
+    cardSettingsAssert(asaas_validate_card_settings($payload) === cardSettingsPayload(), 'Validate the new maximum against the already saved anticipation rate and term.');
+    cardSettingsSafeAlert();
+});
+
 cardSettingsTest('unsupported lookalike names cannot alter the canonical configuration', static function (): void {
     $payload = cardSettingsPayload([
         'paymentmethod_asaas_card_fee_percent_1_extra' => 'unexpected-secret',
         'paymentmethod_asaas_installmentCount_company_0' => '0',
         'paymentmethod_asaas_card_fee_mode_company_7_extra' => 'unexpected-secret',
+        'paymentmethod_asaas_card_anticipation_mode_company_0' => 'unexpected-secret',
+        'paymentmethod_asaas_card_anticipation_manual_rate_1_extra' => 'unexpected-secret',
     ]);
     cardSettingsAssert(asaas_validate_card_settings($payload) === $payload, 'Other fields are owned by their original settings path.');
     cardSettingsAssert($GLOBALS['card_settings_reads'] === [] && $GLOBALS['card_settings_alerts'] === [], 'No card group was submitted.');
