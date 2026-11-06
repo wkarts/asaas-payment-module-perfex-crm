@@ -1,0 +1,161 @@
+name: Resolve Asaas SDK 0.2.64
+
+on:
+  push:
+    branches:
+      - build/resolve-asaas-sdk-0264
+    paths:
+      - .github/workflows/resolve-asaas-sdk-0264.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: resolve-asaas-sdk-0264
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact resolver branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: PHP and Composer
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer
+          coverage: none
+          extensions: mbstring, pdo_sqlite, sqlite3, dom, xml, xmlwriter, xmlreader, ctype, tokenizer, curl, iconv, fileinfo, simplexml
+
+      - name: Resolve only the SDK using its public source repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp composer.lock "$RUNNER_TEMP/asaas-original.lock"
+          composer config repositories.asaas-sdk '{"type":"vcs","url":"https://github.com/wkarts/asaas-sdk-argws","only":["argws/asaas-sdk-php"]}'
+          composer require 'argws/asaas-sdk-php:^0.2.64' --no-update --no-interaction --no-scripts
+          composer update 'argws/asaas-sdk-php:0.2.64' --with-dependencies --minimal-changes --no-interaction --prefer-dist --no-scripts
+          composer validate --strict --no-check-publish
+          python3 - <<'PY'
+          import json, os, pathlib
+          before = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'asaas-original.lock').read_text())
+          after = json.loads(pathlib.Path('composer.lock').read_text())
+          def identities(lock):
+              return {p['name']: (p['version'], p.get('source', {}).get('reference'), p.get('dist', {}).get('reference'))
+                      for p in lock.get('packages', []) + lock.get('packages-dev', [])}
+          old, new = identities(before), identities(after)
+          sdk = 'argws/asaas-sdk-php'
+          assert new[sdk][0].lstrip('v') == '0.2.64', new[sdk]
+          assert {k: v for k, v in old.items() if k != sdk} == {k: v for k, v in new.items() if k != sdk}, 'Unrelated dependencies changed'
+          print('Confirmed SDK 0.2.64; all other production/development versions and source references preserved.')
+          PY
+
+      - name: Package resolved dependencies and portable test runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, shutil, subprocess
+          bundle = pathlib.Path(os.environ['RUNNER_TEMP']) / 'asaas-sdk-0264-bundle'
+          bundle.mkdir()
+          baseline_commit = '999e8e4cba5142259c20e4d65e6d79f2406928b7'
+          subprocess.run(['git', 'archive', '--format=tar.gz', '--output', str(bundle / 'baseline-repository.tar.gz'), baseline_commit], check=True)
+          shutil.copy2('composer.json', bundle / 'composer.json')
+          shutil.copy2('composer.lock', bundle / 'composer.lock')
+          shutil.copytree('vendor', bundle / 'vendor', symlinks=False)
+          runtime = bundle / 'runtime'
+          for name in ['bin', 'lib', 'extensions']:
+              (runtime / name).mkdir(parents=True, exist_ok=True)
+          php = pathlib.Path(shutil.which('php')).resolve()
+          composer = pathlib.Path(shutil.which('composer')).resolve()
+          shutil.copy2(php, runtime / 'bin' / 'php.bin')
+          shutil.copy2(composer, runtime / 'composer.phar')
+          extension_dir = pathlib.Path(subprocess.check_output([str(php), '-r', 'echo ini_get("extension_dir");'], text=True).strip())
+          requested = ['pdo', 'pdo_sqlite', 'sqlite3', 'ctype', 'tokenizer', 'fileinfo', 'iconv', 'mbstring', 'dom', 'xml', 'xmlwriter', 'xmlreader', 'simplexml', 'curl']
+          extensions = []
+          elf_inputs = [php]
+          for name in requested:
+              extension = extension_dir / (name + '.so')
+              if extension.is_file():
+                  shutil.copy2(extension, runtime / 'extensions' / extension.name)
+                  extensions.append(name)
+                  elf_inputs.append(extension)
+              else:
+                  built_in = subprocess.check_output([str(php), '-n', '-r', 'echo extension_loaded(' + json.dumps(name) + ') ? "yes" : "no";'], text=True)
+                  assert built_in == 'yes', 'Required PHP extension unavailable: ' + name
+          # Ubuntu 24.04 provides the glibc loader/ABI. Keep that host pair intact;
+          # bundle the remaining public libraries used by PHP and its extensions.
+          host_glibc = {'libc.so.6', 'libm.so.6', 'libdl.so.2', 'libpthread.so.0', 'librt.so.1', 'libutil.so.1', 'libresolv.so.2', 'ld-linux-x86-64.so.2'}
+          inspected = set()
+          while elf_inputs:
+              binary = elf_inputs.pop()
+              real = binary.resolve()
+              if str(real) in inspected:
+                  continue
+              inspected.add(str(real))
+              result = subprocess.run(['ldd', str(real)], text=True, capture_output=True, check=True)
+              assert 'not found' not in result.stdout, result.stdout
+              for library in re.findall(r'(?:=>\s*)?(/[^\s()]+)', result.stdout):
+                  source = pathlib.Path(library)
+                  if source.name in host_glibc:
+                      continue
+                  destination = runtime / 'lib' / source.name
+                  if destination.exists():
+                      assert destination.read_bytes() == source.read_bytes(), 'Conflicting library name: ' + source.name
+                  else:
+                      shutil.copy2(source, destination)
+                  elf_inputs.append(source)
+          ini = ['[PHP]', 'memory_limit=512M', 'date.timezone=UTC', 'display_errors=1', 'error_reporting=E_ALL', 'serialize_precision=-1',
+                 'extension_dir="${ASAAS_PHP_RUNTIME_ROOT}/extensions"',
+                 'openssl.cafile="${ASAAS_PHP_CA_FILE}"', 'curl.cainfo="${ASAAS_PHP_CA_FILE}"']
+          ini.extend('extension=' + name + '.so' for name in extensions)
+          (runtime / 'php.ini').write_text('\n'.join(ini) + '\n')
+          (runtime / 'php').write_text('''#!/usr/bin/env bash
+          set -euo pipefail
+          asaasRuntimeRoot="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+          export ASAAS_PHP_RUNTIME_ROOT="$asaasRuntimeRoot"
+          export ASAAS_PHP_CA_FILE="${SSL_CERT_FILE:-${CODEX_PROXY_CERT:-/etc/ssl/certs/ca-certificates.crt}}"
+          export PHPRC="$asaasRuntimeRoot/php.ini"
+          export PHP_INI_SCAN_DIR=""
+          export LD_LIBRARY_PATH="$asaasRuntimeRoot/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          exec "$asaasRuntimeRoot/bin/php.bin" "$@"
+          ''')
+          (runtime / 'composer').write_text('''#!/usr/bin/env bash
+          set -euo pipefail
+          asaasRuntimeRoot="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+          exec "$asaasRuntimeRoot/php" "$asaasRuntimeRoot/composer.phar" "$@"
+          ''')
+          for executable in [runtime / 'php', runtime / 'composer', runtime / 'bin' / 'php.bin']:
+              executable.chmod(0o755)
+          version = subprocess.check_output([str(runtime / 'php'), '-r', 'echo PHP_VERSION;'], text=True)
+          loaded = json.loads(subprocess.check_output([str(runtime / 'php'), '-r', 'echo json_encode(get_loaded_extensions());'], text=True))
+          normalized = {name.lower() for name in loaded}
+          assert all(name.lower() in normalized for name in requested), loaded
+          subprocess.run([str(runtime / 'php'), '-r', 'if (!extension_loaded("mbstring") || !extension_loaded("pdo_sqlite")) { exit(1); } $p = new PDO("sqlite::memory:"); $p->exec("CREATE TABLE probe (id INTEGER)"); $p->exec("INSERT INTO probe VALUES (1)"); if ((int) $p->query("SELECT COUNT(*) FROM probe")->fetchColumn() !== 1) { exit(2); }'], check=True)
+          subprocess.run([str(runtime / 'composer'), '--version', '--no-ansi'], check=True)
+          subprocess.run([str(runtime / 'php'), 'vendor/bin/phpunit'], check=True)
+          metadata = {'php_version': version, 'target': 'Ubuntu 24.04 x86_64/glibc 2.39', 'extensions': loaded,
+                      'sdk': '0.2.64', 'source_commit': os.environ['GITHUB_SHA'], 'baseline_commit': baseline_commit, 'public_libraries': sorted(p.name for p in (runtime / 'lib').iterdir())}
+          (bundle / 'bundle-info.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          (bundle / 'README-runtime.txt').write_text('Public test runtime for Ubuntu 24.04 x86_64. Run runtime/php or runtime/composer.\nThe wrapper preserves network proxy variables and uses the host CA configuration. No credentials or environment dumps are included.\nZIP materializers can lose executable flags; restore mode 755 on runtime/php, runtime/composer and runtime/bin/php.bin.\ncomposer.json and composer.lock were generated by Composer; only the SDK package changed. vendor includes development dependencies for local testing.\nbaseline-repository.tar.gz contains only Git-tracked public files at ' + baseline_commit + ', including binary assets. Extract into a separate directory; do not overwrite ongoing changes. No .git directory, runner credentials, or untracked files are archived.\n')
+          hashes = []
+          for path in sorted(p for p in bundle.rglob('*') if p.is_file()):
+              hashes.append(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.relative_to(bundle).as_posix())
+          (bundle / 'SHA256SUMS').write_text('\n'.join(hashes) + '\n')
+          print('Bundle prepared:', version, 'PHP; runtime SQLite/mbstring and PHPUnit verified; no repository write performed.')
+          PY
+
+      - name: Upload resolver bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: asaas-sdk-0264-composer-vendor-php83
+          path: ${{ runner.temp }}/asaas-sdk-0264-bundle
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
