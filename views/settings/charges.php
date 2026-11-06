@@ -31,5 +31,9 @@
             <h4 id="asaas-card-rates-title">Taxa percentual por faixa de parcelas</h4>
             <div class="asaas-card-settings-grid" data-asaas-card-section="rates"></div>
         </section>
+        <section class="asaas-card-settings-section" aria-labelledby="asaas-card-anticipation-title">
+            <h4 id="asaas-card-anticipation-title">Antecipação de recebíveis</h4>
+            <div class="asaas-card-settings-grid" data-asaas-card-section="anticipation"></div>
+        </section>
     </div>
 </div>

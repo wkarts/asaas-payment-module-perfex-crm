@@ -31,7 +31,7 @@ As novas opções são aditivas. **Absorver as taxas** é o padrão: o cliente c
 
 Os valores iniciais de referência são **2,99%, 3,49%, 3,99%, 4,29% e R$ 0,49**, conforme o exemplo fornecido para esta implementação. Confirme e ajuste as condições da conta antes de habilitar o repasse. A escolha inicial da taxa fixa é uma vez por cobrança; se o contrato cobra o fixo em cada parcela, selecione essa modalidade. A configuração não consulta nem promete automaticamente a tarifa vigente na conta.
 
-Para repassar, o cálculo nominal é:
+Para repassar sem antecipação, o cálculo nominal é:
 
 ```text
 total no cartão = arredondar para cima em centavos((saldo da fatura + fixo total) / (1 - percentual / 100))
@@ -47,6 +47,56 @@ O repasse **não altera `invoice.total`, itens, impostos, vencimento, boleto ou 
 Configurações posteriores não recalculam uma tentativa já capturada. Uma distribuição incompleta, um valor divergente ou um saldo alterado bloqueia a baixa para conferência. Na primeira entrega de um webhook após captura incerta, se faltar a distribuição, o módulo tenta recuperá-la por consultas ao Asaas antes de iniciar a transação do recebimento. Uma falha retorna erro para nova entrega; não confirma processamento sem validar a baixa.
 
 O recebimento de cartão de débito direto não foi acrescentado ao formulário: a API documenta o débito pelo checkout hospedado do Asaas. Os parâmetros acima são de **crédito**.
+
+### Antecipação incluída nos encargos do cartão
+
+Em **Cobranças → Cartão de crédito → Antecipação de recebíveis**, escolha a modalidade usada na precificação. O padrão é **Não incluir**, que conserva os cálculos e as ofertas anteriores. **Avulsa** e **Automática** selecionam conjuntos independentes de taxas; a quantidade de parcelas determina se será usada a taxa à vista ou parcelada.
+
+| Parâmetro | Valor inicial | Uso |
+|---|---|---|
+| `card_anticipation_mode` | `none` | `none`: não incluir; `manual`: avulsa; `automatic`: automática. Escolha do cálculo local. |
+| `card_anticipation_manual_rate_1` | 1,25% ao mês | Avulsa em uma parcela. |
+| `card_anticipation_manual_rate_installments` | 1,70% ao mês | Avulsa em duas ou mais parcelas. |
+| `card_anticipation_automatic_rate_1` | 1,15% ao mês | Automática em uma parcela. |
+| `card_anticipation_automatic_rate_installments` | 1,60% ao mês | Automática em duas ou mais parcelas. |
+| `card_anticipation_first_days` | 30 dias | Prazo antecipado estimado da primeira parcela, de 0 a 365 dias; as seguintes acrescentam 30 dias cada. |
+
+As quatro taxas são referências fornecidas para esta implementação, editáveis conforme o contrato da conta. Aceitam ponto ou vírgula e até duas casas decimais. O prazo representa **quantos dias o recebimento será adiantado**, não o prazo de entrega do dinheiro pelo Asaas. Ajuste-o à operação planejada. Por exemplo, com 30 dias iniciais, três parcelas usam prazos estimados de 30, 60 e 90 dias.
+
+O cálculo é uma **estimativa comercial linear**, proporcional ao prazo médio das parcelas, sobre o líquido estimado após as tarifas de cartão. Não aplica uma taxa mensal única a todo parcelamento nem soma os dois percentuais como se incidissem sobre a mesma base. A simulação contratual depende das datas reais, da elegibilidade, de descontos, dos arredondamentos e das condições da conta; não é reproduzida nem solicitada por esta configuração.
+
+```text
+dias médios = dias da primeira parcela + 30 × (quantidade de parcelas - 1) / 2
+antecipação proporcional = (taxa mensal / 100) × dias médios / 30
+total no cartão = teto em centavos((saldo / (1 - antecipação proporcional) + fixo total) / (1 - taxa do cartão / 100))
+encargos do cartão = total no cartão - saldo
+```
+
+O servidor usa inteiros/aritmética decimal exata e arredonda o total para cima ao centavo; as estimativas internas de custo são arredondadas separadamente. Taxa e prazo que consumiriam 100% ou mais do recebível de uma parcela são rejeitados. As opções de **absorver taxas** e **parcelas sem repasse** continuam aplicáveis ao custo completo: nesses casos, habilitar a estimativa de antecipação não aumenta o valor pago pelo cliente.
+
+Exemplo nominal com saldo de R$ 100,00, fixo de R$ 0,49 uma vez por cobrança e 30 dias iniciais, antes de descontos adicionais do Asaas:
+
+| Modalidade | Parcelas | Taxa de cartão | Taxa mensal de antecipação | Total do cartão | Encargos totais |
+|---|---:|---:|---:|---:|---:|
+| Avulsa | 1 | 2,99% | 1,25% | R$ 104,90 | R$ 4,90 |
+| Automática | 1 | 2,99% | 1,15% | R$ 104,79 | R$ 4,79 |
+| Avulsa | 3 | 3,49% | 1,70% | R$ 107,78 | R$ 7,78 |
+| Automática | 3 | 3,49% | 1,60% | R$ 107,55 | R$ 7,55 |
+
+**Apresentação ao pagador:** o checkout e a nota do recibo mantêm apenas os encargos agregados do cartão, sem discriminar a antecipação. Modalidade, percentuais e prazo não são enviados como campos extras da oferta pública. O total e o valor das parcelas continuam visíveis antes de confirmar. Internamente, a tentativa com repasse guarda a composição financeira necessária à conferência. A confirmação da oferta inclui a modalidade, a taxa aplicável e o prazo: mudanças antes da captura exigem atualizar a página; mudanças depois da captura não recalculam aquela tentativa nem suas baixas.
+
+**Operação no Asaas:** salvar esses parâmetros não solicita antecipação, não ativa/desativa a antecipação automática e não altera taxas da conta. Nenhuma chamada adicional à API é feita para calcular a oferta. A operação real pode ser configurada/solicitada no Asaas ou por uma integração específica usando os endpoints já suportados pela SDK:
+
+| Operação real | Endpoint Asaas |
+|---|---|
+| Consultar a configuração automática | `GET /v3/anticipations/configurations` |
+| Ativar/desativar automática para a conta | `PUT /v3/anticipations/configurations` com `creditCardAutomaticEnabled` |
+| Simular uma cobrança/parcelamento já existente | `POST /v3/anticipations/simulate` com `payment` ou `installment` |
+| Solicitar uma antecipação avulsa | `POST /v3/anticipations` com `payment` ou `installment` e documentação quando exigida |
+
+A configuração automática é da **conta**, não uma opção por venda. A execução está sujeita à análise, ao limite e à elegibilidade no Asaas. O simulador da API exige uma cobrança ou parcelamento existente e não está disponível em sandbox. A SDK distribuída já contém esses métodos; esta alteração não muda sua versão nem dispara essas operações. Nenhuma nova tabela, migration de dados, tarefa cron ou tratamento de webhook de antecipação é necessário para esta precificação.
+
+Para conferir a configuração, mantenha inicialmente **Não incluir**, confirme um valor já conhecido, selecione a modalidade desejada e revise as quatro taxas e o prazo. Com repasse ativo, verifique o total à vista e parcelado; com absorção/isenção, confirme que o cliente continua pagando o saldo. Ajustar a modalidade no módulo deve acompanhar a forma de operação escolhida na conta Asaas. Para voltar ao cálculo anterior em novas ofertas, escolha **Não incluir**; tentativas já capturadas conservam sua composição original.
 
 ## Privacidade dos dados do cartão
 
@@ -131,6 +181,10 @@ Para rollback do código, restaure a pasta anterior completa, inclusive o vendor
 - [Guia de cobranças por cartão](https://docs.asaas.com/docs/cobrancas-via-cartao-de-credito)
 - [Parcelamento e limites por bandeira](https://docs.asaas.com/docs/criar-uma-cobranca-parcelada)
 - [Consultar as taxas da conta](https://docs.asaas.com/reference/recuperar-taxas-da-conta)
+- [Antecipação: base líquida e prazo por parcela](https://www.asaas.com/antecipacao-de-recebiveis)
+- [Configurar antecipação automática na conta](https://docs.asaas.com/reference/atualizar-status-da-antecipacao-automatica)
+- [Simular antecipação pela API](https://docs.asaas.com/reference/simular-antecipa%C3%A7%C3%A3o)
+- [Solicitar antecipação pela API](https://docs.asaas.com/reference/solicitar-antecipacao)
 - [SDK 0.2.64](https://github.com/wkarts/asaas-sdk-argws/releases/tag/v0.2.64)
 - [Atributo autocomplete — MDN](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Attributes/autocomplete)
 - [Cache-Control — MDN](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control)

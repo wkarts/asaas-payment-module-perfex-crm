@@ -26,7 +26,10 @@
         var cardSettings = {
             installmentCount: 'installments', card_min_installment: 'installments', card_free_installments: 'installments',
             card_fee_mode: 'fees', card_fee_fixed_mode: 'fees', card_fee_fixed: 'fees',
-            card_fee_percent_1: 'rates', card_fee_percent_2_6: 'rates', card_fee_percent_7_12: 'rates', card_fee_percent_13_21: 'rates'
+            card_fee_percent_1: 'rates', card_fee_percent_2_6: 'rates', card_fee_percent_7_12: 'rates', card_fee_percent_13_21: 'rates',
+            card_anticipation_mode: 'anticipation', card_anticipation_first_days: 'anticipation',
+            card_anticipation_manual_rate_1: 'anticipation', card_anticipation_manual_rate_installments: 'anticipation',
+            card_anticipation_automatic_rate_1: 'anticipation', card_anticipation_automatic_rate_installments: 'anticipation'
         };
         Object.keys(cardSettings).forEach(function (name) { groups[name] = 'charges'; });
 
@@ -172,7 +175,7 @@
             cardSections[section.getAttribute('data-asaas-card-section')] = section;
         });
         var chargeLayout = chargeTabs.length === 2 && chargePanes.general && chargePanes.card
-            && cardSections.installments && cardSections.fees && cardSections.rates;
+            && cardSections.installments && cardSections.fees && cardSections.rates && cardSections.anticipation;
 
         // Move the real controls and their following help blocks, never duplicate a form field.
         var roots = new Map();
@@ -222,7 +225,8 @@
         var enumSelectors = [];
         [
             ['card_fee_mode', [['absorb', 'Absorver as taxas'], ['customer', 'Repassar as taxas ao cliente']]],
-            ['card_fee_fixed_mode', [['charge', 'Uma vez por cobrança'], ['installment', 'Em cada parcela']]]
+            ['card_fee_fixed_mode', [['charge', 'Uma vez por cobrança'], ['installment', 'Em cada parcela']]],
+            ['card_anticipation_mode', [['none', 'Não incluir antecipação'], ['manual', 'Avulsa'], ['automatic', 'Automática']]]
         ].forEach(function (definition) {
             var input = panel.querySelector('input[name="' + prefix + definition[0] + ']"]');
             if (!input || !input.parentElement) { return; }

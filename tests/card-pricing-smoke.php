@@ -226,6 +226,235 @@ $tests['fingerprint estável identifica mudança de cotação ou contexto'] = st
     pricingReject(static fn () => asaas_card_pricing_token(array_replace($pricing, ['charged_cents' => '10000']), $context), 'simulação');
 };
 
+$tests['antecipação desabilitada preserva snapshot e fingerprint anteriores'] = static function (): void {
+    $expected = ['version' => 1, 'principal_cents' => 10000, 'charged_cents' => 10359, 'fee_cents' => 359,
+        'installment_count' => 1, 'rate_bps' => 299, 'fixed_total_cents' => 49, 'estimated_fee_cents' => 359,
+        'fee_mode' => 'customer', 'minimum_cents' => 500];
+    $settings = pricingSettings(['card_fee_mode' => 'customer']);
+    foreach (['card_anticipation_manual_rate_1', 'card_anticipation_manual_rate_installments',
+        'card_anticipation_automatic_rate_1', 'card_anticipation_automatic_rate_installments'] as $field) {
+        $settings[$field] = '99.00';
+    }
+    $settings['card_anticipation_first_days'] = 365;
+    pricingEqual(asaas_card_price('100.00', 1, $settings), $expected, 'Taxas não selecionadas não podem alterar o pagamento.');
+    pricingEqual(asaas_card_pricing_token($expected, 'legacy-anticipation-disabled'),
+        '6f6843163566e575e30ddc4e630c953a84823c11dc1b2cac1128bedf304b4d52',
+        'As páginas e tentativas legadas mantêm o mesmo fingerprint sem antecipação.');
+    pricingEqual(asaas_card_pricing_defaults()['card_anticipation_mode'], 'none', 'Não incluir custo de antecipação por padrão.');
+};
+
+$tests['antecipação normaliza quatro taxas independentes e prazo sem perder zeros'] = static function (): void {
+    $settings = pricingSettings(['card_anticipation_mode' => 'manual',
+        'card_anticipation_manual_rate_1' => ' 1,25 ', 'card_anticipation_manual_rate_installments' => '1,7',
+        'card_anticipation_automatic_rate_1' => 0, 'card_anticipation_automatic_rate_installments' => ',01',
+        'card_anticipation_first_days' => '030']);
+    pricingEqual($settings['card_anticipation_manual_rate_1'], '1.25', 'Taxa mensal avulsa à vista deve aceitar vírgula.');
+    pricingEqual($settings['card_anticipation_manual_rate_installments'], '1.70', 'Taxa parcelada não usa a taxa à vista.');
+    pricingEqual($settings['card_anticipation_automatic_rate_1'], '0.00', 'Zero não pode voltar ao valor de referência.');
+    pricingEqual($settings['card_anticipation_automatic_rate_installments'], '0.01', 'Taxas fracionárias devem manter centésimos percentuais.');
+    pricingEqual($settings['card_anticipation_first_days'], 30, 'Prazo válido deve ser inteiro canônico.');
+};
+
+// Independent decimal-rational reference vectors, including both monthly rates and parcel bands.
+foreach ([['manual', '100.00', 1, 10490, 490, 127, 490, 125],
+    ['automatic', '100.00', 1, 10479, 479, 116, 478, 115],
+    ['manual', '1000.00', 2, 106379, 6379, 2617, 6379, 170],
+    ['manual', '1000.00', 3, 107314, 7314, 3520, 7314, 170],
+    ['manual', '1000.00', 6, 110223, 10223, 6326, 10222, 170],
+    ['manual', '1000.00', 12, 117146, 17146, 12423, 17146, 170],
+    ['manual', '1000.00', 21, 128566, 28566, 23001, 28565, 170],
+    ['automatic', '1000.00', 2, 106215, 6215, 2459, 6215, 160],
+    ['automatic', '1000.00', 3, 107093, 7093, 3306, 7093, 160],
+    ['automatic', '1000.00', 12, 116297, 16297, 11607, 16296, 160],
+    ['automatic', '1000.00', 21, 126851, 26851, 21359, 26850, 160]] as [$mode, $balance, $count, $gross, $fee, $anticipationFee, $estimatedFee, $monthlyRate]) {
+    $tests['antecipação ' . $mode . ' em ' . $count . ' parcelas soma somente aos encargos'] = static function () use ($mode, $balance, $count, $gross, $fee, $anticipationFee, $estimatedFee, $monthlyRate): void {
+        $settings = pricingSettings(['card_fee_mode' => 'customer', 'card_anticipation_mode' => $mode]);
+        $price = asaas_card_price($balance, $count, $settings);
+        pricingEqual($price['charged_cents'], $gross, 'Repasse deve cobrir taxa do cartão e antecipação sobre o líquido estimado.');
+        pricingEqual($price['fee_cents'], $fee, 'Acréscimo total deve ficar em um único valor de encargos.');
+        pricingEqual($price['estimated_fee_cents'], $estimatedFee, 'Estimativa interna deve incluir ambos os custos.');
+        pricingEqual($price['anticipation'], ['mode' => $mode, 'monthly_rate_bps' => $monthlyRate,
+            'first_days' => 30, 'estimated_fee_cents' => $anticipationFee], 'Snapshot mantém somente a política aplicada e seu custo estimado.');
+        pricingCheck($gross - $estimatedFee >= $price['principal_cents'], 'Estimativa de líquido deve cobrir o principal sem incorporá-lo aos encargos.');
+    };
+}
+
+$tests['antecipação mensal considera prazo da primeira parcela e os meses seguintes'] = static function (): void {
+    $settings = pricingSettings(['card_fee_mode' => 'customer', 'card_anticipation_mode' => 'manual', 'card_anticipation_first_days' => 15]);
+    pricingEqual(asaas_card_price('100.00', 1, $settings)['charged_cents'], 10424, 'Quinze dias à vista equivalem a meio mês de antecipação.');
+    pricingEqual(asaas_card_price('1000.00', 2, $settings)['charged_cents'], 105459, 'Parcelas em 15 e 45 dias têm prazo médio de 30 dias.');
+    $settings['card_anticipation_first_days'] = 0;
+    pricingEqual(asaas_card_price('100.00', 1, $settings)['charged_cents'], 10359, 'À vista sem dias antecipados mantém só a taxa de cartão.');
+    pricingEqual(asaas_card_price('100.00', 1, $settings)['anticipation']['estimated_fee_cents'], 0, 'Prazo zero à vista não estima custo de antecipação.');
+    pricingEqual(asaas_card_price('1000.00', 3, $settings)['charged_cents'], 105459, 'Prazo zero inicial não elimina os meses futuros do parcelamento.');
+    $settings['card_anticipation_first_days'] = 365;
+    pricingEqual(asaas_card_price('1000.00', 21, $settings)['charged_cents'], 167715, 'O prazo administrativo máximo deve ser aplicado sem truncamento.');
+};
+
+$tests['antecipação não arredonda antecipadamente taxa diária nem meio mês do parcelamento'] = static function (): void {
+    $settings = pricingSettings(['card_fee_mode' => 'customer', 'card_anticipation_mode' => 'manual',
+        'card_anticipation_manual_rate_installments' => '0.01', 'card_anticipation_first_days' => 1]);
+    $price = asaas_card_price('1000.00', 2, $settings);
+    pricingEqual($price['charged_cents'], 103673, 'Manter 16/30 de 0,01% em vez de arredondar para 0% ou 0,01%.');
+    pricingEqual($price['anticipation']['estimated_fee_cents'], 5, 'Estimativa em centavos arredonda somente no fim.');
+    $settings['card_anticipation_manual_rate_1'] = '1.25';
+    pricingEqual(asaas_card_price('1000.00', 1, $settings)['charged_cents'], 103176, 'Um dia de antecipação deve usar 1/30 da taxa mensal.');
+};
+
+$tests['estimativa de antecipação aplica half-up ao líquido depois da taxa do cartão'] = static function (): void {
+    $settings = pricingSettings(['card_anticipation_mode' => 'manual', 'card_fee_percent_1' => '0',
+        'card_fee_fixed' => '0', 'card_anticipation_manual_rate_1' => '0.01']);
+    $below = asaas_card_price('49.99', 1, $settings);
+    $tie = asaas_card_price('50.00', 1, $settings);
+    pricingEqual($below['anticipation']['estimated_fee_cents'], 0, 'Abaixo de meio centavo deve arredondar para zero.');
+    pricingEqual($tie['anticipation']['estimated_fee_cents'], 1, 'Exatos meio centavo devem arredondar para cima.');
+    $settings['card_fee_fixed'] = '0.01';
+    pricingEqual(asaas_card_price('50.00', 1, $settings)['anticipation']['estimated_fee_cents'], 0,
+        'Base de antecipação deve descontar a taxa de transação, não usar o bruto.');
+    $settings['card_fee_fixed'] = '100.00';
+    $price = asaas_card_price('50.00', 1, $settings);
+    pricingEqual($price['anticipation']['estimated_fee_cents'], 0, 'Recebível líquido não positivo não gera custo de antecipação negativo.');
+    pricingEqual($price['charged_cents'], 5000, 'Custo absorvido maior que o saldo não aumenta o pagamento.');
+};
+
+$tests['antecipação respeita taxa fixa por parcela e não antecipa a própria taxa de cartão'] = static function (): void {
+    $settings = pricingSettings(['card_fee_mode' => 'customer', 'card_fee_fixed_mode' => 'installment', 'card_anticipation_mode' => 'manual']);
+    $price = asaas_card_price('1000.00', 3, $settings);
+    pricingEqual($price['fixed_total_cents'], 147, 'As três taxas fixas continuam incidindo conforme a configuração existente.');
+    pricingEqual($price['charged_cents'], 107416, 'Gross-up deve somar o fixo depois de recuperar o valor líquido antecipado.');
+    pricingEqual($price['anticipation']['estimated_fee_cents'], 3520, 'Taxa de antecipação incide sobre o recebível já sem taxas de cartão.');
+};
+
+$tests['absorção e parcelas sem repasse também absorvem o custo de antecipação'] = static function (): void {
+    $settings = pricingSettings(['card_fee_mode' => 'customer', 'card_free_installments' => 3, 'card_anticipation_mode' => 'manual']);
+    foreach ([1, 3] as $count) {
+        $price = asaas_card_price('1000.00', $count, $settings);
+        pricingEqual($price['charged_cents'], 100000, 'Parcela sem repasse deve preservar o valor da fatura.');
+        pricingEqual($price['fee_cents'], 0, 'Nenhuma taxa adicional será enviada ao cliente.');
+        pricingEqual($price['fee_mode'], 'absorb', 'Modo efetivo precisa manter a regra de parcelas sem repasse.');
+        pricingCheck($price['anticipation']['estimated_fee_cents'] > 0, 'Custo absorvido pode ser estimado internamente.');
+    }
+    pricingCheck(asaas_card_price('1000.00', 4, $settings)['fee_cents'] > 0, 'Repasse recomeça depois do limite de isenção.');
+    $settings['card_fee_mode'] = 'absorb';
+    pricingEqual(asaas_card_price('1000.00', 21, $settings)['charged_cents'], 100000, 'Absorver sempre inclui a antecipação.');
+};
+
+$tests['antecipação a taxa zero mantém totais legados e seleciona somente a modalidade escolhida'] = static function (): void {
+    $settings = pricingSettings(['card_fee_mode' => 'customer', 'card_anticipation_mode' => 'manual',
+        'card_anticipation_manual_rate_1' => '0', 'card_anticipation_manual_rate_installments' => '0',
+        'card_anticipation_automatic_rate_1' => '99', 'card_anticipation_automatic_rate_installments' => '99']);
+    foreach ([1, 2, 21] as $count) {
+        $price = asaas_card_price('1000.00', $count, $settings);
+        $legacy = asaas_card_price('1000.00', $count, array_replace($settings, ['card_anticipation_mode' => 'none']));
+        pricingEqual($price['anticipation']['estimated_fee_cents'], 0, 'Taxa mensal zero deve gerar custo zero.');
+        unset($price['anticipation']);
+        pricingEqual($price, $legacy, 'Modalidade não escolhida não deve contaminar a composição aplicada.');
+    }
+    $selected = asaas_card_price('1000.00', 1, $settings);
+    $unusedChanged = asaas_card_price('1000.00', 1, array_replace($settings, [
+        'card_anticipation_manual_rate_installments' => '1.70', 'card_anticipation_automatic_rate_1' => '1.15',
+        'card_anticipation_automatic_rate_installments' => '1.60']));
+    pricingEqual(asaas_card_pricing_token($unusedChanged, 'same-invoice'), asaas_card_pricing_token($selected, 'same-invoice'),
+        'Alterações em modalidades/faixas não usadas pela cotação não podem invalidar seu fingerprint.');
+    pricingReject(static fn () => pricingSettings(array_replace($settings, ['card_anticipation_mode' => 'automatic'])), '100%');
+};
+
+$tests['antecipação não modifica desconto nem a validação do valor líquido'] = static function (): void {
+    $settings = pricingSettings(['card_fee_mode' => 'customer', 'card_anticipation_mode' => 'manual']);
+    $discount = ['type' => 'PERCENTAGE', 'value' => '10.00', 'dueDateLimitDays' => 3];
+    $before = serialize([$settings, $discount]);
+    $price = asaas_card_price('100.00', 1, $settings, $discount);
+    pricingEqual($price['principal_cents'], 10000, 'O principal não deve incorporar nem antecipar o desconto.');
+    pricingEqual($price['charged_cents'], 10490, 'Cotação continua nominal; o mesmo desconto segue para o Asaas.');
+    pricingEqual(serialize([$settings, $discount]), $before, 'Entradas de desconto e configuração devem permanecer intactas.');
+    pricingReject(static fn () => asaas_card_price('100.00', 1, $settings, ['type' => 'PERCENTAGE', 'value' => '100']), 'R$ 5,00');
+    $settings['card_min_installment'] = '60';
+    pricingReject(static fn () => asaas_card_price('100.00', 2, $settings), 'R$ 60,00');
+};
+
+foreach ([['card_anticipation_mode', 'AUTO'], ['card_anticipation_mode', true], ['card_anticipation_mode', []],
+    ['card_anticipation_first_days', -1], ['card_anticipation_first_days', 366], ['card_anticipation_first_days', '1.0'],
+    ['card_anticipation_first_days', true], ['card_anticipation_first_days', []],
+    ['card_anticipation_manual_rate_1', '1.251'], ['card_anticipation_manual_rate_1', '-1'],
+    ['card_anticipation_manual_rate_installments', '99.01'], ['card_anticipation_manual_rate_installments', '1,000.00'],
+    ['card_anticipation_automatic_rate_1', 1.15], ['card_anticipation_automatic_rate_1', false],
+    ['card_anticipation_automatic_rate_installments', '1e1'], ['card_anticipation_automatic_rate_installments', []]] as $index => [$field, $value]) {
+    $tests['antecipação rejeita configuração inválida ' . $index . ' ' . $field] = static function () use ($field, $value): void {
+        pricingReject(static fn () => pricingSettings([$field => $value]));
+    };
+}
+
+$tests['antecipação rejeita custo de cem por cento na última parcela mesmo com média válida'] = static function (): void {
+    $settings = ['installmentCount' => 2, 'card_anticipation_mode' => 'manual', 'card_anticipation_manual_rate_installments' => '50.00'];
+    pricingReject(static fn () => pricingSettings($settings), 'cada parcela');
+    $settings['card_anticipation_manual_rate_installments'] = '49.99';
+    pricingEqual(pricingSettings($settings)['card_anticipation_manual_rate_installments'], '49.99', 'Última parcela abaixo de 100% continua válida.');
+    pricingReject(static fn () => asaas_card_price('100.00', 1, array_replace($settings, ['card_anticipation_first_days' => 31])), 'cada parcela');
+    pricingReject(static fn () => pricingSettings(['card_anticipation_mode' => 'manual', 'card_anticipation_manual_rate_installments' => '4.77']), 'cada parcela');
+    pricingEqual(pricingSettings(['card_anticipation_mode' => 'manual', 'card_anticipation_manual_rate_installments' => '4.76'])['installmentCount'], 21,
+        'Maior quantidade habilitada deve participar da validação antes de salvar.');
+};
+
+$tests['taxas de cartão e antecipação têm bases diferentes e não são somadas como percentuais'] = static function (): void {
+    $settings = pricingSettings(['installmentCount' => 1, 'card_fee_mode' => 'customer', 'card_fee_percent_1' => '99',
+        'card_fee_fixed' => '0', 'card_anticipation_mode' => 'manual', 'card_anticipation_manual_rate_1' => '99']);
+    $price = asaas_card_price('100.00', 1, $settings);
+    pricingEqual($price['charged_cents'], 100000000, 'Cada taxa de 99% deve ser aplicada sequencialmente na sua base.');
+    pricingEqual($price['charged_cents'] - $price['estimated_fee_cents'], 10000, 'Líquido estimado deve preservar o principal.');
+};
+
+$tests['antecipação mantém precisão inteira até o limite e rejeita overflow do repasse'] = static function (): void {
+    $settings = pricingSettings(['card_fee_mode' => 'customer', 'card_anticipation_mode' => 'manual']);
+    $principal = intdiv(PHP_INT_MAX, 2);
+    $price = asaas_card_price(asaas_card_pricing_money($principal), 1, $settings);
+    // Verify the mathematical inequality independently, without the implementation's staged division.
+    $numerator = asaas_payment_integer_multiply(asaas_payment_integer_add(
+        asaas_payment_integer_multiply((string) $principal, '600000'), asaas_payment_integer_multiply('49', '592500')), '10000');
+    $denominator = asaas_payment_integer_multiply('592500', '9701');
+    pricingCheck(asaas_payment_integer_compare(asaas_payment_integer_multiply((string) $price['charged_cents'], $denominator), $numerator) >= 0,
+        'Total deve cobrir a fórmula racional exata mesmo quando seus intermediários excedem PHP_INT_MAX.');
+    pricingCheck(asaas_payment_integer_compare(asaas_payment_integer_multiply((string) ($price['charged_cents'] - 1), $denominator), $numerator) < 0,
+        'Um centavo a menos deve ser insuficiente para a mesma fórmula.');
+    pricingCheck($price['charged_cents'] - $price['estimated_fee_cents'] >= $principal, 'Estimativa de custos grande permanece em centavos exatos.');
+    pricingReject(static fn () => asaas_card_price(asaas_card_pricing_money(PHP_INT_MAX), 1, $settings), 'precisão');
+    $settings['card_anticipation_manual_rate_1'] = '0';
+    $settings['card_fee_percent_1'] = '0';
+    $settings['card_fee_fixed'] = '0';
+    pricingEqual(asaas_card_price(asaas_card_pricing_money(PHP_INT_MAX), 1, $settings)['charged_cents'], PHP_INT_MAX,
+        'Antecipação sem custo não deve reduzir a precisão máxima suportada.');
+};
+
+$tests['fingerprint inclui modalidade prazo e taxa mesmo quando o total não muda no centavo'] = static function (): void {
+    $settings = pricingSettings(['installmentCount' => 1, 'card_fee_mode' => 'customer', 'card_fee_percent_1' => '0',
+        'card_fee_fixed' => '0', 'card_anticipation_mode' => 'manual', 'card_anticipation_manual_rate_1' => '0.01',
+        'card_anticipation_automatic_rate_1' => '0.01', 'card_anticipation_first_days' => 1]);
+    $price = asaas_card_price('5.00', 1, $settings);
+    $token = asaas_card_pricing_token($price, 'same-invoice');
+    foreach (['card_anticipation_mode' => 'automatic', 'card_anticipation_first_days' => 2, 'card_anticipation_manual_rate_1' => '0.02'] as $field => $value) {
+        $changed = asaas_card_price('5.00', 1, array_replace($settings, [$field => $value]));
+        pricingEqual($changed['charged_cents'], $price['charged_cents'], 'Exemplo deve manter o mesmo total arredondado.');
+        pricingCheck(asaas_card_pricing_token($changed, 'same-invoice') !== $token, 'Política aplicada alterada deve exigir nova confirmação: ' . $field);
+    }
+    $price['anticipation'] = array_reverse($price['anticipation'], true);
+    pricingEqual(asaas_card_pricing_token(array_reverse($price, true), 'same-invoice'), $token, 'Ordem das chaves não pode modificar a cotação.');
+    $price['anticipation']['unrelated'] = 'must-not-be-hashed';
+    pricingEqual(asaas_card_pricing_token($price, 'same-invoice'), $token, 'Somente os campos financeiros permitidos entram no fingerprint.');
+};
+
+$tests['fingerprint rejeita metadata de antecipação malformada ou financeiramente impossível'] = static function (): void {
+    $price = asaas_card_price('100.00', 1, pricingSettings(['card_fee_mode' => 'customer', 'card_anticipation_mode' => 'manual']));
+    foreach ([null, false, 'manual', [], array_replace($price['anticipation'], ['mode' => 'none']),
+        array_replace($price['anticipation'], ['monthly_rate_bps' => '125']),
+        array_replace($price['anticipation'], ['monthly_rate_bps' => 9901]),
+        array_replace($price['anticipation'], ['first_days' => -1]),
+        array_replace($price['anticipation'], ['first_days' => 366]),
+        array_replace($price['anticipation'], ['monthly_rate_bps' => 9900, 'first_days' => 31]),
+        array_replace($price['anticipation'], ['estimated_fee_cents' => '127']),
+        array_replace($price['anticipation'], ['estimated_fee_cents' => $price['estimated_fee_cents'] + 1])] as $invalid) {
+        pricingReject(static fn () => asaas_card_pricing_token(array_replace($price, ['anticipation' => $invalid]), 'invoice'));
+    }
+};
+
 $failures = 0;
 foreach ($tests as $name => $test) {
     try { $test(); fwrite(STDOUT, 'PASS ' . $name . PHP_EOL); }

@@ -17,8 +17,14 @@ const vm = require('node:vm');
 const root = path.resolve(__dirname, '..');
 const groups = ['general', 'environment', 'payments', 'charges', 'webhook', 'sync', 'logs', 'monitoring'];
 const secretNames = ['api_key', 'api_key_sandbox', 'webhook_secret'];
+const anticipationDefaults = {
+    card_anticipation_mode: 'none', card_anticipation_first_days: '30',
+    card_anticipation_manual_rate_1: '1.25', card_anticipation_manual_rate_installments: '1.70',
+    card_anticipation_automatic_rate_1: '1.15', card_anticipation_automatic_rate_installments: '1.60'
+};
+const anticipationSettings = Object.keys(anticipationDefaults);
 const cardSettings = ['installmentCount', 'card_min_installment', 'card_free_installments', 'card_fee_mode',
-    'card_fee_fixed_mode', 'card_fee_fixed', 'card_fee_percent_1', 'card_fee_percent_2_6', 'card_fee_percent_7_12', 'card_fee_percent_13_21'];
+    'card_fee_fixed_mode', 'card_fee_fixed', 'card_fee_percent_1', 'card_fee_percent_2_6', 'card_fee_percent_7_12', 'card_fee_percent_13_21'].concat(anticipationSettings);
 const php = process.env.ASAAS_TEST_PHP || 'php';
 let scenarios = 0;
 
@@ -78,6 +84,22 @@ async function main() {
         assert(fixtures.standard.html.includes('data-asaas-charges-panel="card"'));
         assert(fixtures.standard.html.includes('Encargos e descontos'));
         assert(!fixtures.flat.html.includes('data-asaas-charges-panel'));
+    });
+    await scenario('antecipação tem seis opções nativas, taxas mensais e início sem repasse adicional', () => {
+        for (const fixture of Object.values(fixtures)) {
+            for (const [key, value] of Object.entries(anticipationDefaults)) {
+                const fields = fixture.controls.filter(input => input.name === 'settings[paymentmethod_asaas_' + key + ']');
+                assert.equal(fields.length, 1, key);
+                assert.equal(fields[0].value, value, key);
+            }
+            assert(fixture.html.includes('Avulsa à vista (% ao mês)'));
+            assert(fixture.html.includes('Avulsa parcelada (% ao mês)'));
+            assert(fixture.html.includes('Automática à vista (% ao mês)'));
+            assert(fixture.html.includes('Automática parcelada (% ao mês)'));
+            assert(fixture.html.includes('não solicita antecipações nem ativa a antecipação automática no Asaas'));
+            assert(fixture.html.includes('O cliente vê um único valor de encargos do cartão.'));
+        }
+        assert(fixtures.standard.html.includes('data-asaas-card-section="anticipation"'));
     });
     await scenario('scripts válidos, carregados na ordem contratada e sem persistência de segredos', () => {
         const scripts = ['asaas-settings.js', 'asaas-webhook-settings.js', 'asaas-monitor.js', 'asaas-logs.js'];
@@ -358,22 +380,31 @@ async function main() {
             await showGroup(page, 'charges');
             const mode = page.locator('[data-asaas-card-enum="card_fee_mode"]');
             const fixed = page.locator('[data-asaas-card-enum="card_fee_fixed_mode"]');
+            const anticipation = page.locator('[data-asaas-card-enum="card_anticipation_mode"]');
             assert.equal(await mode.getAttribute('name'), null);
             assert.equal(await fixed.getAttribute('name'), null);
+            assert.equal(await anticipation.getAttribute('name'), null);
             assert.equal(await mode.inputValue(), 'absorb');
+            assert.equal(await anticipation.inputValue(), 'none');
             await mode.selectOption('customer');
             await fixed.selectOption('installment');
+            await anticipation.selectOption('manual');
             assert.equal(await page.locator(inputSelector('card_fee_mode')).inputValue(), 'customer');
             assert.equal(await page.locator(inputSelector('card_fee_fixed_mode')).inputValue(), 'installment');
+            assert.equal(await page.locator(inputSelector('card_anticipation_mode')).inputValue(), 'manual');
             const payload = await page.evaluate(() => Array.from(new FormData(document.getElementById('settings-form'))));
-            for (const [key, value] of [['card_fee_mode', 'customer'], ['card_fee_fixed_mode', 'installment']]) {
+            for (const [key, value] of [['card_fee_mode', 'customer'], ['card_fee_fixed_mode', 'installment'], ['card_anticipation_mode', 'manual']]) {
                 assert.deepEqual(payload.filter(entry => entry[0] === 'settings[paymentmethod_asaas_' + key + ']'), [['settings[paymentmethod_asaas_' + key + ']', value]]);
             }
             assert.equal(await page.locator('form form').count(), 0);
             assert.equal(await page.locator('[data-asaas-card-enum-fallback="card_fee_mode"]').isVisible(), false);
+            assert.equal(await page.locator('[data-asaas-card-enum-fallback="card_anticipation_mode"]').isVisible(), false);
+            await anticipation.selectOption('automatic');
+            assert.equal(await page.locator(inputSelector('card_anticipation_mode')).inputValue(), 'automatic');
             await page.evaluate(() => document.getElementById('settings-form').reset());
             await page.waitForFunction(() => document.querySelector('[data-asaas-card-enum="card_fee_mode"]').value === 'absorb');
             assert.equal(await fixed.inputValue(), 'charge');
+            assert.equal(await anticipation.inputValue(), 'none');
             assert.deepEqual(await page.evaluate(() => Array.from(new FormData(document.getElementById('settings-form'))).sort((a, b) => a[0].localeCompare(b[0]))), before);
             await showGroup(page, 'environment');
         });
@@ -441,7 +472,7 @@ async function main() {
             await page.evaluate(() => document.dispatchEvent(new CustomEvent('asaas:settings:show', {detail: {group: 'constructor'}})));
             await assertTab(page, 'general');
             await page.addScriptTag({url: '/_fixture/asaas-settings.js'});
-            assert.equal(await page.locator('[data-asaas-card-enum]').count(), 2, 'Reinicializar o script não deve duplicar os seletores de cartão.');
+            assert.equal(await page.locator('[data-asaas-card-enum]').count(), 3, 'Reinicializar o script não deve duplicar os seletores de cartão.');
             await showGroup(page, 'environment');
             await page.locator('[data-asaas-secret-toggle="api_key"]').click();
             assert.equal(await page.locator(inputSelector('api_key')).getAttribute('type'), 'text', 'Inicialização duplicada não pode duplicar o handler.');
@@ -516,6 +547,47 @@ async function main() {
             await rate.fill('2,99');
             assert.equal(await rate.evaluate(input => input.validity.valid), true);
             await rate.fill('2.99');
+        });
+
+        await scenario('modalidade, prazo e taxa de antecipação inválidos revelam a subguia correta', async () => {
+            const mode = page.locator('[data-asaas-card-enum="card_anticipation_mode"]');
+            const days = page.locator(inputSelector('card_anticipation_first_days'));
+            const rate = page.locator(inputSelector('card_anticipation_automatic_rate_installments'));
+            await showGroup(page, 'charges');
+            await page.locator('#asaas-charges-tab-card').click();
+            for (const field of anticipationSettings.filter(name => name !== 'card_anticipation_mode')) {
+                assert.equal(await page.locator(inputSelector(field)).isVisible(), true, 'As duas modalidades continuam configuráveis mesmo em Não incluir.');
+            }
+            for (const value of ['366', '30.5', '-1']) {
+                await days.fill(value);
+                await page.locator('#asaas-charges-tab-general').click();
+                await showGroup(page, 'general');
+                await page.locator('#settings-save').click();
+                await assertTab(page, 'charges');
+                assert.equal(await page.locator('#asaas-charges-card').isVisible(), true);
+                assert.equal(await days.evaluate(input => document.activeElement === input), true);
+                assert.equal(await days.evaluate(input => input.validity.valid), false);
+                assert.equal(submissions.length, 0);
+            }
+            await days.fill('30');
+            await rate.fill('1.155');
+            await showGroup(page, 'general');
+            await page.locator('#settings-save').click();
+            await assertTab(page, 'charges');
+            assert.equal(await rate.evaluate(input => document.activeElement === input), true);
+            assert.match(await rate.evaluate(input => input.validationMessage), /duas casas/);
+            assert.equal(submissions.length, 0);
+            await rate.fill('1,60');
+            assert.equal(await rate.evaluate(input => input.validity.valid), true);
+            await rate.fill('1.60');
+            await mode.selectOption('');
+            await showGroup(page, 'general');
+            await page.locator('#settings-save').click();
+            await assertTab(page, 'charges');
+            assert.equal(await page.locator('#asaas-charges-card').isVisible(), true);
+            assert.equal(await mode.evaluate(input => document.activeElement === input), true);
+            assert.equal(submissions.length, 0);
+            await mode.selectOption('none');
         });
 
         await scenario('submit nativo envia os mesmos nomes/valores e CSRF depois da organização', async () => {
@@ -763,6 +835,8 @@ async function main() {
             await page.locator('#asaas-charges-tab-card').click();
             assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
             await page.screenshot({path: path.join(artifacts, 'settings-card-narrow.png'), fullPage: true});
+            assert.equal(await page.locator('[data-asaas-card-section="anticipation"]').evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length), 2);
+            await page.locator('[aria-labelledby="asaas-card-anticipation-title"]').screenshot({path: path.join(artifacts, 'settings-anticipation-narrow.png')});
         });
 
         await scenario('mobile mantém rolagem das guias dentro do painel e ambiente legível', async () => {
@@ -792,10 +866,16 @@ async function main() {
             await assertTab(page, 'charges');
             assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
             assert.equal(await page.locator('[data-asaas-card-section="installments"]').evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length), 1);
+            assert.equal(await page.locator('[data-asaas-card-section="anticipation"]').evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length), 1);
             assert.equal(await page.locator('[data-asaas-card-enum="card_fee_mode"]').isVisible(), true);
+            assert.equal(await page.locator('[data-asaas-card-enum="card_anticipation_mode"]').isVisible(), true);
             assert.equal(await page.locator(inputSelector('card_fee_percent_13_21')).isVisible(), true);
+            for (const name of anticipationSettings.filter(name => name !== 'card_anticipation_mode')) {
+                assert.equal(await page.locator(inputSelector(name)).isVisible(), true, name);
+            }
             assert.equal(await page.locator('#settings-save').isVisible(), true);
             await page.screenshot({path: path.join(artifacts, 'settings-card-mobile.png'), fullPage: true});
+            await page.locator('[aria-labelledby="asaas-card-anticipation-title"]').screenshot({path: path.join(artifacts, 'settings-anticipation-mobile.png')});
         });
 
         await scenario('renderer inesperado e ausência da view preservam formulário plano e máscaras', async () => {
@@ -808,6 +888,8 @@ async function main() {
                 assert.equal(await page.locator('[data-asaas-logs-open]').isVisible(), true, 'O visualizador antigo deve continuar acessível no fallback.');
                 assert.equal(await page.locator(inputSelector('card_fee_mode')).isVisible(), true, 'O enum original permanece editável no fallback.');
                 assert.equal(await page.locator('[data-asaas-card-enum-fallback="card_fee_mode"]').isVisible(), true);
+                assert.equal(await page.locator(inputSelector('card_anticipation_mode')).isVisible(), true);
+                assert.equal(await page.locator('[data-asaas-card-enum-fallback="card_anticipation_mode"]').isVisible(), true);
                 if (fixture === 'wrapped') { assert.equal(await page.locator('#asaas-settings-groups').isVisible(), false); }
                 assert.equal(await page.evaluate(() => JSON.stringify(window.__asaasFixture.payload) === JSON.stringify(Array.from(new FormData(document.getElementById('settings-form'))).sort((a, b) => a[0].localeCompare(b[0])))), true);
             }
@@ -825,9 +907,48 @@ async function main() {
             assert.equal(await noJsPage.locator(inputSelector('card_fee_mode')).isVisible(), true);
             assert.equal(await noJsPage.locator(inputSelector('card_fee_mode')).inputValue(), 'absorb');
             assert.equal(await noJsPage.locator('[data-asaas-card-enum-fallback="card_fee_mode"]').isVisible(), true);
+            assert.equal(await noJsPage.locator(inputSelector('card_anticipation_mode')).inputValue(), 'none');
+            assert.equal(await noJsPage.locator('[data-asaas-card-enum-fallback="card_anticipation_mode"]').isVisible(), true);
+            for (const name of anticipationSettings) {
+                assert.equal(await noJsPage.locator(inputSelector(name)).isVisible(), true, name);
+            }
             assert.equal(await noJsPage.locator('[data-asaas-logs-open]').isVisible(), true, 'Sem JavaScript o acesso existente aos logs deve permanecer disponível.');
             assert.match(await noJsPage.locator('[data-asaas-logs-open]').getAttribute('href'), /\/admin\/asaas\/asaas\/logs$/);
             await noJsContext.close();
+        });
+        await scenario('antecipação salva modalidade e quatro taxas pelo formulário nativo sem chamada financeira', async () => {
+            await page.setViewportSize({width: 1280, height: 960});
+            await page.goto('https://crm.example.test/admin/settings');
+            await page.waitForFunction(() => document.getElementById('online_payments_asaas_tab').getAttribute('data-asaas-settings-initialized') === '1');
+            const savedBefore = submissions.length;
+            const monitorBefore = monitorRequests.length;
+            const diagnosticsBefore = diagnosticsRequests.length;
+            await showGroup(page, 'charges');
+            await page.locator('#asaas-charges-tab-card').click();
+            const values = {
+                card_anticipation_mode: 'automatic', card_anticipation_first_days: '28',
+                card_anticipation_manual_rate_1: '1,30', card_anticipation_manual_rate_installments: '1,75',
+                card_anticipation_automatic_rate_1: '1,10', card_anticipation_automatic_rate_installments: '1,55'
+            };
+            await page.locator('[data-asaas-card-enum="card_anticipation_mode"]').selectOption(values.card_anticipation_mode);
+            for (const [name, value] of Object.entries(values)) {
+                if (name !== 'card_anticipation_mode') { await page.locator(inputSelector(name)).fill(value); }
+            }
+            const [saved] = await Promise.all([
+                page.waitForResponse(response => new URL(response.url()).pathname === '/admin/settings' && response.request().method() === 'POST'),
+                page.locator('#settings-save').click()
+            ]);
+            assert.equal(saved.status(), 204);
+            assert.equal(submissions.length, savedBefore + 1);
+            for (const [name, value] of Object.entries(values)) {
+                assert.deepEqual(submissions[savedBefore].filter(entry => entry[0] === 'settings[paymentmethod_asaas_' + name + ']'),
+                    [['settings[paymentmethod_asaas_' + name + ']', value]], name);
+            }
+            assert.equal(monitorRequests.length, monitorBefore);
+            assert.equal(diagnosticsRequests.length, diagnosticsBefore);
+            assert.deepEqual(await page.evaluate(() => window.__asaasFixture.fetches), [], 'Configurar a antecipação não deve fazer requisições financeiras.');
+            assert.equal(await page.locator('[data-asaas-card-enum="card_anticipation_mode"]').inputValue(), 'automatic');
+            await page.locator('[aria-labelledby="asaas-card-anticipation-title"]').screenshot({path: path.join(artifacts, 'settings-anticipation.png')});
         });
         assert.deepEqual(errors, [], 'Nenhuma exceção JavaScript deve ocorrer.');
         assert.deepEqual(unexpectedRequests, [], 'Nenhum recurso/requisição externa não simulada deve ocorrer.');

@@ -8,14 +8,16 @@ Como administrador, abra **Configurações → Meios de pagamento → Asaas**. A
 | --- | --- |
 | Geral | Ativação, título, moedas e descrição do meio de pagamento. |
 | Ambiente | Homologação/Produção, respectivas chaves e exibição do ambiente ao pagador. |
-| Pagamentos | Boleto, Pix, cartão de crédito e limite de parcelas. |
-| Cobranças | Vencimento, juros, multa, descontos e notificações. |
+| Pagamentos | Habilitação de boleto, Pix e cartão de crédito. |
+| Cobranças | Encargos e descontos; cartão de crédito com parcelas, repasse, taxas e antecipação incluída nos encargos. |
 | Webhook | Token, geração/cópia e endereço completo do callback. |
 | Sincronização | Ciclo das faturas, quitação manual e conciliação pelo CRON. |
 | Logs | Opções de diagnóstico e visualizador completo dos registros na própria subguia, incluindo estado e localização do arquivo. |
 | Monitoramento | Histórico, comparação e conciliação de recebimentos. |
 
 O botão **Salvar** continua sendo o botão do CRM. Os campos originais são movidos para as subguias; nomes, valores, eventos e regras de gravação são preservados. Campos futuros não reconhecidos ficam em Geral. Se o JavaScript não reconhecer o layout nativo, mantém o formulário plano disponível.
+
+Em **Cobranças → Cartão de crédito → Antecipação de recebíveis**, a modalidade escolhe quais taxas mensais entram na estimativa dos encargos. Há taxas próprias para avulsa/automática, à vista/parcelado e prazo inicial ajustável. **Não incluir** é o padrão. O cliente vê somente os encargos totais; salvar a escolha não solicita antecipações nem altera a configuração da conta Asaas. Consulte [o cálculo, os parâmetros e a operação pela API](CARTAO-CREDITO.md#antecipação-incluída-nos-encargos-do-cartão).
 
 ## Ambiente e credenciais
 
