@@ -511,6 +511,12 @@ cardCheckoutTest('outer native transaction prevents a card request before any si
     cardCheckoutAssert($api->posts === [] && $db->cache() === [] && $GLOBALS['card_checkout_trace'] === [], 'Outer transaction must reject before map or remote changes.');
 });
 
+cardCheckoutTest('settled or overpaid invoice offers no installment options', static function (): void {
+    foreach (['0.00', '-0.01', '-20.00'] as $balance) {
+        cardCheckoutAssert(asaas_card_installment_options($balance, 12) === [], 'Non-positive balance cannot offer another card payment.');
+    }
+});
+
 register_shutdown_function(static function (): void {
     foreach ($GLOBALS['card_checkout_files'] as $path) { if (is_file($path)) { unlink($path); } }
 });

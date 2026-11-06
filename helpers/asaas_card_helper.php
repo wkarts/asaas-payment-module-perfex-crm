@@ -20,6 +20,10 @@ function asaas_card_max_installments($configured): int
 
 function asaas_card_installment_options($balance, $configured, array $discount = []): array
 {
+    // Credits/overpayments can leave a non-positive balance on an already settled invoice.
+    if (is_numeric($balance) && is_finite((float) $balance) && (float) $balance <= 0) {
+        return [];
+    }
     $cents = asaas_payment_amount_to_cents($balance);
     $options = [];
     for ($count = 1; $count <= asaas_card_max_installments($configured); ++$count) {
