@@ -24,20 +24,21 @@ $asaasMonitorSecurity = $asaasMonitorCi->security;
     <div data-monitor-feedback class="alert alert-info" role="status" aria-live="polite" hidden></div>
 
     <div class="asaas-monitor-summary" aria-label="Resumo da integração">
-        <div class="asaas-monitor-card"><span>Faturas vinculadas em aberto</span><strong data-monitor-metric="linked_open_invoices">—</strong></div>
-        <div class="asaas-monitor-card"><span>Falhas de entrega do webhook</span><strong data-monitor-metric="webhook_errors">—</strong><small>Eventos com erro de processamento: <span data-monitor-metric="webhook_event_errors">—</span></small></div>
-        <div class="asaas-monitor-card"><span>Erros no diagnóstico</span><strong data-monitor-metric="log_errors">—</strong></div>
+        <div class="asaas-monitor-card"><span>Faturas elegíveis em aberto</span><strong data-monitor-metric="eligible_open_invoices">—</strong><small>Com vínculo: <span data-monitor-metric="linked_open_invoices">—</span> · A recuperar: <span data-monitor-metric="unlinked_open_invoices">—</span></small></div>
+        <div class="asaas-monitor-card"><span>Falhas de entrega do webhook</span><strong data-monitor-metric="webhook_errors">—</strong><small>Histórico de falhas. Eventos com erro de processamento: <span data-monitor-metric="webhook_event_errors">—</span></small><button type="button" class="btn btn-default btn-xs mtop10" data-monitor-action="show-errors" data-monitor-source="webhook">Ver falhas do webhook</button></div>
+        <div class="asaas-monitor-card"><span>Erros no diagnóstico</span><strong data-monitor-metric="log_errors">—</strong><small>Registros históricos da integração.</small><button type="button" class="btn btn-default btn-xs mtop10" data-monitor-action="show-errors" data-monitor-source="all">Ver erros</button></div>
         <div class="asaas-monitor-card"><span>Sincronização automática</span><strong data-monitor-metric="cron_enabled">—</strong></div>
     </div>
     <div class="asaas-monitor-overview-details text-muted">
         <p><strong>Último webhook:</strong> <span data-monitor-metric="last_webhook_at">—</span></p>
         <p><strong>Última sincronização:</strong> <span data-monitor-metric="cron_last_run">—</span></p>
         <p data-monitor-metric="cron_configuration">Abra esta guia para consultar os registros.</p>
-        <p>Quando habilitada, a conciliação automática consulta as cobranças elegíveis e registra os recebimentos confirmados que faltam no CRM. Pagamentos pendentes continuam abertos; falhas são registradas para conferência.</p>
+        <p>Quando habilitada, a conciliação automática verifica as faturas elegíveis em aberto, inclusive antigas e sem vínculo local, e registra somente recebimentos confirmados. O limite vale para cada execução; as demais seguem nas próximas rodadas. A janela em dias se aplica às faturas quitadas recentes. Pagamentos pendentes continuam abertos; falhas ficam registradas para conferência.</p>
     </div>
 
     <div class="asaas-monitor-tabs" role="tablist" aria-label="Registros da integração">
         <button id="asaas-monitor-tab-invoices" type="button" class="btn btn-default btn-sm active" role="tab" data-monitor-tab="invoices" aria-selected="true" aria-controls="asaas-monitor-invoices">Faturas</button>
+        <button id="asaas-monitor-tab-payments" type="button" class="btn btn-default btn-sm" role="tab" data-monitor-tab="payments" aria-selected="false" aria-controls="asaas-monitor-payments" tabindex="-1">Cobranças no Asaas</button>
         <button id="asaas-monitor-tab-events" type="button" class="btn btn-default btn-sm" role="tab" data-monitor-tab="events" aria-selected="false" aria-controls="asaas-monitor-events" tabindex="-1">Webhooks</button>
         <button id="asaas-monitor-tab-logs" type="button" class="btn btn-default btn-sm" role="tab" data-monitor-tab="logs" aria-selected="false" aria-controls="asaas-monitor-logs" tabindex="-1">API e conciliações</button>
     </div>
@@ -53,12 +54,13 @@ $asaasMonitorSecurity = $asaasMonitorCi->security;
                 <select id="asaas-monitor-invoice-status" class="form-control input-sm">
                     <option value="open">Em aberto</option>
                     <option value="suspected">Possíveis divergências</option>
+                    <option value="missing">Vínculo a recuperar</option>
                     <option value="all">Todas</option>
                 </select>
             </div>
             <button type="button" class="btn btn-default btn-sm" data-monitor-action="filter" data-monitor-kind="invoices">Filtrar</button>
         </div>
-        <p id="asaas-monitor-payment-help" class="help-block">O pagamento no Asaas mostra o <strong>último estado conhecido</strong>; use <strong>Comparar</strong> para consultar agora. Um webhook processado não comprova pagamento. Um recebimento confirmado pode corresponder a uma parcela; confira o saldo da fatura.</p>
+        <p id="asaas-monitor-payment-help" class="help-block">O pagamento no Asaas mostra o <strong>último estado conhecido</strong>; use <strong>Comparar</strong> para consultar agora, inclusive quando o vínculo precisa ser recuperado. <strong>Ainda não consultada</strong> não significa que o cliente pagou ou deixou de pagar. Um webhook processado não comprova pagamento. Um recebimento confirmado pode corresponder a uma parcela; confira o saldo da fatura.</p>
         <div class="asaas-monitor-batch-actions">
             <span data-monitor-selected-count class="text-muted">Nenhuma fatura selecionada.</span>
             <button type="button" class="btn btn-default btn-sm" data-monitor-action="compare-selected" disabled>Comparar selecionadas</button>
@@ -76,6 +78,46 @@ $asaasMonitorSecurity = $asaasMonitorCi->security;
         <div class="asaas-monitor-pagination">
             <span data-monitor-page="invoices" class="text-muted">Página 1</span>
             <div><button type="button" class="btn btn-default btn-sm" data-monitor-action="previous" data-monitor-kind="invoices" disabled>Anterior</button> <button type="button" class="btn btn-default btn-sm" data-monitor-action="next" data-monitor-kind="invoices" disabled>Próxima</button></div>
+        </div>
+    </div>
+
+    <div id="asaas-monitor-payments" data-monitor-panel="payments" role="tabpanel" aria-labelledby="asaas-monitor-tab-payments" hidden>
+        <p id="asaas-monitor-remote-help" class="help-block">Consulte diretamente as cobranças da conta Asaas do ambiente ativo. Esta lista não cria vínculos nem registra pagamentos. <strong>Pendente</strong> ou <strong>Vencido</strong> não confirma recebimento; <strong>Confirmado</strong> e <strong>Recebido</strong> indicam pagamento. Em parcelamentos, cada linha pode representar uma parcela.</p>
+        <div class="asaas-monitor-filters asaas-monitor-remote-filters">
+            <div class="form-group">
+                <label for="asaas-monitor-payment-status">Situação no Asaas</label>
+                <select id="asaas-monitor-payment-status" class="form-control input-sm">
+                    <option value="all">Todas</option><option value="PENDING">Pendente</option><option value="OVERDUE">Vencido</option><option value="CONFIRMED">Confirmado</option><option value="RECEIVED">Recebido</option><option value="RECEIVED_IN_CASH">Recebido em dinheiro</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="asaas-monitor-payment-date-field">Filtrar por data de</label>
+                <select id="asaas-monitor-payment-date-field" class="form-control input-sm"><option value="payment">Pagamento</option><option value="due">Vencimento</option><option value="created">Criação</option></select>
+            </div>
+            <?php // Read-only date filters must not participate in the native settings form validation. ?>
+            <div class="form-group"><label for="asaas-monitor-payment-date-from">De (opcional)</label><input id="asaas-monitor-payment-date-from" type="date" form="" class="form-control input-sm"></div>
+            <div class="form-group"><label for="asaas-monitor-payment-date-to">Até (opcional)</label><input id="asaas-monitor-payment-date-to" type="date" form="" class="form-control input-sm"></div>
+            <div class="form-group">
+                <label for="asaas-monitor-payment-per-page">Por página</label>
+                <select id="asaas-monitor-payment-per-page" class="form-control input-sm"><option value="25">25 cobranças</option><option value="50">50 cobranças</option></select>
+            </div>
+            <button type="button" class="btn btn-default btn-sm" data-monitor-action="filter" data-monitor-kind="payments">Consultar Asaas</button>
+        </div>
+        <p class="help-block">Sem datas, a consulta não limita o período. Comparar e Conciliar ficam disponíveis somente quando a cobrança corresponde com segurança a uma fatura deste CRM. As ações de uma parcela conferem a fatura e o parcelamento completo.</p>
+        <div class="asaas-monitor-batch-actions">
+            <span data-monitor-payment-selected-count class="text-muted">Nenhuma fatura selecionada.</span>
+            <button type="button" class="btn btn-default btn-sm" data-monitor-action="compare-selected" data-monitor-kind="payments" disabled>Comparar selecionadas</button>
+            <button type="button" class="btn btn-info btn-sm" data-monitor-action="reconcile-selected" data-monitor-kind="payments" disabled>Conciliar selecionadas</button>
+        </div>
+        <div class="table-responsive asaas-monitor-table">
+            <table class="table table-striped table-hover" aria-describedby="asaas-monitor-remote-help">
+                <thead><tr><th class="asaas-monitor-check"><input id="asaas-monitor-payment-select-all" type="checkbox" aria-label="Selecionar faturas elegíveis das cobranças desta página"></th><th>Cobrança</th><th>Pagamento no Asaas</th><th>Fatura no CRM</th><th>Valor</th><th>Datas</th><th>Ações</th></tr></thead>
+                <tbody data-monitor-list="payments"><tr><td colspan="7" class="text-muted">Selecione Cobranças no Asaas para consultar a conta.</td></tr></tbody>
+            </table>
+        </div>
+        <div class="asaas-monitor-pagination">
+            <span data-monitor-page="payments" class="text-muted">Página 1</span>
+            <div><button type="button" class="btn btn-default btn-sm" data-monitor-action="previous" data-monitor-kind="payments" disabled>Anterior</button> <button type="button" class="btn btn-default btn-sm" data-monitor-action="next" data-monitor-kind="payments" disabled>Próxima</button></div>
         </div>
     </div>
 

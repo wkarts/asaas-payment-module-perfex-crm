@@ -10,9 +10,9 @@
 
         var form = root.closest('form');
         var csrf = {name: root.getAttribute('data-csrf-name') || '', hash: root.getAttribute('data-csrf-hash') || ''};
-        var state = {active: 'invoices', loading: false, running: false, stop: false, selected: new Set(), invoices: [], pages: {}};
+        var state = {active: 'invoices', loading: false, running: false, stop: false, selected: new Set(), invoices: [], paymentSelected: new Set(), payments: [], pages: {}};
         var deferredRefresh = null;
-        ['invoices', 'events', 'logs'].forEach(function (kind) {
+        ['invoices', 'payments', 'events', 'logs'].forEach(function (kind) {
             state.pages[kind] = {page: 1, perPage: 25, hasMore: false, total: null};
         });
         var feedback = root.querySelector('[data-monitor-feedback]');
@@ -21,6 +21,7 @@
         var progress = root.querySelector('[data-monitor-progress]');
         var resultsBody = root.querySelector('[data-monitor-results]');
         var selectAll = root.querySelector('#asaas-monitor-select-all');
+        var paymentSelectAll = root.querySelector('#asaas-monitor-payment-select-all');
         var base;
         var invoiceBase;
         try {
@@ -81,6 +82,19 @@
             return element;
         }
         function label(value, map) { return Object.prototype.hasOwnProperty.call(map, String(value)) ? map[String(value)] : text(value); }
+        function paymentInvoiceId(record) {
+            return record.action_eligible === true && (record.binding_status === 'linked' || record.binding_status === 'recoverable')
+                ? identifier(record.invoice_id) : null;
+        }
+        function diagnosticFacts(record) {
+            var context = record.context && typeof record.context === 'object' ? record.context : {};
+            var status = integer(record.http_status, integer(context.http_status, integer(context.status, null)));
+            var code = text(record.error_code || record.code || context.error_code || context.code, '').slice(0, 128);
+            var facts = [];
+            if (status !== null && status >= 100 && status <= 599) { facts.push('HTTP ' + status); }
+            if (code) { facts.push('Código: ' + code); }
+            return facts.join(' · ');
+        }
         var crmLabels = {'1': 'Não pago', '2': 'Pago', '3': 'Parcial', '4': 'Vencido', '5': 'Cancelado', '6': 'Rascunho'};
         var paymentLabels = {
             PENDING: 'Pendente', RECEIVED: 'Recebido', CONFIRMED: 'Confirmado', OVERDUE: 'Vencido',
@@ -88,6 +102,8 @@
             DELETED: 'Excluído', DUNNING_REQUESTED: 'Negativação solicitada', AWAITING_RISK_ANALYSIS: 'Em análise'
         };
         var webhookLabels = {processed: 'Processado', error: 'Erro', received: 'Recebido / pendente', pending: 'Pendente', retry: 'Aguardando nova tentativa'};
+        var billingLabels = {BOLETO: 'Boleto', PIX: 'Pix', CREDIT_CARD: 'Cartão de crédito', UNDEFINED: 'Forma a definir'};
+        var bindingLabels = {linked: 'Vinculada', recoverable: 'Vínculo recuperável', unmatched: 'Sem fatura correspondente', ambiguous: 'Correspondência ambígua', blocked: 'Conferência necessária', missing: 'Vínculo a recuperar'};
         var resultLabels = {
             divergent: 'Divergência identificada', reconciled: 'Conciliada', already_reconciled: 'Já conciliada',
             pending: 'Pendente', blocked: 'Bloqueada para conciliação', not_linked: 'Sem vínculo', not_found: 'Não encontrada',
@@ -158,9 +174,17 @@
                 throw new Error('O servidor retornou uma resposta incompleta. Atualize os registros antes de repetir uma operação.');
             }
             if (!response.ok || payload.ok !== true) {
-                throw new Error(response.status === 401 || response.status === 403
+                var failure = response.status === 401 || response.status === 403
                     ? 'A sessão ou a permissão de administrador precisa ser verificada. Atualize a página antes de continuar.'
-                    : 'Não foi possível concluir a solicitação. Consulte o diagnóstico e atualize os registros.');
+                    : 'Não foi possível concluir a solicitação. Consulte o diagnóstico e atualize os registros.';
+                if (response.status !== 401 && response.status !== 403 && payload.error && typeof payload.error === 'object'
+                    && !Array.isArray(payload.error) && typeof payload.error.message === 'string') {
+                    // Only the controller's explicit sanitized error contract is surfaced, never a response body.
+                    failure = text(payload.error.message, failure) || failure;
+                    var facts = diagnosticFacts(payload.error);
+                    if (facts) { failure += ' · ' + facts; }
+                }
+                throw new Error(failure);
             }
             return payload;
         }
@@ -186,7 +210,10 @@
                 }
                 if (control.type === 'hidden') { return; }
                 control.disabled = busy;
-                if (action === 'compare-selected' || action === 'reconcile-selected') { control.disabled = busy || uncertain || state.selected.size === 0; }
+                if (action === 'compare-selected' || action === 'reconcile-selected') {
+                    var selection = control.getAttribute('data-monitor-kind') === 'payments' ? state.paymentSelected : state.selected;
+                    control.disabled = busy || uncertain || selection.size === 0;
+                }
                 if (control.getAttribute('data-monitor-invoice-action')) { control.disabled = busy || uncertain; }
                 if (action === 'previous' || action === 'next') {
                     var page = state.pages[control.getAttribute('data-monitor-kind')];
@@ -200,6 +227,17 @@
             root.querySelector('[data-monitor-selected-count]').textContent = state.selected.size
                 ? state.selected.size + (state.selected.size === 1 ? ' fatura selecionada nesta página.' : ' faturas selecionadas nesta página.')
                 : 'Nenhuma fatura selecionada.';
+            var paymentIds = state.payments.map(paymentInvoiceId).filter(Boolean);
+            paymentSelectAll.disabled = busy || paymentIds.length === 0;
+            paymentSelectAll.checked = paymentIds.length > 0 && paymentIds.every(function (id) { return state.paymentSelected.has(id); });
+            paymentSelectAll.indeterminate = !paymentSelectAll.checked && paymentIds.some(function (id) { return state.paymentSelected.has(id); });
+            Array.prototype.forEach.call(root.querySelectorAll('[data-monitor-payment-invoice-id]'), function (check) {
+                check.checked = state.paymentSelected.has(check.getAttribute('data-monitor-payment-invoice-id'));
+            });
+            root.querySelector('[data-monitor-payment-selected-count]').textContent = state.paymentSelected.size
+                ? state.paymentSelected.size + (state.paymentSelected.size === 1 ? ' fatura selecionada nesta página.' : ' faturas selecionadas nesta página.')
+                    + ' Parcelas da mesma fatura são verificadas juntas.'
+                : 'Nenhuma fatura selecionada.';
             if (wasBusy && !ownBusy) { document.dispatchEvent(new CustomEvent('asaas:monitor:idle')); }
         }
         function tableState(kind, message) {
@@ -207,7 +245,7 @@
             clear(body);
             var row = node('tr');
             var entry = cell(row, message, 'asaas-monitor-state');
-            entry.colSpan = {invoices: 7, events: 5, logs: 4}[kind];
+            entry.colSpan = {invoices: 7, payments: 7, events: 5, logs: 4}[kind];
             body.appendChild(row);
         }
         function rowAction(group, action, id, caption, info) {
@@ -220,8 +258,8 @@
             button.addEventListener('click', function () { runBatch(action, [id]); });
             group.appendChild(button);
         }
-        function paymentEvidence(parent, status) {
-            var caption = 'Situação a conferir';
+        function paymentEvidence(parent, status, unqueried) {
+            var caption = unqueried ? 'Ainda não consultada' : 'Situação a conferir';
             var tone = 'default';
             if (['CONFIRMED', 'RECEIVED', 'RECEIVED_IN_CASH'].indexOf(status) !== -1) {
                 caption = 'Recebimento confirmado'; tone = 'success';
@@ -270,9 +308,13 @@
                 }
                 cell(row, label(record.crm_status, crmLabels));
                 var remoteCell = cell(row);
-                paymentEvidence(remoteCell, record.asaas_status);
-                secondary(remoteCell, text(record.asaas_payment_id));
-                secondary(remoteCell, label(record.billing_type, {BOLETO: 'Boleto', PIX: 'Pix', CREDIT_CARD: 'Cartão de crédito', UNDEFINED: 'Forma a definir'}));
+                var missing = record.binding_status === 'missing' || !record.asaas_payment_id;
+                paymentEvidence(remoteCell, record.asaas_status, missing && !record.asaas_status);
+                if (missing) {
+                    remoteCell.appendChild(node('span', 'Vínculo a recuperar', 'label label-default asaas-monitor-binding'));
+                    if (record.binding_message) { secondary(remoteCell, text(record.binding_message)); }
+                } else { secondary(remoteCell, text(record.asaas_payment_id)); }
+                secondary(remoteCell, label(record.billing_type, billingLabels));
                 var amountCell = cell(row, money(record.total));
                 secondary(amountCell, 'Saldo: ' + money(record.balance));
                 var datesCell = cell(row, 'Última atualização: ' + text(record.last_sync_at));
@@ -283,6 +325,59 @@
                     rowAction(actions, 'compare', id, 'Comparar', false);
                     rowAction(actions, 'reconcile', id, 'Conciliar', true);
                 } else { actions.textContent = 'Identificador inválido'; }
+                cell(row).appendChild(actions);
+                body.appendChild(row);
+            });
+        }
+        function renderPayments(rows) {
+            var body = root.querySelector('[data-monitor-list="payments"]');
+            clear(body);
+            if (rows.length === 0) { tableState('payments', 'Nenhuma cobrança foi encontrada no Asaas para estes filtros.'); return; }
+            rows.forEach(function (record) {
+                var row = node('tr');
+                var id = paymentInvoiceId(record);
+                var checkCell = cell(row, undefined, 'asaas-monitor-check');
+                if (id) {
+                    var check = document.createElement('input');
+                    check.type = 'checkbox';
+                    check.setAttribute('data-monitor-payment-invoice-id', id);
+                    check.setAttribute('aria-label', 'Selecionar fatura ' + text(record.invoice_number, id) + ' da cobrança ' + text(record.payment_id));
+                    check.checked = state.paymentSelected.has(id);
+                    check.addEventListener('change', function () {
+                        if (state.running || state.loading || logsLoading()) { updateControls(); return; }
+                        if (check.checked) { state.paymentSelected.add(id); } else { state.paymentSelected.delete(id); }
+                        updateControls();
+                    });
+                    checkCell.appendChild(check);
+                }
+                var paymentCell = cell(row, text(record.payment_id));
+                secondary(paymentCell, label(record.billing_type, billingLabels));
+                if (record.installment) {
+                    secondary(paymentCell, 'Parcelamento: ' + text(record.installment));
+                    secondary(paymentCell, 'Parcela: ' + text(record.installment_number));
+                }
+                paymentEvidence(cell(row), record.status);
+                var invoiceCell = cell(row);
+                invoiceCell.appendChild(invoiceLink(record.invoice_id, text(record.invoice_number,
+                    identifier(record.invoice_id) ? 'Fatura ' + record.invoice_id : 'Sem fatura identificada')));
+                invoiceCell.appendChild(node('span', label(record.binding_status, bindingLabels),
+                    'label label-' + (id ? 'info' : 'default') + ' asaas-monitor-binding'));
+                if (record.binding_message) { secondary(invoiceCell, text(record.binding_message)); }
+                var facts = diagnosticFacts(record);
+                if (facts) { secondary(invoiceCell, facts); }
+                var valueCell = cell(row, money(record.value));
+                if (record.original_value !== null && record.original_value !== undefined && record.original_value !== ''
+                    && String(record.original_value) !== String(record.value)) {
+                    secondary(valueCell, 'Original: ' + money(record.original_value));
+                }
+                var dates = cell(row, 'Pagamento: ' + text(record.payment_date));
+                secondary(dates, 'Vencimento: ' + text(record.due_date));
+                secondary(dates, 'Criação: ' + text(record.date_created));
+                var actions = node('div', undefined, 'asaas-monitor-row-actions');
+                if (id) {
+                    rowAction(actions, 'compare', id, 'Comparar', false);
+                    rowAction(actions, 'reconcile', id, 'Conciliar', true);
+                } else { actions.textContent = 'Conferir vínculo e valores antes de conciliar.'; }
                 cell(row).appendChild(actions);
                 body.appendChild(row);
             });
@@ -314,11 +409,17 @@
                 cell(row, text(record.created_at));
                 cell(row, label(record.level, {error: 'Erro', warning: 'Aviso', info: 'Informação', debug: 'Diagnóstico'}));
                 var message = cell(row, text(record.message), 'asaas-monitor-message');
+                var facts = diagnosticFacts(record);
+                if (facts) { secondary(message, facts); }
                 if (record.context && typeof record.context === 'object' && Object.keys(record.context).length) {
                     var details = node('details', undefined, 'asaas-monitor-context');
                     details.appendChild(node('summary', 'Detalhes do registro'));
-                    details.appendChild(node('pre', JSON.stringify(record.context, null, 2).slice(0, 10000)));
+                    var context = node('pre');
+                    context.textContent = JSON.stringify(record.context, null, 2).slice(0, 10000);
+                    details.appendChild(context);
                     message.appendChild(details);
+                } else if (typeof record.details === 'string' && record.details) {
+                    secondary(message, text(record.details));
                 }
                 cell(row, text(record.correlation_id));
                 body.appendChild(row);
@@ -334,6 +435,10 @@
             ['linked_open_invoices', 'webhook_errors', 'webhook_event_errors', 'log_errors'].forEach(function (key) {
                 metric(key, text(integer(data[key], null)));
             });
+            var linked = integer(data.linked_open_invoices, null);
+            var unlinked = integer(data.unlinked_open_invoices, null);
+            metric('eligible_open_invoices', text(integer(data.eligible_open_invoices, linked === null ? null : linked + (unlinked || 0))));
+            metric('unlinked_open_invoices', text(unlinked));
             metric('last_webhook_at', text(data.last_webhook_at));
             metric('cron_enabled', data.cron.enabled === true || data.cron.enabled === 1 || data.cron.enabled === '1' ? 'Habilitada' : 'Desabilitada');
             var last = data.cron.last_run;
@@ -344,7 +449,19 @@
                     + ' · ' + integer(last.processed, 0) + ' verificadas, ' + integer(last.reconciled, 0) + ' conciliadas, ' + integer(last.errors, 0) + ' com erro.'
                     + (remaining > 0 ? ' ' + remaining + ' aguardando a próxima rodada.' : ''));
             } else { metric('cron_last_run', last ? text(last) : 'Nenhuma execução registrada.'); }
-            metric('cron_configuration', 'Janela: ' + integer(data.cron.days, 0) + ' dias · Limite por execução: ' + integer(data.cron.limit, 0) + ' faturas.');
+            metric('cron_configuration', 'Limite por execução: ' + integer(data.cron.limit, 0) + ' faturas · Conferência de quitadas recentes: '
+                + integer(data.cron.days, 0) + ' dias. Faturas em aberto não têm corte por idade.');
+        }
+        function filterDate(selector) {
+            var input = root.querySelector(selector);
+            if (input.validity && input.validity.badInput) { throw new Error('Informe uma data válida para consultar as cobranças no Asaas.'); }
+            var value = input.value.trim();
+            if (!value) { return ''; }
+            var date = new Date(value + 'T00:00:00Z');
+            if (!/^[1-9][0-9]{3}-[0-9]{2}-[0-9]{2}$/.test(value) || !Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+                throw new Error('Informe uma data válida para consultar as cobranças no Asaas.');
+            }
+            return value;
         }
         function listParameters(kind) {
             var page = state.pages[kind];
@@ -354,6 +471,19 @@
                 parameters.status = root.querySelector('#asaas-monitor-invoice-status').value;
             } else if (kind === 'events') {
                 parameters.status = root.querySelector('#asaas-monitor-event-status').value;
+            } else if (kind === 'payments') {
+                var status = root.querySelector('#asaas-monitor-payment-status').value;
+                var dateField = root.querySelector('#asaas-monitor-payment-date-field').value;
+                parameters.status = ['all', 'PENDING', 'OVERDUE', 'CONFIRMED', 'RECEIVED', 'RECEIVED_IN_CASH'].indexOf(status) !== -1 ? status : 'all';
+                parameters.date_field = ['payment', 'due', 'created'].indexOf(dateField) !== -1 ? dateField : 'payment';
+                var from = filterDate('#asaas-monitor-payment-date-from');
+                var to = filterDate('#asaas-monitor-payment-date-to');
+                if (from && to && from > to) { throw new Error('A data inicial deve ser anterior ou igual à data final.'); }
+                if (from) { parameters.date_from = from; }
+                if (to) { parameters.date_to = to; }
+                var size = integer(root.querySelector('#asaas-monitor-payment-per-page').value, 25);
+                page.perPage = size === 50 ? 50 : 25;
+                parameters.per_page = page.perPage;
             } else {
                 parameters.level = root.querySelector('#asaas-monitor-log-level').value;
                 parameters.source = root.querySelector('#asaas-monitor-log-source').value;
@@ -362,6 +492,7 @@
         }
         async function loadList(kind) {
             if (kind === 'invoices') { state.selected.clear(); state.invoices = []; }
+            if (kind === 'payments') { state.paymentSelected.clear(); state.payments = []; }
             state.pages[kind].hasMore = false;
             tableState(kind, 'Carregando registros...');
             var payload = await request(kind, 'GET', listParameters(kind));
@@ -376,8 +507,15 @@
             root.querySelector('[data-monitor-page="' + kind + '"]').textContent = 'Página ' + page.page
                 + (page.total === null ? '' : ' · ' + page.total + ' registros');
             if (kind === 'invoices') { state.invoices = payload.data; renderInvoices(payload.data); }
+            if (kind === 'payments') { state.payments = payload.data; renderPayments(payload.data); }
             if (kind === 'events') { renderEvents(payload.data); }
             if (kind === 'logs') { renderLogs(payload.data); }
+            if (typeof payload.message === 'string' && payload.message.trim()) {
+                var notice = text(payload.message);
+                // Keep an earlier overview error visible alongside a partial-list notice.
+                if (!feedback.hidden && feedback.textContent) { feedback.textContent += '\n' + notice; }
+                else { notify(notice, false); }
+            }
         }
         async function refresh(includeOverview) {
             if (state.loading || state.running) { return; }
@@ -414,7 +552,9 @@
         }
         function appendResult(record) {
             var row = node('tr');
-            cell(row).appendChild(invoiceLink(record.invoice_id));
+            var invoiceCell = cell(row);
+            invoiceCell.appendChild(invoiceLink(record.invoice_id));
+            if (record.binding_recovered === true) { secondary(invoiceCell, 'Vínculo recuperado'); }
             var result = cell(row, label(record.result, resultLabels));
             if (record.result === 'error' || record.result === 'unknown' || record.result === 'partial_reconciled') { result.className = 'text-danger'; }
             var statuses = cell(row, 'CRM: ' + label(record.crm_status, crmLabels));
@@ -427,7 +567,10 @@
                 secondary(receipts, added + (added === 1 ? ' recebimento já verificado.' : ' recebimentos já verificados.'));
             }
             secondary(receipts, 'Confirmado no Asaas: ' + money(record.remote_paid_amount));
-            cell(row, text(record.message), 'asaas-monitor-message');
+            var message = cell(row, text(record.message), 'asaas-monitor-message');
+            var facts = diagnosticFacts(record);
+            if (facts) { secondary(message, facts); }
+            if (typeof record.details === 'string' && record.details) { secondary(message, record.details); }
             resultsBody.appendChild(row);
         }
         async function runBatch(action, requestedIds) {
@@ -523,8 +666,14 @@
                 if (action === 'filter') { state.pages[kind].page = 1; refresh(false); }
                 if (action === 'previous' && state.pages[kind].page > 1) { state.pages[kind].page--; refresh(false); }
                 if (action === 'next' && state.pages[kind].hasMore) { state.pages[kind].page++; refresh(false); }
-                if (action === 'compare-selected') { runBatch('compare', Array.from(state.selected)); }
-                if (action === 'reconcile-selected') { runBatch('reconcile', Array.from(state.selected)); }
+                if (action === 'show-errors') {
+                    root.querySelector('#asaas-monitor-log-level').value = 'error';
+                    root.querySelector('#asaas-monitor-log-source').value = button.getAttribute('data-monitor-source') === 'webhook' ? 'webhook' : 'all';
+                    state.pages.logs.page = 1;
+                    showTab('logs');
+                }
+                if (action === 'compare-selected') { runBatch('compare', Array.from(kind === 'payments' ? state.paymentSelected : state.selected)); }
+                if (action === 'reconcile-selected') { runBatch('reconcile', Array.from(kind === 'payments' ? state.paymentSelected : state.selected)); }
             });
         });
         selectAll.addEventListener('change', function () {
@@ -538,8 +687,24 @@
             });
             updateControls();
         });
+        paymentSelectAll.addEventListener('change', function () {
+            if (state.running || state.loading || logsLoading()) { updateControls(); return; }
+            state.payments.forEach(function (record) {
+                var id = paymentInvoiceId(record);
+                if (id) { if (paymentSelectAll.checked) { state.paymentSelected.add(id); } else { state.paymentSelected.delete(id); } }
+            });
+            updateControls();
+        });
         root.querySelector('#asaas-monitor-query').addEventListener('keydown', function (event) {
             if (event.key === 'Enter') { event.preventDefault(); if (!state.running && !state.loading) { state.pages.invoices.page = 1; refresh(false); } }
+        });
+        ['#asaas-monitor-payment-date-from', '#asaas-monitor-payment-date-to'].forEach(function (selector) {
+            root.querySelector(selector).addEventListener('keydown', function (event) {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    if (state.active === 'payments' && !state.running && !state.loading) { state.pages.payments.page = 1; refresh(false); }
+                }
+            });
         });
         document.addEventListener('asaas:logs:busy', updateControls);
         document.addEventListener('asaas:logs:idle', function () {

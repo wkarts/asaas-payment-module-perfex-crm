@@ -66,6 +66,7 @@ jobs:
           php tests/settings-environment-smoke.php
           php tests/settings-card-smoke.php
           php tests/monitor-reconciliation-smoke.php
+          php tests/reconciliation-transport-smoke.php
           php tests/module-version-smoke.php
           node --check assets/js/asaas-settings.js
           node --check assets/js/asaas-monitor.js

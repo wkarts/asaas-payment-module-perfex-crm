@@ -39,14 +39,18 @@ final class AsaasAdapter
         array $headers = [],
         ?array $payload = null,
         bool $expectsBinary = false,
-        ?int $companyId = null
+        ?int $companyId = null,
+        bool $singleAttempt = false
     ): array {
+        if ($singleAttempt && strtoupper($method) !== 'GET') {
+            throw new \InvalidArgumentException('O transporte de conciliação permite somente consultas GET.');
+        }
         $correlationId = $headers['X-Correlation-Id'] ?? null;
         $headers = $this->provider->headers($headers, $correlationId);
         $apiPath = $this->apiPath($path);
 
         try {
-            $client = $this->provider->client($companyId);
+            $client = $singleAttempt ? $this->provider->reconciliationClient($companyId) : $this->provider->client($companyId);
             $response = $client->request($method, $apiPath, $query, $headers, $payload, false, $expectsBinary);
             $this->log('info', 'Asaas request concluída.', [
                 'method' => $method,

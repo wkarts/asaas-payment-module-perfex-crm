@@ -76,9 +76,9 @@ $insert = static function (string $name, array $row) use ($pdo): void {
 };
 
 try {
-    $create('invoices', 'id INT PRIMARY KEY, clientid INT, status INT, total DECIMAL(15,2), number INT, number_format INT, prefix VARCHAR(30), date DATE, duedate DATE');
-    $create('clients', 'userid INT PRIMARY KEY, company VARCHAR(200), asaas_customer_id VARCHAR(64)');
-    $create('invoicepaymentrecords', 'id INT AUTO_INCREMENT PRIMARY KEY, invoiceid INT, amount DECIMAL(15,2), transactionid VARCHAR(100), INDEX(invoiceid)');
+    $create('invoices', 'id INT PRIMARY KEY, clientid INT, status INT, total DECIMAL(15,2), number INT, number_format INT, prefix VARCHAR(30), date DATE, duedate DATE, hash VARCHAR(100), allowed_payment_modes LONGTEXT');
+    $create('clients', 'userid INT PRIMARY KEY, company VARCHAR(200), asaas_customer_id VARCHAR(64), vat VARCHAR(30)');
+    $create('invoicepaymentrecords', 'id INT AUTO_INCREMENT PRIMARY KEY, invoiceid INT, amount DECIMAL(15,2), transactionid VARCHAR(100), date DATE, paymentmode VARCHAR(50), paymentmethod VARCHAR(50), INDEX(invoiceid)');
     $create('credits', 'id INT AUTO_INCREMENT PRIMARY KEY, invoice_id INT, amount DECIMAL(15,2), INDEX(invoice_id)');
     $create('asaas_payments_map', 'id INT AUTO_INCREMENT PRIMARY KEY, invoice_id INT UNIQUE, asaas_payment_id VARCHAR(64), billing_type VARCHAR(32), status VARCHAR(32), value DECIMAL(15,2), due_date DATE, last_sync_at DATETIME');
     $create('asaas_webhook_events', 'id INT AUTO_INCREMENT PRIMARY KEY, event_id VARCHAR(128) UNIQUE, event_type VARCHAR(64), asaas_payment_id VARCHAR(64), invoice_id INT, received_at DATETIME, processed_at DATETIME, payload LONGTEXT, process_status VARCHAR(32), error_message TEXT');
@@ -123,11 +123,56 @@ try {
     $overview = $service->overview()['data'];
     $assert($overview['linked_open_invoices'] === 60 && $overview['webhook_errors'] === 1, 'O resumo deve contar cobranças e falhas de entrega sem duplicar eventos.');
 
+    // Legacy invoices existed before payment maps and before any webhook reached this installation.
+    $legacyModes = [
+        61 => serialize(['asaas']),
+        62 => '["asaas","paypal"]',
+        63 => "[\n  \"paypal\",\n  \"asaas\"\n]",
+        64 => '["notasaas"]',
+        65 => serialize(['asaas_other']),
+        66 => '{"asaas":true}',
+        67 => 'invalid document "asaas"',
+        68 => serialize(['asaas']),
+        69 => serialize(['asaas']),
+        70 => serialize(['asaas']),
+        71 => serialize(['paypal']),
+    ];
+    foreach ($legacyModes as $id => $modes) {
+        $insert('invoices', ['id' => $id, 'clientid' => 1, 'status' => [62 => 3, 68 => 5, 69 => 6, 70 => 2][$id] ?? 4,
+            'total' => '80.00', 'number' => $id, 'number_format' => 1, 'prefix' => 'FAT-',
+            'date' => '2019-01-01', 'duedate' => '2019-01-10', 'hash' => 'legacy-fixture-' . $id,
+            'allowed_payment_modes' => $modes]);
+    }
+    $insert('invoicepaymentrecords', ['invoiceid' => 62, 'amount' => '30.00', 'transactionid' => 'pay_legacy_partial', 'date' => '2026-11-05', 'paymentmode' => 'Asaas', 'paymentmethod' => 'BOLETO']);
+    $insert('invoicepaymentrecords', ['invoiceid' => 71, 'amount' => '10.00', 'transactionid' => 'pay_legacy_history', 'date' => '2020-01-01', 'paymentmode' => 'Asaas', 'paymentmethod' => 'BOLETO']);
+    $insert('credits', ['invoice_id' => 62, 'amount' => '5.00']);
+    $legacyList = new \Asaas\AsaasReconciliation(get_instance(), new MonitorNoNetworkGateway());
+    $openLegacy = $legacyList->invoices(['per_page' => 50]);
+    $assert($openLegacy['pagination']['total'] === 64, 'As abertas antigas sem mapa devem entrar sem incluir modos parecidos, canceladas, rascunhos ou quitadas.');
+    $assert(array_slice(array_column($openLegacy['data'], 'invoice_id'), 0, 4) === [71, 63, 62, 61], 'A ordem e paginação devem incluir as quatro faturas legadas elegíveis.');
+    $legacyRows = array_column($openLegacy['data'], null, 'invoice_id');
+    $assert($legacyRows[62]['balance'] === '45.00', 'Faturas parciais sem mapa devem descontar pagamentos e créditos existentes.');
+    $assert($legacyRows[71]['balance'] === '70.00' && $legacyRows[71]['binding_status'] === 'missing', 'Histórico de recibo Asaas deve identificar uma fatura cujo modo permitido mudou.');
+    $assert($legacyRows[61]['binding_status'] === 'missing' && $legacyRows[61]['asaas_payment_id'] === '', 'A ausência de mapa deve ser explícita sem inventar identificador remoto.');
+    $assert($legacyRows[61]['last_webhook_at'] === null && $legacyRows[61]['asaas_status'] === '', 'Sem webhook e sem consulta não pode haver confirmação inventada.');
+    $missing = $legacyList->invoices(['status' => 'missing', 'per_page' => 50]);
+    $assert($missing['pagination']['total'] === 4 && count($missing['data']) === 4, 'O filtro de vínculo a recuperar deve incluir somente abertas sem mapa.');
+    $assert($legacyList->invoices(['status' => 'all'])['pagination']['total'] === 67, 'Todas deve incluir canceladas, rascunhos e quitadas elegíveis sem fazer chamadas externas.');
+    $legacyOverview = $legacyList->overview()['data'];
+    $assert($legacyOverview['eligible_open_invoices'] === 64 && $legacyOverview['unlinked_open_invoices'] === 4 && $legacyOverview['linked_open_invoices'] === 60,
+        'Os contadores devem separar todas as elegíveis das efetivamente vinculadas.');
+    $lastPage = $legacyList->invoices(['page' => 3, 'per_page' => 25]);
+    $assert(count($lastPage['data']) === 14 && !$lastPage['pagination']['has_more'], 'A paginação deve alcançar todos os registros antigos, além do primeiro lote.');
+    $assert($legacyList->invoices(['q' => '61'])['pagination']['total'] === 1, 'A busca por número deve encontrar fatura sem mapa.');
+    $assert($legacyList->invoices(['status' => 'suspected'])['pagination']['total'] === 1, 'Fatura ainda não consultada não deve ser apresentada como recebimento confirmado.');
+    $assert((int) $pdo->query('SELECT COUNT(*) FROM `' . db_prefix() . 'asaas_payments_map`')->fetchColumn() === 60,
+        'Listagens e contadores não podem criar vínculos automaticamente.');
+
     // Old installations use context instead of context_json.
     $pdo->exec('ALTER TABLE `' . db_prefix() . 'asaas_logs` CHANGE COLUMN context_json context LONGTEXT NULL');
     $legacy = new \Asaas\AsaasReconciliation(get_instance(), new MonitorNoNetworkGateway());
     $assert($legacy->logs(['source' => 'api'])['pagination']['total'] === 2, 'A coluna de contexto das instalações antigas deve continuar suportada.');
-    echo "Monitoramento MySQL: 18 cenários, {$assertions} asserções, 0 falhas.\n";
+    echo "Monitoramento MySQL: {$assertions} verificações, 0 falhas.\n";
 } finally {
     foreach (array_reverse($tables) as $table) { $pdo->exec('DROP TABLE `' . $table . '`'); }
 }

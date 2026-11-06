@@ -135,6 +135,47 @@ class AsaasSdkProvider
         );
     }
 
+    /** Recovery GETs make one attempt; the next scheduled/user action decides when to retry. */
+    public function reconciliationClient(?int $companyId = null): Client
+    {
+        try {
+            $this->ensureComposerAutoload();
+            $constructor = (new \ReflectionClass(Client::class))->getConstructor();
+            $parameters = $constructor === null ? [] : $constructor->getParameters();
+            $injection = $parameters[6] ?? null;
+            $type = $injection === null ? null : $injection->getType();
+            if ($injection === null || $injection->getName() !== 'client'
+                || !$type instanceof \ReflectionNamedType || $type->getName() !== \GuzzleHttp\Client::class) {
+                throw new \RuntimeException('Unsupported SDK HTTP transport injection.');
+            }
+
+            $environment = $this->environmentEnum($companyId);
+            $timeout = $this->getTimeout($companyId);
+            $connectTimeout = $this->getConnectTimeout($companyId);
+            $transport = new \GuzzleHttp\Client([
+                'base_uri' => $environment->value,
+                'timeout' => $timeout,
+                'connect_timeout' => $connectTimeout,
+                'http_errors' => false,
+                'allow_redirects' => false,
+                'handler' => \GuzzleHttp\HandlerStack::create(),
+            ]);
+            $client = new Client($this->getApiKey($companyId), $environment, $this->getUserAgent($companyId),
+                $timeout, $connectTimeout, null, $transport);
+            $property = new \ReflectionProperty(Client::class, 'client');
+            $property->setAccessible(true);
+            if ($property->getValue($client) !== $transport) {
+                throw new \RuntimeException('SDK ignored the injected recovery transport.');
+            }
+            return $client;
+        } catch (\Throwable) {
+            $message = 'Não foi possível preparar a consulta segura de conciliação. Confira a SDK Asaas 0.2.64 ou superior e o vendor do módulo.';
+            try { $this->logDiagnostic($message, ['operation' => 'reconciliation_client_bootstrap']); }
+            catch (\Throwable) {}
+            throw new \RuntimeException($message);
+        }
+    }
+
     /**
      * Card mutations must never inherit the SDK's automatic retry middleware.
      * SDK 0.2.64 supports an injected Guzzle client, not a maxRetries option.

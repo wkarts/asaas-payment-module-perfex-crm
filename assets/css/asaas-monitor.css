@@ -6,6 +6,7 @@
 .asaas-monitor .asaas-monitor-card > span { display: block; color: #64748b; font-size: 12px; line-height: 1.45; }
 .asaas-monitor .asaas-monitor-card > strong { display: block; margin-top: 6px; color: #334155; font-size: 22px; line-height: 1.25; overflow-wrap: anywhere; }
 .asaas-monitor .asaas-monitor-card > small { display: block; margin-top: 7px; color: #64748b; font-size: 11px; }
+.asaas-monitor .asaas-monitor-card > .btn { max-width: 100%; white-space: normal; text-align: left; }
 .asaas-monitor .asaas-monitor-overview-details { padding: 0 2px 8px; font-size: 12px; overflow-wrap: anywhere; }
 .asaas-monitor .asaas-monitor-overview-details p { margin: 0 0 5px; }
 .asaas-monitor .asaas-monitor-tabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 0 14px; border-top: 1px solid #e2e8f0; }
@@ -15,6 +16,10 @@
 .asaas-monitor .asaas-monitor-search { flex: 1 1 220px; }
 .asaas-monitor .asaas-monitor-filters label { font-size: 12px; font-weight: 600; }
 .asaas-monitor .asaas-monitor-filters select { min-width: 160px; }
+.asaas-monitor .asaas-monitor-remote-filters .form-group { flex: 1 1 160px; min-width: 0; }
+.asaas-monitor .asaas-monitor-remote-filters input,
+.asaas-monitor .asaas-monitor-remote-filters select { width: 100%; min-width: 0; }
+.asaas-monitor .asaas-monitor-binding { display: inline-block; margin-top: 5px; white-space: normal; text-align: left; line-height: 1.4; }
 .asaas-monitor .asaas-monitor-batch-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin: 12px 0; }
 .asaas-monitor .asaas-monitor-batch-actions > span { margin-right: auto; font-size: 12px; }
 .asaas-monitor .asaas-monitor-table { border: 1px solid #e2e8f0; border-radius: 5px; margin: 0; }
