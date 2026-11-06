@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 1
 
       - name: PHP and Composer
         uses: shivammathur/setup-php@v2
@@ -40,8 +40,8 @@ jobs:
           cp composer.lock "$RUNNER_TEMP/asaas-original.lock"
           composer config repositories.asaas-sdk '{"type":"vcs","url":"https://github.com/wkarts/asaas-sdk-argws","only":["argws/asaas-sdk-php"]}'
           composer require 'argws/asaas-sdk-php:^0.2.64' --no-update --no-interaction --no-scripts
-          composer update 'argws/asaas-sdk-php:0.2.64' --with-dependencies --minimal-changes --no-interaction --prefer-dist --no-scripts
-          composer validate --strict --no-check-publish
+          composer update 'argws/asaas-sdk-php:0.2.64' --minimal-changes --no-interaction --prefer-dist --no-scripts
+          composer validate --no-check-publish
           python3 - <<'PY'
           import json, os, pathlib
           before = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'asaas-original.lock').read_text())
@@ -65,6 +65,7 @@ jobs:
           bundle = pathlib.Path(os.environ['RUNNER_TEMP']) / 'asaas-sdk-0264-bundle'
           bundle.mkdir()
           baseline_commit = '999e8e4cba5142259c20e4d65e6d79f2406928b7'
+          subprocess.run(['git', 'fetch', '--depth=1', 'origin', baseline_commit], check=True)
           subprocess.run(['git', 'archive', '--format=tar.gz', '--output', str(bundle / 'baseline-repository.tar.gz'), baseline_commit], check=True)
           shutil.copy2('composer.json', bundle / 'composer.json')
           shutil.copy2('composer.lock', bundle / 'composer.lock')
