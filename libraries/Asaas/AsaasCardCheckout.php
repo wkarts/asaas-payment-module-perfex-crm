@@ -324,8 +324,10 @@ final class AsaasCardCheckout
                     }
                 } elseif ($definitive && $prepared && $previous !== null && !$existingInstallment) {
                     try {
+                        // Preparation does not change the due date. Reposting an expired
+                        // date can reject the rollback and unnecessarily block boleto/Pix.
                         $payment = $this->gateway->update_charge($previous['id'], json_encode(array_intersect_key(
-                            $previous, array_flip(['billingType', 'value', 'dueDate', 'discount', 'fine', 'interest'])
+                            $previous, array_flip(['billingType', 'value', 'discount', 'fine', 'interest'])
                         ), JSON_THROW_ON_ERROR));
                     } catch (\Throwable $restoreError) {
                         $attempt['state'] = 'ambiguous';

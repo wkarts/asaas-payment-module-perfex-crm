@@ -44,6 +44,8 @@ As futuras faturas precisam ser emitidas após o marco de autorização e estar 
 
 A substituição de cartão é uma nova operação de tokenização e de autorização. Uma recusa confirmada suspende o uso automático e exige que o cliente volte ao fluxo de cadastro ou realize o pagamento pelo meio avulso disponível. Cancelar a autorização interrompe novas tentativas; isso não desfaz uma captura que já tenha sido enviada ou um recebimento confirmado.
 
+Após uma recusa confirmada, a restauração da cobrança original preserva o vencimento que já estava no Asaas. Como a preparação do cartão não altera essa data, a restauração também não a reenvia. Isso evita que um boleto vencido seja bloqueado por rejeição de uma data passada. Se a restauração falhar por outro motivo, a operação permanece em conferência até que o vínculo remoto seja verificado.
+
 O cancelamento local remove a credencial utilizável do módulo. Não deve ser apresentado como exclusão do cartão no ambiente do Asaas: não foi identificado, na referência pública consultada, um endpoint de revogação individual do token. Uma tentativa incerta do mesmo perfil impede contornar a conferência cadastrando outro cartão em outra fatura; a revogação das cobranças futuras continua disponível.
 
 ## Fluxo financeiro

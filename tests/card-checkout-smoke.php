@@ -132,6 +132,7 @@ final class CardCheckoutGateway
     public array $remote = [];
     public int $mapWrites = 0;
     public ?int $failMapWrite = null;
+    public ?Closure $beforeUpdate = null;
 
     public function getSetting(string $name) { return $this->settings[$name] ?? ''; }
     public function get_charge2(string $hash): array
@@ -154,6 +155,7 @@ final class CardCheckoutGateway
     {
         $payload = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
         $GLOBALS['card_checkout_trace'][] = ['update', $id, $payload];
+        if ($this->beforeUpdate !== null) { ($this->beforeUpdate)($id, $payload); }
         return $this->remote[$id] = array_replace($this->remote[$id], $payload);
     }
     public function delete_charge(string $id): array
@@ -766,6 +768,62 @@ cardCheckoutTest('recurring timeout keeps the same attempt and never repeats tok
     cardCheckoutAssert(count($api->posts) === 1 && !asaas_card_is_received($db->cache())
         && asaas_card_attempt_blocks($db->cache()), 'An inconclusive token capture can only be inspected, never automatically repeated.');
 });
+
+foreach (['one-time', 'recurring'] as $mode) {
+    cardCheckoutTest('declined ' . $mode . ' card restores overdue boleto without resubmitting its expired due date', static function () use ($mode): void {
+        $dueDate = date('Y-m-d', strtotime('-2 days'));
+        [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture(['status' => 4, 'duedate' => $dueDate], ['card_fee_mode' => 'customer']);
+        $GLOBALS['card_checkout_options']['paymentmethod_asaas_recurring_active'] = '1';
+        $previous = cardCheckoutPayment('pay_old', ['status' => 'OVERDUE', 'dueDate' => $dueDate,
+            'canBePaidAfterDueDate' => true, 'discount' => ['type' => 'FIXED', 'value' => 0, 'dueDateLimitDays' => 0],
+            'fine' => ['value' => 2], 'interest' => ['value' => 1]]);
+        cardCheckoutSeed($gateway, $previous);
+        $gateway->beforeUpdate = static function (string $id, array $payload): void {
+            // Model the provider's minimum-date validation only when a date is sent.
+            if (isset($payload['dueDate']) && $payload['dueDate'] < date('Y-m-d')) {
+                throw new RuntimeException('The submitted due date is earlier than the provider minimum.', 400);
+            }
+        };
+        $api->postFailure = new RuntimeException('Card refused', 400);
+        $quote = $service->installmentOptions($invoice)[0]['quote'];
+        $pay = static fn () => $mode === 'recurring'
+            ? $service->payAuthorizedToken($invoice, 'opaque-recurring-token-fixture', 'cus_fixture', static function (): void {})
+            : $service->pay(cardCheckoutData($invoice, ['quote' => $quote]));
+        $error = cardCheckoutThrows($pay, 'não foi autorizado');
+        $cache = $db->cache();
+        cardCheckoutAssert($error->getCode() === 400 && count($api->posts) === 1 && $api->posts[0]['id'] === 'pay_old',
+            'A definitive refusal must remain a single attempted capture on the existing charge.');
+        cardCheckoutAssert($gateway->remote['pay_old'] === $previous,
+            'Rollback must restore boleto, original value and charge conditions while preserving the past due date and overdue status.');
+        cardCheckoutAssert(($cache['_asaas_lifecycle']['card_attempt']['state'] ?? '') === 'declined'
+            && !asaas_card_attempt_blocks($cache), 'Successful rollback must keep the refusal definitive and allow the original payment alternatives.');
+        cardCheckoutAssert(!isset($cache['_asaas_lifecycle']['card_attempt']['pricing']) && $cache['dueDate'] === $dueDate,
+            'The restored boleto cannot inherit the card surcharge or a new due date.');
+    });
+
+    cardCheckoutTest('failed ' . $mode . ' boleto restoration keeps confirmation pending and never repeats capture', static function () use ($mode): void {
+        $dueDate = date('Y-m-d', strtotime('-2 days'));
+        [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture(['status' => 4, 'duedate' => $dueDate]);
+        $GLOBALS['card_checkout_options']['paymentmethod_asaas_recurring_active'] = '1';
+        cardCheckoutSeed($gateway, cardCheckoutPayment('pay_old', ['status' => 'OVERDUE', 'dueDate' => $dueDate]));
+        $gateway->beforeUpdate = static function (string $id, array $payload): void {
+            if (($payload['billingType'] ?? '') === 'BOLETO') { throw new RuntimeException('Provider unavailable during rollback.', 503); }
+        };
+        $api->postFailure = new RuntimeException('Card refused', 400);
+        $pay = static fn () => $mode === 'recurring'
+            ? $service->payAuthorizedToken($invoice, 'opaque-recurring-token-fixture', 'cus_fixture', static function (): void {})
+            : $service->pay(cardCheckoutData($invoice));
+        cardCheckoutThrows($pay, 'aguardando confirmação');
+        cardCheckoutAssert(in_array(['map', 'ambiguous'], $GLOBALS['card_checkout_trace'], true),
+            'An actual restoration failure must durably record ambiguity before any recovery GET.');
+        cardCheckoutAssert(asaas_card_attempt_blocks($db->cache()) && $gateway->remote['pay_old']['billingType'] === 'CREDIT_CARD',
+            'A GET that still finds the prepared card debt cannot release another payment.');
+        $pay(); // A later invocation may only inspect the known charge.
+        cardCheckoutAssert(count($api->posts) === 1 && asaas_card_attempt_blocks($db->cache())
+            && $gateway->remote['pay_old']['dueDate'] === $dueDate,
+            'Unsuccessful restoration must not cause another capture or silently postpone the existing charge.');
+    });
+}
 
 register_shutdown_function(static function (): void {
     foreach ($GLOBALS['card_checkout_files'] as $path) { if (is_file($path)) { unlink($path); } }

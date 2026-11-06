@@ -67,6 +67,9 @@ async function fixtureServer(initialMode, assets = {}) {
                 return send(200, url.pathname.endsWith('.css') ? 'text/css' : 'text/javascript', fs.readFileSync(assets[url.pathname]));
             }
             if (url.pathname === '/favicon.ico') { return send(204, 'text/plain', ''); }
+            if (request.method === 'GET' && url.pathname === '/_fixture/observer') {
+                return send(200, 'text/html; charset=utf-8', '<!doctype html><html><head><title>Recurring test observer</title></head><body></body></html>');
+            }
             if (request.method === 'POST' && url.pathname === recurringPath) {
                 const chunks = [];
                 let size = 0;
@@ -179,7 +182,7 @@ async function main() {
     const unexpected = [];
     const contexts = [];
     const servers = [];
-    async function fixturePage(initialMode = 'inactive', viewport = {width: 1280, height: 960}) {
+    async function fixturePage(initialMode = 'inactive', viewport = {width: 1280, height: 960}, observeDeparture = false) {
         const transport = await fixtureServer(initialMode, assets);
         servers.push(transport);
         const origin = transport.origin;
@@ -206,7 +209,7 @@ async function main() {
         const observationPrefix = '__ASAAS_RECURRING_BROWSER_EVENT__:';
         const submitted = new Promise(resolve => { recordSubmit = resolve; });
         // Submit is observed before navigation. Departure is read from the surviving
-        // same-origin browsing context below, without CDP delivery during unload.
+        // same-origin observer below, without CDP delivery during unload.
         page.on('console', message => {
             const text = message.text();
             if (!text.startsWith(observationPrefix)) { return; }
@@ -216,20 +219,33 @@ async function main() {
             observationKinds.push(snapshot.type);
             if (snapshot.type === 'submit') { recordSubmit(snapshot); }
         });
-        await page.route('**/*', async route => {
+        await context.route('**/*', async route => {
             const request = route.request();
             const url = new URL(request.url());
             if (url.origin !== origin) { unexpected.push(url.origin); return route.abort(); }
             return route.continue();
         });
         await page.goto(origin + '/_fixture/page');
+        let observerPage = null;
+        if (observeDeparture) {
+            const opened = page.waitForEvent('popup');
+            await page.evaluate(url => {
+                window.__asaasRecurringTestObserver = window.open(url, '_blank');
+            }, origin + '/_fixture/observer');
+            observerPage = await opened;
+            observerPage.on('pageerror', error => errors.push(error.message));
+            await observerPage.waitForLoadState();
+            await observerPage.evaluate(() => { window.__asaasRecurringDepartureFlags = ''; });
+            await page.bringToFront();
+        }
         // Install after the actual script, before the click. Browser-native form navigation
         // can suspend later DOM RPCs while its response is held. Observe submit/pagehide
         // synchronously inside their natural dispatch instead of evaluating a departing page.
         await page.evaluate(marker => {
             const root = document.getElementById('asaas-recurring');
             if (!root) { return; }
-            window.name = '';
+            const observer = window.__asaasRecurringTestObserver || null;
+            delete window.__asaasRecurringTestObserver;
             const forms = [...root.querySelectorAll('[data-asaas-recurring-form]')];
             const names = ['holderName', 'cardNumber', 'expirationMonth', 'expirationYear', 'securityCode',
                 'holderEmail', 'holderDocument', 'holderPostalCode', 'holderAddressNumber', 'holderPhone'];
@@ -262,26 +278,32 @@ async function main() {
                 finally { probing = false; }
                 emit(snapshot);
             });
-            // Harness-only metadata: no input value, token, quote or card data is copied.
-            // window.name survives this same-origin POST/303/GET and is cleared on read.
-            window.addEventListener('pagehide', () => {
-                window.name = marker + JSON.stringify({type: 'pagehide', clearance: clearance()});
-            });
+            if (observer) {
+                // This window survives the source document. The synchronous same-origin write
+                // records only field names/booleans; no input value, token or quote is copied.
+                // Writing window.name during pagehide is too late for the destination's name.
+                window.addEventListener('pagehide', () => {
+                    observer.__asaasRecurringDepartureFlags = marker + JSON.stringify({type: 'pagehide', clearance: clearance()});
+                });
+            }
         }, observationPrefix);
         return {...transport, page,
             waitForSubmit() { return deadline(submitted, 'the synchronous submit observation'); },
             markResultView(state) { observedResultView = state; },
             async readDeparture() {
-                const captured = await page.evaluate(marker => {
-                    const name = window.name;
-                    window.name = '';
-                    if (!name.startsWith(marker)) { return {found: false, length: name.length}; }
-                    return {found: true, snapshot: JSON.parse(name.slice(marker.length))};
+                assert.ok(observerPage, 'Natural departure needs the same-origin observer.');
+                const captured = await observerPage.evaluate(marker => {
+                    const flags = window.__asaasRecurringDepartureFlags;
+                    window.__asaasRecurringDepartureFlags = '';
+                    if (typeof flags !== 'string' || !flags.startsWith(marker)) { return {found: false}; }
+                    return {found: true, snapshot: JSON.parse(flags.slice(marker.length)), privacy: window.__recurringPrivacyAccesses};
                 }, observationPrefix);
                 const diagnostic = JSON.stringify({found: captured.found, finalPath: new URL(page.url()).pathname,
                     observedResultView, requests: transport.requests, observations: observationKinds, pageErrors: errors});
-                assert.equal(captured.found, true, 'Natural pagehide must record its flags before the same-origin PRG: ' + diagnostic);
+                assert.equal(captured.found, true, 'Natural pagehide must record its flags in the live observer: ' + diagnostic);
                 assert.equal(captured.snapshot.type, 'pagehide');
+                assert.deepEqual(captured.privacy, [], 'Observer must not access cookies, storage or extra network APIs.');
+                await observerPage.close();
                 return captured.snapshot;
             }};
     }
@@ -340,7 +362,7 @@ async function main() {
             assert.equal(fixture.submissions.length, 0, 'Opening enrollment cannot capture a card.');
         });
         await scenario('formulário nativo exige consentimento, envia CSRF e impede operação duplicada', async () => {
-            const fixture = await fixturePage('active');
+            const fixture = await fixturePage('active', undefined, true);
             const page = fixture.page;
             await fillCard(page);
             assert.equal(await page.locator('#recurring-consent').isChecked(), false);
@@ -379,7 +401,7 @@ async function main() {
             assert.deepEqual(await page.evaluate(() => window.__recurringPrivacyAccesses), []);
         });
         await scenario('revogação usa apenas ação, CSRF e nonce, limpa dados digitados e não cobra', async () => {
-            const fixture = await fixturePage('active');
+            const fixture = await fixturePage('active', undefined, true);
             fixture.setAfterPost('inactive');
             await fillCard(fixture.page);
             const request = fixture.page.waitForRequest(req => req.method() === 'POST');
