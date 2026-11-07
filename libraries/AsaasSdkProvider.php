@@ -176,6 +176,12 @@ class AsaasSdkProvider
         }
     }
 
+    /** Pix operations use the configured timeout and a verified single-attempt transport. */
+    public function automaticPixClient(?int $companyId = null): Client
+    {
+        return $this->reconciliationClient($companyId);
+    }
+
     /**
      * Card mutations must never inherit the SDK's automatic retry middleware.
      * SDK 0.2.64 supports an injected Guzzle client, not a maxRetries option.

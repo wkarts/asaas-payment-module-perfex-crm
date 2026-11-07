@@ -173,6 +173,31 @@ function asaas_receipt_unlock_all(): void
     }
 }
 
+/** Cleanup cannot expose a receipt still owned by an external transaction. */
+function asaas_receipt_unlock_completed_transactions(): void
+{
+    $state = &asaas_receipt_lock_state();
+    foreach (array_keys($state['locks'] ?? []) as $key) {
+        $lock = $state['locks'][$key] ?? null;
+        if ($lock === null) {
+            continue;
+        }
+        try {
+            if (function_exists('asaas_atomic_payment_depth') && asaas_atomic_payment_depth($lock['db']) !== 0) {
+                // The module does not own an unfinished external transaction.
+                // Keep its lock until the connection closes, rather than expose
+                // uncommitted receipt data to an automatic payment worker.
+                asaas_receipt_lock_diagnostic('O núcleo mantém uma transação aberta. O bloqueio do recebimento será mantido até o encerramento da conexão.', (int) $lock['invoice_id']);
+                continue;
+            }
+        } catch (Throwable $error) {
+            asaas_receipt_lock_diagnostic('Não foi possível confirmar o encerramento da transação. O bloqueio do recebimento será mantido até o encerramento da conexão.', (int) $lock['invoice_id']);
+            continue;
+        }
+        asaas_receipt_release_owned_lock($key);
+    }
+}
+
 /** Keep the named lock through rollback, remote compensation and atomic-core cleanup. */
 function asaas_receipt_lock_shutdown(): void
 {
@@ -201,7 +226,7 @@ function asaas_receipt_lock_shutdown(): void
             asaas_receipt_lock_diagnostic('Falha ao concluir o recebimento atômico antes de liberar o bloqueio da fatura.');
         }
     } finally {
-        asaas_receipt_unlock_all();
+        asaas_receipt_unlock_completed_transactions();
         $state['shutdown_running'] = false;
         $state['shutdown_done'] = true;
     }

@@ -10,6 +10,7 @@ $asaasSettingsGroups = [
     'sync' => ['Sincronização', 'Atualizações das faturas, recebimentos manuais e conciliação automática.'],
     'logs' => ['Logs', 'Histórico e diagnóstico da integração.'],
     'monitoring' => ['Monitoramento', 'Acompanhe eventos, chamadas à API e divergências de recebimentos.'],
+    'reports' => ['Relatórios', 'Extrato, cobranças e informações financeiras da conta Asaas, com filtros e exportação.'],
 ];
 ?>
 <div id="asaas-settings-groups" class="asaas-settings-groups hide" hidden>
@@ -51,6 +52,8 @@ $asaasSettingsGroups = [
                 require __DIR__ . '/monitor.php';
             } elseif ($asaasGroupId === 'logs' && is_file(__DIR__ . '/logs.php')) {
                 require __DIR__ . '/logs.php';
+            } elseif ($asaasGroupId === 'reports' && is_file(__DIR__ . '/reports.php')) {
+                require __DIR__ . '/reports.php';
             } ?>
         </div>
         <?php } ?>

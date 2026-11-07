@@ -116,6 +116,22 @@ try {
     $assert($service->invoices(['status' => 'suspected'])['pagination']['total'] === 1, 'O filtro de divergência deve ser aplicado no SQL.');
     $assert($service->invoices(['q' => "' OR 1=1 --"])['pagination']['total'] === 0, 'O texto pesquisado não pode alterar a consulta SQL.');
     $assert($service->invoices(['q' => '%'])['pagination']['total'] === 0, 'A busca deve tratar porcentagem como texto literal.');
+    foreach (['60' => 1, '000060' => 1, 'FAT-000060' => 1, 'FAT-000060/2026' => 3, 'FAT-2026/000060' => 2, 'FAT-000060/11/2026' => 4] as $query => $format) {
+        $db->query('UPDATE ' . db_prefix() . 'invoices SET number_format = ? WHERE id = 60', [$format]);
+        $matches = $service->invoices(['q' => $query]);
+        $assert($matches['pagination']['total'] === 1 && $matches['data'][0]['invoice_id'] === 60, 'A busca deve localizar número simples ou formatado: ' . $query);
+    }
+    $assert($service->invoices(['q' => 'FAT-000060/10/2026'])['pagination']['total'] === 0, 'O mês do número formatado deve restringir a busca.');
+    $assert($service->invoices(['q' => 'FAT-000060/2025'])['pagination']['total'] === 0, 'O ano deve separar números de séries anuais distintas.');
+    $assert($service->invoices(['q' => 'Empresa fixture'])['pagination']['total'] === 60, 'A busca por cliente deve continuar funcionando com paginação SQL.');
+    $assert($service->targets(['q' => 'FAT-000060/11/2026', 'search_kind' => 'invoice'])['data'][0]['id'] === 60, 'A seleção para consultar a API deve preservar o ID exato da fatura encontrada.');
+    $db->query('UPDATE ' . db_prefix() . 'invoices SET number = 2050, number_format = 3 WHERE id = 60');
+    $matches = $service->invoices(['q' => 'FAT-002050/2026']);
+    $assert($matches['pagination']['total'] === 1 && $matches['data'][0]['invoice_id'] === 60, 'Zeros à esquerda não podem transformar um número parecido com ano no prefixo da fatura.');
+    $db->query('UPDATE ' . db_prefix() . 'invoices SET prefix = ? WHERE id = 60', ['F']);
+    $matches = $service->invoices(['q' => 'F002050/2026']);
+    $assert($matches['pagination']['total'] === 1 && $matches['data'][0]['invoice_id'] === 60, 'Prefixos de um caractere devem funcionar com o número formatado.');
+    $db->query('UPDATE ' . db_prefix() . 'invoices SET prefix = ?, number = 60, number_format = 4 WHERE id = 60', ['FAT-']);
     $assert($service->events(['status' => 'error'])['pagination']['total'] === 10, 'O filtro de eventos deve consultar o estado de processamento.');
     $assert($service->logs(['source' => 'api'])['pagination']['total'] === 2, 'O filtro de API deve incluir os registros legados de cartão.');
     $assert($service->logs(['source' => 'webhook'])['pagination']['total'] === 1, 'O filtro de entrega do webhook deve consultar a origem correta.');

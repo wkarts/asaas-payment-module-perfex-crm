@@ -9,8 +9,13 @@
         if (!root) { return null; }
 
         var form = root.closest('form');
+        var canReconcile = root.getAttribute('data-can-reconcile') !== '0';
+        if (!canReconcile) {
+            Array.prototype.forEach.call(root.querySelectorAll('[data-monitor-action="reconcile-selected"]'), function (button) { button.hidden = true; });
+        }
         var csrf = {name: root.getAttribute('data-csrf-name') || '', hash: root.getAttribute('data-csrf-hash') || ''};
         var state = {active: 'invoices', loading: false, running: false, stop: false, selected: new Set(), invoices: [], paymentSelected: new Set(), payments: [], pages: {}};
+        var targetSearch = null;
         var deferredRefresh = null;
         ['invoices', 'payments', 'events', 'logs'].forEach(function (kind) {
             state.pages[kind] = {page: 1, perPage: 25, hasMore: false, total: null};
@@ -212,7 +217,7 @@
                 control.disabled = busy;
                 if (action === 'compare-selected' || action === 'reconcile-selected') {
                     var selection = control.getAttribute('data-monitor-kind') === 'payments' ? state.paymentSelected : state.selected;
-                    control.disabled = busy || uncertain || selection.size === 0;
+                    control.disabled = busy || uncertain || selection.size === 0 || (action === 'reconcile-selected' && !canReconcile);
                 }
                 if (control.getAttribute('data-monitor-invoice-action')) { control.disabled = busy || uncertain; }
                 if (action === 'previous' || action === 'next') {
@@ -249,6 +254,7 @@
             body.appendChild(row);
         }
         function rowAction(group, action, id, caption, info) {
+            if (action === 'reconcile' && !canReconcile) { return; }
             var button = node('button', caption, info ? 'btn btn-info btn-xs' : 'btn btn-default btn-xs');
             button.type = 'button';
             button.setAttribute('data-monitor-invoice-action', action);
@@ -472,6 +478,16 @@
             } else if (kind === 'events') {
                 parameters.status = root.querySelector('#asaas-monitor-event-status').value;
             } else if (kind === 'payments') {
+                var searchText = root.querySelector('#asaas-monitor-payment-query').value.trim();
+                var searchKind = root.querySelector('#asaas-monitor-search-kind').value;
+                if (searchText !== '') {
+                    var target = identifier(root.querySelector('#asaas-monitor-target').value);
+                    if (!targetSearch || targetSearch.q !== searchText || targetSearch.kind !== searchKind || !target) {
+                        throw new Error('Use Localizar e selecione a fatura ou o cliente antes de consultar o Asaas.');
+                    }
+                    parameters.search_kind = searchKind;
+                    parameters.target_id = target;
+                }
                 var status = root.querySelector('#asaas-monitor-payment-status').value;
                 var dateField = root.querySelector('#asaas-monitor-payment-date-field').value;
                 parameters.status = ['all', 'PENDING', 'OVERDUE', 'CONFIRMED', 'RECEIVED', 'RECEIVED_IN_CASH'].indexOf(status) !== -1 ? status : 'all';
@@ -489,6 +505,42 @@
                 parameters.source = root.querySelector('#asaas-monitor-log-source').value;
             }
             return parameters;
+        }
+        function clearTarget() {
+            targetSearch = null;
+            var select = root.querySelector('#asaas-monitor-target');
+            clear(select);
+            var placeholder = node('option', 'Selecione uma fatura ou um cliente');
+            placeholder.value = '';
+            select.appendChild(placeholder);
+            select.value = '';
+            root.querySelector('[data-monitor-target-wrap]').hidden = true;
+        }
+        async function findTarget() {
+            if (state.loading || state.running || logsLoading()) { return; }
+            var q = root.querySelector('#asaas-monitor-payment-query').value.trim().slice(0, 100);
+            var kind = root.querySelector('#asaas-monitor-search-kind').value;
+            clearTarget();
+            if (q.length < 2) { notify('Digite pelo menos dois caracteres para localizar a fatura ou o cliente.', true); return; }
+            state.loading = true; updateControls();
+            try {
+                var payload = await request('targets', 'GET', {q: q, search_kind: kind});
+                if (!Array.isArray(payload.data)) { throw new Error('A busca não retornou uma lista válida.'); }
+                var select = root.querySelector('#asaas-monitor-target');
+                payload.data.forEach(function (item) {
+                    var id = item && identifier(item.id);
+                    if (!id) { throw new Error('A busca retornou um registro inválido.'); }
+                    var option = node('option', text(item.label)); option.value = id; select.appendChild(option);
+                });
+                targetSearch = {q: q, kind: kind};
+                if (payload.data.length === 1) { select.value = identifier(payload.data[0].id); }
+                root.querySelector('[data-monitor-target-wrap]').hidden = false;
+                root.querySelector('[data-monitor-target-help]').textContent = payload.data.length === 0
+                    ? 'Nenhum resultado no CRM. Confira o número ou o nome informado.'
+                    : (payload.has_more ? 'Há mais resultados. Refine a busca ou selecione um dos primeiros 25.'
+                        : 'Selecione o registro e use Consultar Asaas. O filtro será aplicado a todas as páginas.');
+            } catch (error) { clearTarget(); notify(error.message || 'Não foi possível localizar o registro.', true); }
+            finally { state.loading = false; updateControls(); }
         }
         async function loadList(kind) {
             if (kind === 'invoices') { state.selected.clear(); state.invoices = []; }
@@ -575,6 +627,7 @@
         }
         async function runBatch(action, requestedIds) {
             if (state.loading || state.running || (action !== 'compare' && action !== 'reconcile')) { return; }
+            if (action === 'reconcile' && !canReconcile) { notify('Seu perfil permite consultar, mas não conciliar recebimentos.', true); return; }
             if (logsLoading() || logsCsrfUncertain()) {
                 notify(logsLoading() ? 'Aguarde o diagnóstico de logs antes de executar a operação.'
                     : 'Atualize os registros para renovar a proteção do formulário antes de executar a operação.', true);
@@ -663,6 +716,8 @@
                 }
                 if (state.running || state.loading) { return; }
                 if (action === 'refresh') { refresh(true); }
+                if (action === 'find-target') { findTarget(); }
+                if (action === 'clear-target') { root.querySelector('#asaas-monitor-payment-query').value = ''; clearTarget(); state.pages.payments.page = 1; refresh(false); }
                 if (action === 'filter') { state.pages[kind].page = 1; refresh(false); }
                 if (action === 'previous' && state.pages[kind].page > 1) { state.pages[kind].page--; refresh(false); }
                 if (action === 'next' && state.pages[kind].hasMore) { state.pages[kind].page++; refresh(false); }
@@ -698,6 +753,12 @@
         root.querySelector('#asaas-monitor-query').addEventListener('keydown', function (event) {
             if (event.key === 'Enter') { event.preventDefault(); if (!state.running && !state.loading) { state.pages.invoices.page = 1; refresh(false); } }
         });
+        root.querySelector('#asaas-monitor-payment-query').addEventListener('input', clearTarget);
+        root.querySelector('#asaas-monitor-search-kind').addEventListener('change', clearTarget);
+        root.querySelector('#asaas-monitor-target').addEventListener('change', function () { state.pages.payments.page = 1; });
+        root.querySelector('#asaas-monitor-payment-query').addEventListener('keydown', function (event) {
+            if (event.key === 'Enter') { event.preventDefault(); findTarget(); }
+        });
         ['#asaas-monitor-payment-date-from', '#asaas-monitor-payment-date-to'].forEach(function (selector) {
             root.querySelector(selector).addEventListener('keydown', function (event) {
                 if (event.key === 'Enter') {
@@ -732,6 +793,11 @@
             if (instance) { instance.open(); }
         }
     });
-    if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', initialize); }
-    else { initialize(); }
+    function ready() {
+        var instance = initialize();
+        var root = document.getElementById('asaas-monitor');
+        if (instance && root && root.getAttribute('data-standalone') === '1') { instance.open(); }
+    }
+    if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', ready); }
+    else { ready(); }
 }());

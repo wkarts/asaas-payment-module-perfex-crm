@@ -96,7 +96,9 @@ function asaas_lifecycle_finish(string $operation): void
     }
     if (empty($state['operations'])) {
         foreach (array_keys($state['operation_locks'] ?? []) as $invoiceId) {
-            asaas_receipt_unlock((int) $invoiceId);
+            if (empty($state['manual_pix_receipt_locks'][$invoiceId])) {
+                asaas_receipt_unlock((int) $invoiceId);
+            }
         }
         $state['operation_locks'] = [];
     }
@@ -130,6 +132,7 @@ function asaas_lifecycle_checkout_begin(int $invoiceId): void
     asaas_receipt_lock($invoiceId);
     asaas_lifecycle_begin('checkout:' . $invoiceId);
     asaas_lifecycle_lock_invoice($invoiceId);
+    asaas_lifecycle_assert_no_automatic_pix($invoiceId);
     $invoice = asaas_lifecycle_invoice($invoiceId);
     if (!$invoice || in_array((int) ($invoice->status ?? 1), [2, 5, 6], true)) {
         throw new RuntimeException('Esta fatura não está disponível para pagamento no Asaas.');
@@ -141,6 +144,14 @@ function asaas_lifecycle_checkout_begin(int $invoiceId): void
     $state = &asaas_lifecycle_state();
     $state['checkout_invoice'] = $invoiceId;
     $state['checkout_previous'] = [];
+}
+
+/** A scheduled/uncertain debit must be resolved before another financial mutation. */
+function asaas_lifecycle_assert_no_automatic_pix(int $invoiceId): void
+{
+    if (function_exists('asaas_automatic_pix_invoice_blocks') && asaas_automatic_pix_invoice_blocks($invoiceId)) {
+        throw new RuntimeException('Há um Pix Automático aguardando confirmação. Confira ou cancele a autorização e aguarde a resposta do Asaas antes de alterar, excluir ou receber esta fatura por outro meio.');
+    }
 }
 
 function asaas_lifecycle_checkout_remember($payment): void
@@ -294,8 +305,9 @@ function asaas_lifecycle_reject(Throwable $error, int $invoiceId = 0): void
     $state['compensations'] = [];
     $state['pending_manual_invoices'] = [];
     asaas_atomic_payment_shutdown();
-    asaas_receipt_unlock_all();
+    asaas_receipt_unlock_completed_transactions();
     $state['operation_locks'] = [];
+    $state['manual_pix_receipt_locks'] = [];
     $message = (string) asaas_diagnostic_sanitize($error->getMessage());
     asaas_diagnostic_log('error', 'Operação da fatura bloqueada; consulte os registros de transação e conciliação.', [
         'invoice_id' => $invoiceId,
@@ -431,6 +443,7 @@ function asaas_before_update_invoice(array $hook, $id = null): array
         if (!$original) {
             return $hook;
         }
+        asaas_lifecycle_assert_no_automatic_pix($id);
         asaas_card_assert_invoice_edit($original, $hook['data'] ?? []);
         $invoice = (object) array_merge(get_object_vars($original), $hook['data'] ?? []);
         if (empty($invoice->duedate)
@@ -446,6 +459,7 @@ function asaas_before_update_invoice(array $hook, $id = null): array
         if (!$original) {
             throw new RuntimeException('A fatura deixou de estar disponível durante a sincronização.');
         }
+        asaas_lifecycle_assert_no_automatic_pix($id);
         asaas_card_assert_invoice_edit($original, $hook['data'] ?? []);
         $invoice = (object) array_merge(get_object_vars($original), $hook['data'] ?? []);
         $state['snapshots'][$id] = $state['snapshots'][$id] ?? clone $original;
@@ -557,6 +571,7 @@ function asaas_lifecycle_charges($invoice): array
 
 function asaas_lifecycle_remove($invoice, string $reason): void
 {
+    asaas_lifecycle_assert_no_automatic_pix((int) $invoice->id);
     asaas_card_assert_no_uncertain_payment((int) $invoice->id);
     $gateway = asaas_lifecycle_gateway();
     $charges = asaas_lifecycle_charges($invoice);
@@ -675,6 +690,22 @@ function asaas_before_payment_recorded(array $data): array
 {
     $state = &asaas_lifecycle_state();
     $id = (int) ($data['invoiceid'] ?? 0);
+    if ($id > 0 && empty($state['remote_payment_depth'])) {
+        try {
+            if (function_exists('asaas_automatic_pix_invoice_blocks')) {
+                $invoice = asaas_lifecycle_invoice($id);
+                if (asaas_lifecycle_is_associated($invoice) || ($invoice
+                    && in_array('asaas_automatic_pix', asaas_invoice_payment_modes($invoice->allowed_payment_modes ?? []), true))) {
+                    // Also serialize the first enrollment, before a Pix job exists and
+                    // when manual synchronization is disabled. The writer keeps ownership.
+                    asaas_receipt_lock($id);
+                    $state['manual_pix_receipt_locks'][$id] = ($state['manual_pix_receipt_locks'][$id] ?? 0) + 1;
+                }
+            }
+            asaas_lifecycle_assert_no_automatic_pix($id);
+        }
+        catch (Throwable $error) { asaas_lifecycle_reject($error, $id); }
+    }
     if ($id <= 0 || !empty($state['remote_payment_depth']) || asaas_lifecycle_option('manual_payment_sync') !== '1') {
         return $data;
     }
@@ -690,6 +721,7 @@ function asaas_before_payment_recorded(array $data): array
         $atomicWriter = asaas_lifecycle_has_atomic_payment_writer();
         asaas_lifecycle_begin('payment:' . $id);
         asaas_lifecycle_lock_invoice($id);
+        asaas_lifecycle_assert_no_automatic_pix($id);
         $invoice = asaas_lifecycle_invoice($id);
         if (!$invoice) {
             throw new RuntimeException('A fatura deixou de estar disponível durante o recebimento.');
@@ -784,7 +816,7 @@ function asaas_after_payment_added($paymentId): void
     if (!empty($state['remote_payment_depth'])) {
         return;
     }
-    if (empty($state['pending_manual_invoices']) && empty($state['manual_payment_invoice'])) {
+    if (empty($state['pending_manual_invoices']) && empty($state['manual_payment_invoice']) && empty($state['manual_pix_receipt_locks'])) {
         return;
     }
     $id = (int) ($state['manual_payment_invoice'] ?? 0);
@@ -792,10 +824,24 @@ function asaas_after_payment_added($paymentId): void
         $ci = &get_instance();
         $record = $ci->db->get_where(db_prefix() . 'invoicepaymentrecords', ['id' => (int) $paymentId])->row_array();
         $id = (int) ($record['invoiceid'] ?? $id);
-        unset($state['manual_payment_invoice'], $state['pending_manual_invoices'][$id]);
-        asaas_atomic_payment_complete($paymentId);
-        asaas_lifecycle_finish('payment:' . $id);
-        asaas_receipt_unlock($id);
+        $synchronized = $id > 0 && (!empty($state['pending_manual_invoices'][$id]) || (int) ($state['manual_payment_invoice'] ?? 0) === $id);
+        if ($synchronized) {
+            unset($state['manual_payment_invoice'], $state['pending_manual_invoices'][$id]);
+            asaas_atomic_payment_complete($paymentId);
+            asaas_lifecycle_finish('payment:' . $id);
+        }
+        if (!empty($state['manual_pix_receipt_locks'][$id])) {
+            // Some cores emit the after-hook before COMMIT. Do not release a lock
+            // against uncommitted data or against another receipt in the same batch.
+            if ((int) ($record['invoiceid'] ?? 0) === $id && asaas_atomic_payment_depth($ci->db) === 0) {
+                if (--$state['manual_pix_receipt_locks'][$id] === 0) {
+                    unset($state['manual_pix_receipt_locks'][$id]);
+                    asaas_receipt_unlock($id);
+                }
+            }
+        } elseif ($synchronized) {
+            asaas_receipt_unlock($id);
+        }
     } catch (Throwable $error) {
         asaas_lifecycle_reject($error, $id);
     }

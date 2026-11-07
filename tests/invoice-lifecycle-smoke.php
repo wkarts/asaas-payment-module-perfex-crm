@@ -262,19 +262,23 @@ function lifecycleTest(string $name, callable $callback, bool $needsMbstring = f
 lifecycleTest('module registers pre-save and lifecycle hooks exactly once', static function (): void {
     foreach (['before_invoice_added', 'before_update_invoice', 'before_payment_recorded'] as $name) {
         lifecycleCheck(isset(hooks()->filters[$name]), 'Missing required filter: ' . $name);
-        lifecycleSame($name === 'before_invoice_added' ? 2 : 1,
+        lifecycleSame($name === 'before_invoice_added' ? 3 : 1,
             array_sum(array_map('count', hooks()->filters[$name])), 'Unexpected or duplicate filter: ' . $name);
     }
     foreach (['after_invoice_added', 'invoice_updated', 'before_invoice_deleted', 'after_invoice_deleted',
         'invoice_marked_as_cancelled', 'invoice_unmarked_as_cancelled', 'after_payment_added'] as $name) {
         lifecycleCheck(isset(hooks()->actions[$name]), 'Missing required action: ' . $name);
-        lifecycleSame($name === 'after_invoice_added' ? 2 : 1,
+        lifecycleSame($name === 'after_invoice_added' ? 3 : 1,
             array_sum(array_map('count', hooks()->actions[$name])), 'Unexpected or duplicate action: ' . $name);
     }
     lifecycleSame(['asaas_recurring_before_invoice_added'], hooks()->filters['before_invoice_added'][5],
         'The recurring mode filter must precede native financial validation.');
     lifecycleSame(['asaas_recurring_invoice_added'], hooks()->actions['after_invoice_added'][20],
         'The recurring enqueue hook must run after the original invoice dispatch.');
+    lifecycleSame(['asaas_automatic_pix_before_invoice_added'], hooks()->filters['before_invoice_added'][6],
+        'Pix Automático must preserve the native financial validation order.');
+    lifecycleSame(['asaas_automatic_pix_invoice_added'], hooks()->actions['after_invoice_added'][25],
+        'Pix Automático must enqueue only after the original invoice dispatch.');
 });
 
 foreach (['4.99', '0.00', '-1.00'] as $amount) {

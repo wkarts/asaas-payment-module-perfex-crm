@@ -15,7 +15,7 @@ const path = require('node:path');
 const {execFileSync} = require('node:child_process');
 const vm = require('node:vm');
 const root = path.resolve(__dirname, '..');
-const groups = ['general', 'environment', 'payments', 'charges', 'webhook', 'sync', 'logs', 'monitoring'];
+const groups = ['general', 'environment', 'payments', 'charges', 'webhook', 'sync', 'logs', 'monitoring', 'reports'];
 const secretNames = ['api_key', 'api_key_sandbox', 'webhook_secret'];
 const anticipationDefaults = {
     card_anticipation_mode: 'none', card_anticipation_first_days: '30',
@@ -42,7 +42,7 @@ async function scenario(name, callback) {
 
 async function main() {
     const fixtures = {standard: renderFixture(), wrapped: renderFixture('--wrapped'), flat: renderFixture('--no-layout')};
-    await scenario('views reais: oito guias, formulário único e opções do gateway preservadas', () => {
+    await scenario('views reais: nove guias, formulário único e opções do gateway preservadas', () => {
         assert.deepEqual(fixtures.standard.groups, groups);
         assert.equal(fixtures.standard.forms, 1);
         assert.equal(fixtures.standard.nested_forms, 0);

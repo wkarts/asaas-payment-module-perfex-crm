@@ -151,6 +151,7 @@ function fixture(options = {}) {
     if (options.present !== false) { parseView(form, document); }
     const root = document.getElementById('asaas-monitor');
     if (root && options.endpoint) { root.setAttribute('data-endpoint', options.endpoint); }
+    if (root && options.canReconcile === false) { root.setAttribute('data-can-reconcile', '0'); }
     const calls = []; const queued = []; const timers = new Map(); let timerId = 0;
     const window = {location: {href: 'https://crm.example.test/admin/settings?group=payment_gateways', origin: 'https://crm.example.test'},
         fetch: async (url, settings) => {
@@ -546,6 +547,31 @@ async function main() {
     check(broken.body('invoices').textContent.includes('Não foi possível carregar') && broken.action('compare-selected').disabled, 'Malformed list responses leave a clear error and no stale selection.');
     broken.queue(overview()); broken.queue(listing([invoice(105)])); broken.action('refresh').click(); await settle();
     check(broken.body('invoices').textContent.includes('TEST-105') && broken.get('[data-monitor-feedback]').hidden, 'An explicit refresh recovers from a read failure.');
+
+    scenarios++;
+    const readOnly = fixture({canReconcile: false}); await readOnly.open();
+    check(readOnly.action('reconcile-selected').hidden && readOnly.action('reconcile-selected', 'payments').hidden, 'A view-only staff member does not see receipt batch actions.');
+    check(!readOnly.get('[data-monitor-invoice-action="reconcile"]') && readOnly.get('[data-monitor-invoice-action="compare"]'), 'Read-only rows expose comparison without a receipt action.');
+    readOnly.selectAll();
+    check(!readOnly.action('compare-selected').disabled && readOnly.action('reconcile-selected').disabled, 'Selections never enable reconciliation for a read-only role.');
+
+    scenarios++;
+    const lookup = fixture(); await lookup.open(); lookup.queue(listing([])); lookup.tab('payments').click(); await settle();
+    lookup.get('#asaas-monitor-payment-query').value = 'FAT-000387/11/2026';
+    lookup.queue({ok: true, data: [{id: 399, label: '<img src=x> FAT-000387/11/2026'}], has_more: false, csrf: csrf('target_csrf')});
+    lookup.action('find-target').click(); await settle();
+    assertSafeRequest(lookup.calls[3], 'GET', 'targets');
+    check(lookup.calls[3].url.searchParams.get('q') === 'FAT-000387/11/2026'
+        && lookup.calls[3].url.searchParams.get('search_kind') === 'invoice', 'The full native invoice number reaches the server lookup.');
+    check(lookup.get('#asaas-monitor-target').value === '399' && lookup.root.querySelectorAll('img').length === 0, 'A unique match is selected and its label remains escaped text.');
+    lookup.queue(listing([], 'filtered_csrf', {has_more: true, total: 30})); lookup.action('filter', 'payments').click(); await settle();
+    check(lookup.calls[4].url.searchParams.get('target_id') === '399'
+        && lookup.calls[4].url.searchParams.get('search_kind') === 'invoice', 'Provider browsing uses the explicit selected identity.');
+    lookup.queue(listing([], 'next_csrf', {page: 2, has_more: false, total: 30})); lookup.action('next', 'payments').click(); await settle();
+    check(lookup.calls[5].url.searchParams.get('target_id') === '399' && lookup.calls[5].url.searchParams.get('page') === '2', 'Search selection is preserved on subsequent provider pages.');
+    lookup.get('#asaas-monitor-payment-query').value = 'Outro cliente'; lookup.get('#asaas-monitor-payment-query').dispatchEvent(event('input'));
+    lookup.action('filter', 'payments').click(); await settle();
+    check(lookup.calls.length === 6 && lookup.get('[data-monitor-feedback]').textContent.includes('Localizar'), 'Changing search text cannot reuse the previous customer or invoice silently.');
 
     scenarios++;
     const foreign = fixture({endpoint: 'https://external.example.test/monitor/'}); foreign.shown(); await settle();

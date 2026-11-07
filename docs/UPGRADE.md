@@ -1,5 +1,22 @@
 # Plano de migração — Asaas (SDK argws)
 
+## Atualização com Pix Automático, menu e relatórios
+
+A atualização é aditiva e preserva os meios existentes. A dependência distribuída passa a `argws/asaas-sdk-php` **0.3.0**, que contém a PR #22 da SDK. A PR #23 acrescenta paginação opcional e documentação/contratos de consultas; esta entrega do módulo não exige uma versão ainda não publicada da SDK. Use o `composer.lock` e o `vendor` do pacote juntos.
+
+1. Faça backup do módulo, banco e configuração de criptografia do Perfex. Instale primeiro em homologação.
+2. Instale o ZIP da versão publicada ou execute `composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction` no módulo a partir deste lock. Não substitua somente arquivos da SDK.
+3. Execute a atualização do módulo pelo Perfex. A migration `158_version_158.php` cria as tabelas de autorizações e trabalhos Pix, sem alterar ou apagar faturas e recebimentos existentes. O workflow atual avança a versão de 1.5.7 para 1.5.8 no merge. Um pacote candidato da PR ainda identificado como 1.5.7 requer reativação do módulo em homologação para executar o instalador aditivo.
+4. Em perfis de colaboradores, conceda **Asaas — Monitoramento: visualizar/conciliar** e **Asaas — Relatórios: visualizar/exportar**, conforme o trabalho de cada pessoa. Essas permissões concedem acesso aos dados da integração/conta, e não somente às faturas atribuídas ao colaborador. Sem permissão, o menu e as rotas são bloqueados.
+5. Confira **Asaas → Monitoramento** e **Asaas → Relatórios**. As mesmas ferramentas permanecem nas configurações do meio de pagamento. Relatórios usam somente consultas; abrir essas telas não registra recebimentos.
+6. Para habilitar Pix Automático, siga [PIX-AUTOMATICO.md](PIX-AUTOMATICO.md). Mantenha o recurso desativado até validar elegibilidade da conta, banco pagador, webhook autenticado e cron. Autorização e pagamento são estados diferentes; não faça baixa somente porque uma instrução foi concluída.
+
+As bibliotecas HTTP compatíveis também foram atualizadas no lock para corrigir avisos de segurança das versões anteriores. A atualização não altera os parâmetros de e-mail/telefone dos clientes nem introduz armazenamento de dados de cartão.
+
+### Retorno à versão anterior
+
+Preserve o backup das novas tabelas. Desativar o gateway impede novos agendamentos locais, mas não cancela automaticamente autorizações ou pagamentos já enviados ao banco. Antes de retirar o código novo, cancele as autorizações pela interface e confira pagamentos pendentes no Asaas/monitoramento; resolva estados incertos por consulta. Depois restaure o módulo e suas dependências do mesmo backup. Não exclua tabelas de eventos, recibos ou mandatos como parte do retorno.
+
 ## Plano (8–12 bullets)
 1. Manter `argws/asaas-sdk-php` como SDK da integração e preservar as demais dependências declaradas, incluindo `endroid/qr-code`.
 2. Criar `AsaasSdkProvider` para centralizar configuração (sandbox/produção, apiKey, user-agent, timeouts, headers e healthcheck).

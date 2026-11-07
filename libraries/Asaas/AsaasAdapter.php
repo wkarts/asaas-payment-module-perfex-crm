@@ -682,6 +682,13 @@ final class AsaasAdapter
                 $invoice = $this->ci->db->get(db_prefix() . 'invoices')->row();
             }
 
+            // Jornada 3 creates its initial Pix without externalReference. Resolve only
+            // after authentication, using the persisted QR identifier and authoritative GETs.
+            if ($invoice === null && $secret !== '' && ($payment['billingType'] ?? '') === 'PIX'
+                && function_exists('asaas_automatic_pix_resolve_webhook_invoice')) {
+                $invoice = \asaas_automatic_pix_resolve_webhook_invoice($payment);
+            }
+
             if ($invoice) {
                 // A timeout can leave the quote persisted before its validated allocation map.
                 // Recover via GET before acquiring our own lock/transaction; the checkout owns
