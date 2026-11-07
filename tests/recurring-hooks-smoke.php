@@ -221,7 +221,7 @@ function recurringHooksFixture(bool $enabled = true): array
 
 recurringHooksTest('bootstrap registers separate gateways and additive hooks', static function (): void {
     $registry = $GLOBALS['recurring_hooks_registry'];
-    recurringHooksAssert($registry['gateway'] === [['asaas_gateway', 'asaas'], ['asaas_recurring_gateway', 'asaas']], 'The original gateway must remain registered beside the new gateway.');
+    recurringHooksAssert($registry['gateway'] === [['asaas_gateway', 'asaas'], ['asaas_recurring_gateway', 'asaas'], ['asaas_automatic_pix_gateway', 'asaas']], 'The original and recurring card gateways must remain registered beside Pix Automático.');
     foreach ([['filter', 'before_invoice_added', 'asaas_recurring_before_invoice_added', 5],
         ['action', 'after_invoice_added', 'asaas_recurring_invoice_added', 20],
         ['action', 'after_cron_run', 'asaas_recurring_after_cron', 20],

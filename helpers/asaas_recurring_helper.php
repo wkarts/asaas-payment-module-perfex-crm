@@ -36,6 +36,7 @@ function asaas_recurring_message(string $reason): string
     $messages = [
         'inactive' => 'Cadastre o cartão e autorize o pagamento desta fatura e das próximas faturas Asaas deste cliente.',
         'active' => 'Cartão recorrente autorizado para as novas faturas Asaas deste cliente.',
+        'other_mandate' => 'Este cliente possui uma autorização Pix Automático ou uma operação pendente. Cancele-a e aguarde a confirmação antes de autorizar o cartão recorrente.',
         'confirmed' => 'Pagamento confirmado e registrado no CRM.',
         'declined' => 'O pagamento não foi aprovado. A recorrência foi pausada. Cadastre o cartão novamente ou use o pagamento pontual.',
         'revoked' => 'A autorização foi revogada. Nenhuma nova cobrança automática será iniciada. Uma operação já enviada continua sujeita à confirmação.',

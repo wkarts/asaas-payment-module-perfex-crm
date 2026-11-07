@@ -9,6 +9,7 @@ defined('BASEPATH') or exit('No direct script access allowed');
 require_once __DIR__ . '/../../helpers/asaas_diagnostics_helper.php';
 require_once __DIR__ . '/../../helpers/asaas_lifecycle_helper.php';
 require_once __DIR__ . '/../../helpers/asaas_reconciliation_helper.php';
+require_once __DIR__ . '/../../helpers/asaas_monitor_search_helper.php';
 
 /**
  * Administrative observation and recovery of receipts. Remote operations are GETs only.
@@ -101,11 +102,9 @@ final class AsaasReconciliation
         if ($status === 'missing') { $where[] = "(m.asaas_payment_id IS NULL OR m.asaas_payment_id = '')"; }
         $search = is_scalar($filters['q'] ?? null) ? trim((string) $filters['q']) : '';
         if ($search !== '') {
-            $search = substr($search, 0, 100);
-            $like = '%' . str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search) . '%';
-            $where[] = "(i.id = ? OR i.number = ? OR c.company LIKE ? ESCAPE '!' OR m.asaas_payment_id LIKE ? ESCAPE '!')";
-            $number = ctype_digit($search) ? (int) $search : 0;
-            array_push($bindings, $number, $number, $like, $like);
+            [$searchSql, $searchBindings] = \asaas_monitor_invoice_search($search);
+            $where[] = $searchSql;
+            array_push($bindings, ...$searchBindings);
         }
         $from = ' FROM ' . $this->table('invoices') . ' i LEFT JOIN ' . $this->table('asaas_payments_map')
             . ' m ON m.invoice_id = i.id LEFT JOIN ' . $this->table('clients') . ' c ON c.userid = i.clientid WHERE ' . implode(' AND ', $where);
@@ -143,6 +142,30 @@ final class AsaasReconciliation
         return $this->page($rows, $total, $page, $limit);
     }
 
+    /** Local explicit selection prevents a fuzzy customer name from silently choosing an account. */
+    public function targets(array $filters = []): array
+    {
+        $query = $filters['q'] ?? '';
+        $kind = $filters['search_kind'] ?? 'invoice';
+        if (!is_string($query) || strlen(trim($query)) < 2 || strlen($query) > 100
+            || !in_array($kind, ['invoice', 'client'], true)) {
+            throw new \InvalidArgumentException('Digite pelo menos dois caracteres e escolha fatura ou cliente.');
+        }
+        if ($kind === 'invoice') {
+            $page = $this->invoices(['q' => $query, 'status' => 'all', 'per_page' => 25]);
+            return ['ok' => true, 'data' => array_map(static fn (array $item): array => [
+                'id' => $item['invoice_id'], 'label' => $item['invoice_number'] . ' — ' . $item['client_name'],
+            ], $page['data']), 'has_more' => $page['pagination']['has_more']];
+        }
+        $like = '%' . str_replace(['!', '%', '_'], ['!!', '!%', '!_'], trim($query)) . '%';
+        $clients = $this->rows('SELECT userid, company FROM ' . $this->table('clients')
+            . " WHERE company LIKE ? ESCAPE '!' OR userid = ? ORDER BY company, userid LIMIT 26",
+            [$like, ctype_digit(trim($query)) ? (int) trim($query) : 0]);
+        return ['ok' => true, 'data' => array_map(fn (array $client): array => [
+            'id' => (int) $client['userid'], 'label' => $this->safeText((string) $client['company'], 200) . ' (#' . (int) $client['userid'] . ')',
+        ], array_slice($clients, 0, 25)), 'has_more' => count($clients) > 25];
+    }
+
     /** Explicit administrative API browsing. This method never creates bindings or receipts. */
     public function payments(array $filters = []): array
     {
@@ -174,6 +197,7 @@ final class AsaasReconciliation
         $this->verifiedCustomers = [];
         try {
             $apiScope = $this->apiScope();
+            $query += $this->selectedPaymentFilter($filters, $apiScope);
             $response = $this->remote('/payments', $query);
             if (!is_array($response['data'] ?? null) || !is_bool($response['hasMore'] ?? null) || count($response['data']) > $limit) {
                 throw new \RuntimeException('Incomplete recovery payment list.');
@@ -289,6 +313,7 @@ final class AsaasReconciliation
             if ($limited) { $result['message'] = 'As cobranças foram listadas, mas parte dos vínculos exige nova conferência por limite de tempo.'; }
             return $result;
         } catch (\Throwable $error) {
+            if ($error instanceof \InvalidArgumentException) { throw $error; }
             $failure = $this->failure($error);
             \asaas_diagnostic_log('error', $failure['message'], ['source' => 'reconciliation', 'operation' => 'list_payments',
                 'error_code' => $failure['code'], 'http_status' => $failure['http_status']]);
@@ -355,7 +380,7 @@ final class AsaasReconciliation
                     $safe[$key] = is_string($raw[$key]) ? $this->safeText($raw[$key], in_array($key, ['message', 'reason', 'details'], true) ? 1000 : 250) : $raw[$key];
                 }
             }
-            $source = in_array($raw['source'] ?? '', ['api', 'webhook', 'reconciliation', 'recurring'], true) ? $raw['source']
+            $source = in_array($raw['source'] ?? '', ['api', 'webhook', 'reconciliation', 'recurring', 'automatic_pix', 'reports'], true) ? $raw['source']
                 : (isset($raw['method']) || strpos((string) ($raw['operation'] ?? ''), 'card_') === 0 ? 'api' : 'other');
             $items[] = [
                 'id' => (int) $row['id'], 'level' => $this->enumText($row['level']), 'message' => $this->safeText((string) $row['message'], 1000),
@@ -837,8 +862,13 @@ final class AsaasReconciliation
     private function validatePayment(object $invoice, array $map, array $cache, array $payment, ?string $expectedId = null): void
     {
         $id = $payment['id'] ?? null;
+        $referenceMatches = ($payment['externalReference'] ?? null) === ($invoice->hash ?? null);
+        if (!$referenceMatches && ($payment['externalReference'] ?? '') === ''
+            && function_exists('asaas_automatic_pix_matches_payment')) {
+            $referenceMatches = \asaas_automatic_pix_matches_payment($invoice, $payment);
+        }
         if (!is_string($id) || $id === '' || $this->identifier($id) !== $id || ($expectedId !== null && $id !== $expectedId)
-            || !is_string($invoice->hash ?? null) || $invoice->hash === '' || ($payment['externalReference'] ?? null) !== $invoice->hash
+            || !is_string($invoice->hash ?? null) || $invoice->hash === '' || !$referenceMatches
             || !is_string($payment['customer'] ?? null) || $payment['customer'] === ''
             || !is_string($payment['status'] ?? null) || $this->enumText($payment['status']) !== $payment['status']
             || !in_array($payment['billingType'] ?? null, ['BOLETO', 'PIX', 'CREDIT_CARD', 'DEBIT_CARD', 'UNDEFINED'], true)
@@ -1081,6 +1111,51 @@ final class AsaasReconciliation
             : $gateway->request('GET', $path, $query);
     }
 
+    /** Apply a selected CRM identity to the provider query; never filter only the visible page. */
+    private function selectedPaymentFilter(array $filters, array $scope): array
+    {
+        $kind = $filters['search_kind'] ?? '';
+        $selected = $filters['target_id'] ?? '';
+        if (($kind === '' || $kind === null) && ($selected === '' || $selected === null)) { return []; }
+        if (!in_array($kind, ['invoice', 'client'], true) || !is_scalar($selected)
+            || !preg_match('/^[1-9][0-9]{0,9}$/D', (string) $selected) || (int) $selected > 2147483647) {
+            throw new \InvalidArgumentException('Localize e selecione uma fatura ou um cliente válido para a consulta.');
+        }
+        if ($kind === 'invoice') {
+            $row = $this->one('SELECT * FROM ' . $this->table('invoices') . ' WHERE id = ? LIMIT 1', [(int) $selected]);
+            $map = $this->one('SELECT * FROM ' . $this->table('asaas_payments_map') . ' WHERE invoice_id = ? LIMIT 1', [(int) $selected]);
+            if ($row === [] || !$this->eligibleInvoice((object) $row, $map) || empty($row['hash'])) {
+                throw new \InvalidArgumentException('A fatura selecionada não está disponível na integração Asaas.');
+            }
+            $this->assertDiscoveryIssuer($this->invoiceScope((object) $row), $scope);
+            return ['externalReference' => (string) $row['hash']];
+        }
+        $client = $this->one('SELECT * FROM ' . $this->table('clients') . ' WHERE userid = ? LIMIT 1', [(int) $selected]);
+        if ($client === []) { throw new \InvalidArgumentException('O cliente selecionado não foi localizado no CRM.'); }
+        $known = $this->customerId((int) $selected);
+        if ($known !== '') {
+            $customer = $this->remote('/customers/' . rawurlencode($known));
+        } else {
+            $list = $this->remote('/customers', ['externalReference' => (string) $selected, 'offset' => 0, 'limit' => 2]);
+            if (!is_array($list['data'] ?? null) || count($list['data']) !== 1 || ($list['hasMore'] ?? true) !== false) {
+                throw new \InvalidArgumentException('O cliente não possui um vínculo único confirmado no Asaas. Confira o cadastro antes de filtrar.');
+            }
+            $customer = $list['data'][0];
+        }
+        $remoteId = is_array($customer) ? $this->identifier($customer['id'] ?? null) : '';
+        $localDocument = preg_replace('/[^0-9]/', '', (string) ($client['vat'] ?? ''));
+        $remoteDocument = preg_replace('/[^0-9]/', '', is_string($customer['cpfCnpj'] ?? null) ? $customer['cpfCnpj'] : '');
+        $reference = is_scalar($customer['externalReference'] ?? null) ? (string) $customer['externalReference'] : '';
+        if ($remoteId === '' || ($known !== '' && $remoteId !== $known) || !empty($customer['deleted'])
+            || isset($customer['errors']) || isset($customer['error'])
+            || ($reference !== '' && $reference !== (string) $selected)
+            || ($localDocument !== '' && $remoteDocument !== $localDocument)
+            || ($reference !== (string) $selected && $localDocument === '')) {
+            throw new \InvalidArgumentException('O cadastro do cliente não corresponde à conta Asaas do ambiente ativo. Confira o vínculo no financeiro.');
+        }
+        return ['customer' => $remoteId];
+    }
+
     /** Complete bounded pagination; an incomplete result can never establish a binding. */
     private function remotePages(string $path, array $query, ?int $expectedCount = null): array
     {
@@ -1245,7 +1320,7 @@ final class AsaasReconciliation
         $level = (string) ($filters['level'] ?? 'all');
         if (in_array($level, ['info', 'debug', 'warning', 'error'], true)) { $clauses[] = 'level = ?'; $bindings[] = $level; }
         $source = (string) ($filters['source'] ?? 'all');
-        if (in_array($source, ['api', 'webhook', 'reconciliation', 'recurring'], true)) {
+        if (in_array($source, ['api', 'webhook', 'reconciliation', 'recurring', 'automatic_pix', 'reports'], true)) {
             $context = $this->contextColumn();
             if ($context === null) { $clauses[] = '1 = 0'; }
             else {

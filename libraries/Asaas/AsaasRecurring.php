@@ -43,6 +43,7 @@ final class AsaasRecurring
         try {
             if (!$this->enabled() || !$this->store->ready() || !$this->brl($invoice) || !$this->open($invoice)
                 || array_intersect(['asaas', 'asaas_recurring'], $this->modes($invoice)) === []) { return false; }
+            if (function_exists('asaas_automatic_pix_client_blocks') && \asaas_automatic_pix_client_blocks($invoice)) { return false; }
             $this->scope($invoice);
             return true;
         } catch (\Throwable $error) { return false; }
@@ -117,6 +118,9 @@ final class AsaasRecurring
             $lock = $this->store->lock((int) $invoice->clientid, $scope['key']);
             \asaas_receipt_lock($invoiceId);
             $fresh = $this->fresh($invoice);
+            if (function_exists('asaas_automatic_pix_client_blocks') && \asaas_automatic_pix_client_blocks($fresh)) {
+                throw new \RuntimeException('other_mandate');
+            }
             if (!$this->available($fresh) || $scope !== $this->scope($fresh)) { throw new \RuntimeException('invoice_changed'); }
             $job = $this->store->job($invoiceId);
             if (in_array($job['state'] ?? '', ['processing', 'uncertain', 'confirmed'], true)
@@ -206,6 +210,7 @@ final class AsaasRecurring
             || array_intersect(['asaas', 'asaas_recurring'], \asaas_invoice_payment_modes($data['allowed_payment_modes'] ?? [])) === []) { return false; }
         $invoice = (object) $data;
         if (!$this->brl($invoice)) { return false; }
+        if (function_exists('asaas_automatic_pix_client_blocks') && \asaas_automatic_pix_client_blocks($invoice)) { return false; }
         $scope = $this->scope($invoice);
         $authorization = $this->store->authorization((int) $invoice->clientid, $scope['key']);
         return ($authorization['state'] ?? '') === 'active' && !empty($authorization['token_ciphertext'])
@@ -351,6 +356,9 @@ final class AsaasRecurring
     private function assertAuthorization(object $invoice, array $job, array $authorization, string $lock): void
     {
         $this->store->assertLock($lock);
+        if (function_exists('asaas_automatic_pix_client_blocks') && \asaas_automatic_pix_client_blocks($invoice)) {
+            throw new \RuntimeException('other_mandate');
+        }
         $current = $this->store->authorizationById((int) $authorization['id']);
         if (($current['state'] ?? '') !== 'active' || (int) ($current['revision'] ?? 0) !== (int) $job['authorization_revision']
             || empty($current['token_ciphertext']) || ($current['customer_id'] ?? '') !== ($authorization['customer_id'] ?? '')) {
@@ -639,7 +647,7 @@ final class AsaasRecurring
         return in_array($reason, ['transaction_active', 'unavailable', 'storage_unavailable', 'vault_unavailable', 'busy',
             'invalid_consent', 'contact_mismatch', 'quote_changed', 'policy_changed', 'scope_changed', 'authorization_changed',
             'invoice_changed', 'invoice_ineligible', 'customer_mismatch', 'charge_mismatch', 'tokenization_failed',
-            'https_required', 'uncertain', 'receipt_pending'], true) ? $reason : $fallback;
+            'https_required', 'uncertain', 'receipt_pending', 'other_mandate'], true) ? $reason : $fallback;
     }
     private function result(bool $ok, string $state, string $reason): array
     {

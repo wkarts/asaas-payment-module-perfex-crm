@@ -12,11 +12,23 @@ Exclusão, cancelamento e reativação podem acompanhar a cobrança no Asaas. A 
 
 ## Cartão de crédito e ambiente do checkout
 
-O módulo distribui a SDK `argws/asaas-sdk-php` **0.2.64**, com checkout de cartão à vista ou em até 12 parcelas, conforme limite configurado e saldo da fatura. O processamento confere a resposta Asaas, acompanha parcelas individualmente e mantém proteção contra envio repetido. A opção **Exibir o ambiente em produção na área de pagamentos** permite ocultar a faixa no checkout; o aviso de sandbox permanece visível. Consulte [configuração, instalação e conciliação do cartão](docs/CARTAO-CREDITO.md).
+O módulo distribui a SDK `argws/asaas-sdk-php` **0.3.0**, com checkout de cartão à vista ou em até 21 parcelas, conforme limite configurado, bandeira e saldo da fatura. O processamento confere a resposta Asaas, acompanha parcelas individualmente e mantém proteção contra envio repetido. A opção **Exibir o ambiente em produção na área de pagamentos** permite ocultar a faixa no checkout; o aviso de homologação permanece visível. Consulte [configuração, instalação e conciliação do cartão](docs/CARTAO-CREDITO.md).
 
 ## Cartão de crédito recorrente
 
-O meio **Cartão de crédito recorrente – Asaas** é independente das opções do checkout pontual. O cliente entra na própria conta, autoriza esta fatura e as próximas faturas Asaas elegíveis, e pode revogar a autorização. A fila usa o cron do Perfex, conserva somente um token criptografado e mantém a cobrança em aberto quando há recusa. Um resultado incerto é consultado sem repetir a captura. O recurso inicia desativado e utiliza a SDK **0.2.64** já distribuída. Consulte o [guia de recorrência, consentimento, instalação e operação](docs/CARTAO-RECORRENTE.md).
+O meio **Cartão de crédito recorrente – Asaas** é independente das opções do checkout pontual. O cliente entra na própria conta, autoriza esta fatura e as próximas faturas Asaas elegíveis, e pode revogar a autorização. A fila usa o cron do Perfex, conserva somente um token criptografado e mantém a cobrança em aberto quando há recusa. Um resultado incerto é consultado sem repetir a captura. O recurso inicia desativado e mantém seus contratos com a SDK **0.3.0** distribuída. Consulte o [guia de recorrência, consentimento, instalação e operação](docs/CARTAO-RECORRENTE.md).
+
+## Pix Automático
+
+O meio **Pix Automático – Asaas** aparece separadamente nas formas de pagamento da fatura. O cliente autenticado aceita o valor e a frequência, paga o primeiro QR Code e autoriza a recorrência no aplicativo do banco. Pagamento inicial e autorização são confirmações distintas. As próximas faturas elegíveis são agendadas pelo cron na janela de 2 a 10 dias úteis antes do vencimento, sem criar uma assinatura paralela no Asaas. A autorização exige token de webhook, HTTPS, conta elegível e SDK com suporte ao recurso. O recurso inicia desativado. Consulte [configuração, consentimento e recuperação](docs/PIX-AUTOMATICO.md).
+
+## Menu Asaas, monitoramento e relatórios
+
+O menu principal **Asaas** oferece páginas completas de **Monitoramento** e **Relatórios**, mantendo os componentes nas configurações do meio de pagamento. Os perfis de colaboradores possuem permissões separadas para visualizar, conciliar e exportar. Credenciais e configurações permanecem administrativas.
+
+O monitoramento aceita o número completo da fatura, como `FAT-000148/06/2026`, e nome do cliente. Na consulta ao Asaas, a seleção local é convertida em vínculo exato de fatura ou cliente antes da chamada. A conciliação continua complementando os webhooks, com conferência do recebimento e da duplicidade.
+
+Os relatórios reúnem **20 consultas financeiras e operacionais**, incluindo extrato, cobranças, saldo, estatísticas, antecipações, transferências, parcelamentos e Pix Automático. O CSV consulta todas as páginas dos filtros; erros de completude interrompem a exportação. A impressão/PDF do navegador identifica a página exibida. Consulte [recursos, filtros, permissões e limites](docs/relatorios-financeiros.md).
 
 Refatorações:
 

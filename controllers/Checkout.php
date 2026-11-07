@@ -24,8 +24,9 @@ class Checkout extends ClientsController
 
         $data = [
             'card_checkout_blocked' => asaas_card_attempt_blocks($cached)
+                || (function_exists('asaas_automatic_pix_invoice_blocks') && asaas_automatic_pix_invoice_blocks((int) $invoice->id))
                 || (function_exists('asaas_recurring_invoice_blocks') && asaas_recurring_invoice_blocks((int) $invoice->id)),
-            'mensagem_info' => 'Existe um pagamento por cartão em acompanhamento. Volte à fatura ou acesse a confirmação do cartão; não pague novamente por outro meio.',
+            'mensagem_info' => 'Existe um pagamento em acompanhamento. Volte à fatura para consultar a confirmação do cartão ou do Pix Automático antes de pagar novamente.',
             'billet_only' => $this->asaas_gateway->getSetting('billet_only'),
             'card_only'   => $this->asaas_gateway->getSetting('card_only'),
             'pix_only'    => $this->asaas_gateway->getSetting('pix_only'),
@@ -47,6 +48,10 @@ class Checkout extends ClientsController
         $invoice = $this->db->get(db_prefix() . 'invoices')->row();
         if (!$invoice) {
             show_404();
+            return;
+        }
+        if (function_exists('asaas_automatic_pix_invoice_blocks') && asaas_automatic_pix_invoice_blocks((int) $invoice->id)) {
+            redirect(site_url('asaas/automatic_pix/index/' . $hash));
             return;
         }
         if (asaas_card_attempt_blocks(asaas_lifecycle_cached_payment(asaas_lifecycle_map((int) $invoice->id)))
@@ -230,6 +235,10 @@ class Checkout extends ClientsController
         if (!$invoice) {
             set_alert('warning', 'Fatura não encontrada.');
             redirect(site_url('invoices'));
+            return;
+        }
+        if (function_exists('asaas_automatic_pix_invoice_blocks') && asaas_automatic_pix_invoice_blocks((int) $invoice->id)) {
+            redirect(site_url('asaas/automatic_pix/index/' . $hash));
             return;
         }
         if (asaas_card_attempt_blocks(asaas_lifecycle_cached_payment(asaas_lifecycle_map((int) $invoice->id)))

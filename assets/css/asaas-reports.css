@@ -1,0 +1,35 @@
+.asaas-reports [hidden] { display: none !important; }
+.asaas-reports { min-width: 0; }
+.asaas-reports .asaas-reports-heading,
+.asaas-reports .asaas-reports-result-heading,
+.asaas-reports .asaas-reports-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.asaas-reports .asaas-reports-selection { display: grid; grid-template-columns: minmax(220px, 1fr) 170px; gap: 16px; }
+.asaas-reports .asaas-reports-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(195px, 1fr)); column-gap: 16px; }
+.asaas-reports .asaas-reports-filters .form-group { min-width: 0; }
+.asaas-reports .asaas-reports-filters .form-control,
+.asaas-reports .asaas-reports-selection .form-control { width: 100%; min-width: 0; }
+.asaas-reports .asaas-reports-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 5px 0 12px; }
+.asaas-reports .asaas-reports-export-help { margin-bottom: 18px; }
+.asaas-reports .asaas-reports-result-heading { border-top: 1px solid #e2e8f0; padding-top: 18px; }
+.asaas-reports .asaas-reports-result-heading h5 { font-size: 15px; font-weight: 600; }
+.asaas-reports .asaas-reports-result-heading .label { padding: 5px 8px; white-space: nowrap; }
+.asaas-reports .asaas-reports-meta { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 12px 0; font-size: 12px; }
+.asaas-reports .asaas-reports-table { border: 1px solid #e2e8f0; border-radius: 4px; margin-bottom: 12px; }
+.asaas-reports .asaas-reports-table table { margin-bottom: 0; }
+.asaas-reports .asaas-reports-table th { background: #f8fafc; white-space: nowrap; font-weight: 600; }
+.asaas-reports .asaas-reports-table td { vertical-align: top; min-width: 100px; max-width: 310px; overflow-wrap: anywhere; }
+.asaas-reports .asaas-reports-table td.asaas-reports-money { white-space: nowrap; text-align: right; }
+.asaas-reports .asaas-reports-detail { padding: 14px; margin-bottom: 14px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; }
+.asaas-reports .asaas-reports-detail dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 18px; margin: 14px 0 0; }
+.asaas-reports .asaas-reports-detail dl > div { min-width: 0; overflow-wrap: anywhere; }
+.asaas-reports .asaas-reports-detail dt { font-size: 12px; }
+.asaas-reports .asaas-reports-detail dd { margin: 3px 0 0; }
+.asaas-reports .asaas-reports-empty { padding: 22px 12px; text-align: center; }
+.asaas-reports [aria-busy="true"] { opacity: .65; }
+@media (max-width: 600px) {
+    .asaas-reports .asaas-reports-selection { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    .asaas-reports .asaas-reports-filters { grid-template-columns: minmax(0, 1fr); }
+    .asaas-reports .asaas-reports-heading { align-items: flex-start; }
+    .asaas-reports .asaas-reports-actions > .btn { flex: 1 1 190px; white-space: normal; }
+    .asaas-reports .asaas-reports-page-size { max-width: 180px; }
+}

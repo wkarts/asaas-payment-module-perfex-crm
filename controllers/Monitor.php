@@ -3,6 +3,7 @@
 defined('BASEPATH') or exit('No direct script access allowed');
 
 require_once __DIR__ . '/../libraries/Asaas/AsaasReconciliation.php';
+require_once __DIR__ . '/../helpers/asaas_staff_helper.php';
 
 /** Native staff session + CSRF remain enforced by Perfex/CodeIgniter. */
 class Monitor extends AdminController
@@ -13,18 +14,27 @@ class Monitor extends AdminController
         // Do not bootstrap the SDK here: administrators still need diagnostics when credentials fail.
     }
 
+    public function index(): void
+    {
+        if (!asaas_staff_can('view', 'asaas_monitor')) { access_denied('Asaas — Monitoramento'); return; }
+        if (strtoupper((string) $this->input->method(true)) !== 'GET') { show_404(); return; }
+        $this->output->set_header('Cache-Control: no-store, private, max-age=0');
+        $this->load->view('asaas/monitor', ['title' => 'Asaas — Monitoramento']);
+    }
+
     public function overview(): void { $this->read('overview'); }
     public function invoices(): void { $this->read('invoices'); }
     public function payments(): void { $this->read('payments'); }
+    public function targets(): void { $this->read('targets'); }
     public function events(): void { $this->read('events'); }
     public function logs(): void { $this->read('logs'); }
     public function compare(): void { $this->write(false); }
     public function reconcile(): void { $this->write(true); }
 
-    private function authorize(string $method): bool
+    private function authorize(string $method, bool $apply = false): bool
     {
-        if (!is_admin()) {
-            $this->respond(['ok' => false, 'message' => 'Somente administradores podem acessar o monitoramento Asaas.'], 403);
+        if (!asaas_staff_can($apply ? 'reconcile' : 'view', 'asaas_monitor')) {
+            $this->respond(['ok' => false, 'message' => 'Seu perfil não tem permissão para esta operação no Asaas.'], 403);
             return false;
         }
         if (strtoupper((string) $this->input->method(true)) !== $method) {
@@ -40,7 +50,7 @@ class Monitor extends AdminController
         if (!$this->authorize('GET')) { return; }
         try {
             $filters = [];
-            foreach (['page', 'per_page', 'q', 'status', 'level', 'source', 'date_field', 'date_from', 'date_to'] as $field) {
+            foreach (['page', 'per_page', 'q', 'status', 'level', 'source', 'date_field', 'date_from', 'date_to', 'search_kind', 'target_id'] as $field) {
                 $value = $this->input->get($field);
                 if ($value !== null && !is_scalar($value)) { throw new InvalidArgumentException('Os filtros informados são inválidos.'); }
                 if ($value !== null) { $filters[$field] = $value; }
@@ -49,7 +59,7 @@ class Monitor extends AdminController
             $payload = $method === 'overview' ? $service->overview() : $service->$method($filters);
             $this->respond($payload, ($payload['ok'] ?? true) === false ? 503 : 200);
         } catch (InvalidArgumentException $error) {
-            $this->respond(['ok' => false, 'message' => 'Os filtros informados são inválidos.'], 422);
+            $this->respond(['ok' => false, 'message' => $error->getMessage()], 422);
         } catch (Throwable $error) {
             if ($method === 'payments') {
                 $message = 'Não foi possível consultar as cobranças no Asaas. Confira o ambiente, as credenciais e o diagnóstico da integração.';
@@ -67,7 +77,7 @@ class Monitor extends AdminController
 
     private function write(bool $apply): void
     {
-        if (!$this->authorize('POST')) { return; }
+        if (!$this->authorize('POST', $apply)) { return; }
         try {
             $ids = \Asaas\AsaasReconciliation::invoiceIds($this->input->post('invoice_ids'));
             $trigger = $this->input->post('trigger');

@@ -586,8 +586,16 @@ cardCheckoutTest('accepted surcharge captures gross and allocates only the invoi
     cardCheckoutAssert(asaas_card_receipt_amount($payment, '100.00', $cache) === '100.00', 'Fees must never become additional invoice principal.');
     cardCheckoutAssert(str_contains(asaas_card_receipt_note($payment, $cache), '3,59'), 'The native receipt note must explain the surcharge.');
     cardCheckoutThrows(static fn () => asaas_card_receipt_amount($payment, '99.99', $cache), 'saldo');
-    $json = json_encode($cache, JSON_THROW_ON_ERROR);
-    cardCheckoutAssert(!str_contains($json, '4111') && !str_contains($json, 'holder@example.test') && !str_contains($json, '937'), 'The frozen pricing metadata cannot contain card or cardholder credentials.');
+    // A short digit sequence can occur by chance inside the quote fingerprint.
+    // Verify sensitive field names and complete leaf values instead of substrings of hashes.
+    $retained = false;
+    array_walk_recursive($cache, static function ($value, $key) use (&$retained): void {
+        if (in_array((string) $value, ['4111111111111111', '4111', 'holder@example.test', '937'], true)
+            || in_array(strtolower((string) $key), ['creditcard', 'creditcardholderinfo', 'creditcardtoken', 'ccv', 'cvv', 'holdername'], true)) {
+            $retained = true;
+        }
+    });
+    cardCheckoutAssert(!$retained, 'The frozen pricing metadata cannot contain card or cardholder credentials.');
 });
 cardCheckoutTest('priced installments preserve cent totals and do not settle principal early', static function (): void {
     [$service, $gateway, $api, $db, $invoice] = cardCheckoutFixture([], ['card_fee_mode' => 'customer']);

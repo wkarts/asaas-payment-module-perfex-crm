@@ -2,7 +2,7 @@
 
 ## Acesso e organização
 
-Como administrador, abra **Configurações → Meios de pagamento → Asaas**. As configurações estão divididas em oito subguias, dentro do formulário nativo do CRM:
+Como administrador, abra **Configurações → Meios de pagamento → Asaas**. As configurações estão divididas em nove subguias, dentro do formulário nativo do CRM:
 
 | Subguia | Conteúdo |
 | --- | --- |
@@ -14,6 +14,24 @@ Como administrador, abra **Configurações → Meios de pagamento → Asaas**. A
 | Sincronização | Ciclo das faturas, quitação manual e conciliação pelo CRON. |
 | Logs | Opções de diagnóstico e visualizador completo dos registros na própria subguia, incluindo estado e localização do arquivo. |
 | Monitoramento | Histórico, comparação e conciliação de recebimentos. |
+| Relatórios | Extrato e demais consultas financeiras, exportação CSV completa e impressão da página. |
+
+O menu principal **Asaas → Monitoramento** apresenta os mesmos recursos em uma página completa do CRM. **Asaas → Relatórios** abre a área financeira completa. O acesso é controlado pelo perfil do colaborador:
+
+| Recurso | Permissão | Acesso concedido |
+| --- | --- | --- |
+| Asaas — Monitoramento | Visualizar | Consultar faturas, cobranças, eventos, diagnóstico e comparar estados. |
+| Asaas — Monitoramento | Conciliar | Registrar recebimentos confirmados, individualmente ou em lote; exige também Visualizar. |
+| Asaas — Relatórios | Visualizar | Consultar relatórios da conta Asaas. |
+| Asaas — Relatórios | Exportar | Gerar CSV e acessar impressão/PDF; exige também Visualizar. |
+
+Esses recursos abrangem os dados da integração/conta e não se limitam às faturas atribuídas ao colaborador. O acesso às chaves e configurações continua administrativo. Esconder uma ação na interface não é o controle de autorização: cada rota verifica a permissão no servidor.
+
+### Busca por fatura ou cliente
+
+Em **Faturas**, pesquise o ID, número simples, número com zeros à esquerda, formato completo do Perfex ou nome do cliente. São reconhecidos os formatos nativos número, ano/número, número/ano e número/mês/ano, respeitando prefixo, ano, mês e o formato gravado na fatura.
+
+Em **Cobranças no Asaas**, escolha **Fatura** ou **Cliente**, use **Localizar** e selecione o registro encontrado. Para uma fatura, a API recebe sua referência externa exata; para um cliente, recebe o identificador Asaas depois da conferência de identidade. Uma seleção inválida ou um vínculo inconsistente produz erro explícito, sem converter a pesquisa em listagem irrestrita. Filtros e seleção são preservados na paginação.
 
 O botão **Salvar** continua sendo o botão do CRM. Os campos originais são movidos para as subguias; nomes, valores, eventos e regras de gravação são preservados. Campos futuros não reconhecidos ficam em Geral. Se o JavaScript não reconhecer o layout nativo, mantém o formulário plano disponível.
 
@@ -105,7 +123,7 @@ Selecione as faturas da página e use **Comparar selecionadas** ou **Conciliar s
 
 **Parar lote** encerra a sequência depois que a requisição em andamento terminar. Não cancela uma gravação já enviada. Em falha de rede ou resposta incerta, o lote para e não repete automaticamente a operação: atualize o histórico e faça uma nova comparação para identificar o resultado real. Uma conciliação parcialmente concluída mantém os recibos já confirmados e informa que o restante precisa de conferência.
 
-Os endpoints exigem sessão administrativa e mantêm a proteção CSRF do CRM. A interface atualiza o token CSRF do formulário de configurações após as respostas, permitindo salvar normalmente depois de usar o monitoramento.
+Os endpoints exigem sessão de colaborador autenticado e a permissão de visualização ou conciliação correspondente; administradores mantêm acesso. As operações de conciliação usam POST e preservam a proteção CSRF do CRM. A interface atualiza o token CSRF do formulário de configurações após as respostas, permitindo salvar normalmente depois de usar o monitoramento.
 
 ## Conciliação automática pelo CRON
 

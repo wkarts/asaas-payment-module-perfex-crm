@@ -37,6 +37,7 @@ final class AsaasCardCheckout
             && (string) $this->gateway->getSetting('active') !== '0'
             && in_array('asaas', \asaas_invoice_payment_modes($invoice->allowed_payment_modes ?? []), true)
             && (!function_exists('asaas_recurring_invoice_blocks') || !\asaas_recurring_invoice_blocks((int) $invoice->id))
+            && (!function_exists('asaas_automatic_pix_invoice_blocks') || !\asaas_automatic_pix_invoice_blocks((int) $invoice->id))
             && !in_array((int) ($invoice->status ?? 0), [2, 5, 6], true);
     }
 
@@ -168,6 +169,9 @@ final class AsaasCardCheckout
         }
         \asaas_receipt_lock($invoiceId);
         try {
+            if (function_exists('asaas_automatic_pix_invoice_blocks') && \asaas_automatic_pix_invoice_blocks($invoiceId)) {
+                throw new AsaasCardCheckoutException('Há um Pix Automático aguardando confirmação. Volte à fatura para conferir ou cancelar a autorização antes de pagar por cartão.');
+            }
             $invoice = \asaas_lifecycle_invoice($invoiceId);
             $available = $invoice && ($authorized === null ? $this->available($invoice)
                 : ((string) get_option('paymentmethod_asaas_recurring_active') === '1'

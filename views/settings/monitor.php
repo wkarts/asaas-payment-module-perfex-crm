@@ -1,13 +1,16 @@
 <?php
 
 defined('BASEPATH') or exit('No direct script access allowed');
-if (!is_admin()) {
+require_once __DIR__ . '/../../helpers/asaas_staff_helper.php';
+if (!asaas_staff_can('view', 'asaas_monitor')) {
     return;
 }
 $asaasMonitorCi = &get_instance();
 $asaasMonitorSecurity = $asaasMonitorCi->security;
 ?>
 <section id="asaas-monitor" class="asaas-monitor"
+         data-standalone="<?php echo !empty($asaasMonitorStandalone) ? '1' : '0'; ?>"
+         data-can-reconcile="<?php echo asaas_staff_can('reconcile', 'asaas_monitor') ? '1' : '0'; ?>"
          data-endpoint="<?php echo html_escape(admin_url('asaas/monitor/')); ?>"
          data-invoice-base="<?php echo html_escape(admin_url('invoices/list_invoices/')); ?>"
          data-csrf-name="<?php echo html_escape($asaasMonitorSecurity->get_csrf_token_name()); ?>"
@@ -47,7 +50,7 @@ $asaasMonitorSecurity = $asaasMonitorCi->security;
         <div class="asaas-monitor-filters">
             <div class="form-group asaas-monitor-search">
                 <label for="asaas-monitor-query">Buscar fatura ou cliente</label>
-                <input id="asaas-monitor-query" type="search" class="form-control input-sm" maxlength="100" autocomplete="off" placeholder="Número da fatura ou nome do cliente">
+                <input id="asaas-monitor-query" type="search" class="form-control input-sm" maxlength="100" autocomplete="off" placeholder="Ex.: FAT-000387/11/2026, 387 ou nome do cliente">
             </div>
             <div class="form-group">
                 <label for="asaas-monitor-invoice-status">Situação no CRM</label>
@@ -83,6 +86,21 @@ $asaasMonitorSecurity = $asaasMonitorCi->security;
 
     <div id="asaas-monitor-payments" data-monitor-panel="payments" role="tabpanel" aria-labelledby="asaas-monitor-tab-payments" hidden>
         <p id="asaas-monitor-remote-help" class="help-block">Consulte diretamente as cobranças da conta Asaas do ambiente ativo. Esta lista não cria vínculos nem registra pagamentos. <strong>Pendente</strong> ou <strong>Vencido</strong> não confirma recebimento; <strong>Confirmado</strong> e <strong>Recebido</strong> indicam pagamento. Em parcelamentos, cada linha pode representar uma parcela.</p>
+        <div class="asaas-monitor-filters">
+            <div class="form-group"><label for="asaas-monitor-search-kind">Buscar por</label>
+                <select id="asaas-monitor-search-kind" class="form-control input-sm"><option value="invoice">Fatura</option><option value="client">Cliente</option></select>
+            </div>
+            <div class="form-group asaas-monitor-search"><label for="asaas-monitor-payment-query">Fatura ou cliente no CRM (opcional)</label>
+                <input id="asaas-monitor-payment-query" type="search" maxlength="100" autocomplete="off" class="form-control input-sm" placeholder="Número da fatura ou nome do cliente">
+            </div>
+            <button type="button" class="btn btn-default btn-sm" data-monitor-action="find-target">Localizar</button>
+            <button type="button" class="btn btn-default btn-sm" data-monitor-action="clear-target">Limpar busca</button>
+        </div>
+        <div class="form-group" data-monitor-target-wrap hidden>
+            <label for="asaas-monitor-target">Selecione o resultado para consultar no Asaas</label>
+            <select id="asaas-monitor-target" class="form-control input-sm"><option value="">Selecione uma fatura ou um cliente</option></select>
+            <p class="help-block" data-monitor-target-help role="status" aria-live="polite"></p>
+        </div>
         <div class="asaas-monitor-filters asaas-monitor-remote-filters">
             <div class="form-group">
                 <label for="asaas-monitor-payment-status">Situação no Asaas</label>
@@ -149,7 +167,7 @@ $asaasMonitorSecurity = $asaasMonitorCi->security;
                 <select id="asaas-monitor-log-level" class="form-control input-sm"><option value="all">Todos</option><option value="error">Erro</option><option value="warning">Aviso</option><option value="info">Informação</option><option value="debug">Diagnóstico</option></select>
             </div>
             <div class="form-group"><label for="asaas-monitor-log-source">Origem</label>
-                <select id="asaas-monitor-log-source" class="form-control input-sm"><option value="all">Todas</option><option value="api">API</option><option value="webhook">Webhook</option><option value="reconciliation">Conciliação</option><option value="recurring">Recorrência</option></select>
+                <select id="asaas-monitor-log-source" class="form-control input-sm"><option value="all">Todas</option><option value="api">API</option><option value="webhook">Webhook</option><option value="reconciliation">Conciliação</option><option value="recurring">Cartão recorrente</option><option value="automatic_pix">Pix Automático</option><option value="reports">Relatórios</option></select>
             </div>
             <button type="button" class="btn btn-default btn-sm" data-monitor-action="filter" data-monitor-kind="logs">Filtrar</button>
         </div>

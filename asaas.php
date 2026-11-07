@@ -28,18 +28,27 @@ require_once __DIR__ . '/helpers/asaas_diagnostics_helper.php';
 require_once __DIR__ . '/helpers/asaas_lifecycle_helper.php';
 require_once __DIR__ . '/helpers/asaas_settings_helper.php';
 require_once __DIR__ . '/helpers/asaas_recurring_hooks_helper.php';
+require_once __DIR__ . '/helpers/asaas_automatic_pix_hooks_helper.php';
+require_once __DIR__ . '/helpers/asaas_staff_helper.php';
+
+hooks()->add_action('admin_init', 'asaas_register_staff_permissions');
+hooks()->add_action('admin_init', 'asaas_register_staff_menu');
 
 hooks()->add_action('before_render_payment_gateway_settings', 'asaas_before_render_payment_gateway_settings');
 hooks()->add_action('app_admin_footer', 'asaas_settings_tab_footer');
 hooks()->add_filter('before_settings_updated', 'asaas_validate_webhook_settings');
 hooks()->add_filter('before_settings_updated', 'asaas_validate_environment_settings');
 hooks()->add_filter('before_settings_updated', 'asaas_validate_card_settings');
+hooks()->add_filter('before_settings_updated', 'asaas_automatic_pix_validate_settings');
 hooks()->add_action('admin_init', 'asaas_admin_invoice_transaction');
 hooks()->add_filter('before_invoice_added', 'asaas_recurring_before_invoice_added', 5);
+hooks()->add_filter('before_invoice_added', 'asaas_automatic_pix_before_invoice_added', 6);
 hooks()->add_filter('before_invoice_added', 'asaas_before_invoice_added');
 hooks()->add_action('after_invoice_added', 'asaas_after_invoice_added');
 hooks()->add_action('after_invoice_added', 'asaas_recurring_invoice_added', 20);
+hooks()->add_action('after_invoice_added', 'asaas_automatic_pix_invoice_added', 25);
 hooks()->add_action('after_total_summary_invoicehtml', 'asaas_recurring_invoice_option');
+hooks()->add_action('after_total_summary_invoicehtml', 'asaas_automatic_pix_invoice_option');
 if (function_exists('do_action_deprecated')) {
     hooks()->add_filter('before_update_invoice', 'asaas_before_update_invoice', 10, 2);
     hooks()->add_action('invoice_updated', 'asaas_after_invoice_updated');
@@ -56,6 +65,7 @@ hooks()->add_filter('before_payment_recorded', 'asaas_before_payment_recorded');
 hooks()->add_action('after_payment_added', 'asaas_after_payment_added');
 hooks()->add_action('after_cron_run', 'asaas_reconcile_after_cron');
 hooks()->add_action('after_cron_run', 'asaas_recurring_after_cron', 20);
+hooks()->add_action('after_cron_run', 'asaas_automatic_pix_after_cron', 25);
 
 $CI = &get_instance();
 
@@ -73,7 +83,7 @@ function asaas_module_activation_hook() {
     require_once(__DIR__ . '/install.php');
 }
 
-foreach (['asaas_gateway', 'asaas_recurring_gateway'] as $asaasGatewayClass) {
+foreach (['asaas_gateway', 'asaas_recurring_gateway', 'asaas_automatic_pix_gateway'] as $asaasGatewayClass) {
     if (function_exists('app_payment_gateways')) {
         $gateways = app_payment_gateways();
         if (is_object($gateways)) {
@@ -103,13 +113,13 @@ function asaas_before_render_payment_gateway_settings($gateway)
 
 function asaas_settings_tab_footer()
 {
-    foreach (['asaas-settings.css', 'asaas-monitor.css', 'asaas-logs.css'] as $stylesheet) {
+    foreach (['asaas-settings.css', 'asaas-monitor.css', 'asaas-logs.css', 'asaas-reports.css'] as $stylesheet) {
         $asset = 'assets/css/' . $stylesheet;
         if (is_file(__DIR__ . '/' . $asset)) {
             echo '<link rel="stylesheet" href="' . html_escape(module_dir_url(ASAAS_MODULE_NAME, $asset) . '?v=' . filemtime(__DIR__ . '/' . $asset)) . '">';
         }
     }
-    foreach (['asaas-settings.js', 'asaas-webhook-settings.js', 'asaas-monitor.js', 'asaas-logs.js'] as $script) {
+    foreach (['asaas-settings.js', 'asaas-webhook-settings.js', 'asaas-monitor.js', 'asaas-logs.js', 'asaas-reports.js'] as $script) {
         $asset = 'assets/js/' . $script;
         if (is_file(__DIR__ . '/' . $asset)) {
             echo '<script src="' . html_escape(module_dir_url(ASAAS_MODULE_NAME, $asset) . '?v=' . filemtime(__DIR__ . '/' . $asset)) . '"></script>';

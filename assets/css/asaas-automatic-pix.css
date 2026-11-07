@@ -1,0 +1,34 @@
+.asaas-automatic-pix-page { max-width: 920px; margin: 28px auto; padding: 0 14px; }
+.asaas-automatic-pix-page .panel-body { padding: 24px; }
+.asaas-pix-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+.asaas-pix-heading h2 { font-size: 24px; line-height: 1.3; margin: 4px 0 0; }
+.asaas-pix-heading p { margin: 0; }
+.asaas-pix-heading .btn { flex-shrink: 0; }
+.asaas-pix-qr-grid { display: flex; align-items: flex-start; gap: 24px; margin: 22px 0; }
+.asaas-pix-qr { width: 216px; height: 216px; max-width: 100%; object-fit: contain; flex-shrink: 0; }
+.asaas-pix-qr-details { flex: 1; min-width: 0; }
+.asaas-pix-qr-details h3, .asaas-pix-enroll-grid h3 { font-size: 21px; margin: 0 0 12px; }
+.asaas-pix-payload { resize: vertical; overflow-wrap: anywhere; word-break: break-all; margin: 6px 0 10px; }
+.asaas-pix-enroll-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: center; margin: 24px 0 4px; }
+.asaas-pix-enroll-grid h3 { margin-top: 6px; }
+.asaas-pix-form .checkbox { margin: 20px 0; padding-left: 20px; line-height: 1.6; }
+.asaas-pix-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 22px; }
+/* The native invoice hook follows floated Bootstrap item and total columns. */
+.asaas-pix-invoice-option { clear: both; box-sizing: border-box; width: 100%; padding: 16px 15px 0; }
+.asaas-pix-invoice-card { display: flex; align-items: center; justify-content: space-between; gap: 18px; border: 1px solid #dce1e8; border-radius: 6px; padding: 16px 18px; background: #fff; }
+.asaas-pix-invoice-card > div { min-width: 0; overflow-wrap: break-word; }
+.asaas-pix-invoice-option h4 { font-size: 16px; margin: 0 0 6px; }
+.asaas-pix-invoice-option p { margin: 0; line-height: 1.5; }
+.asaas-pix-invoice-option .btn { flex-shrink: 0; white-space: normal; max-width: 100%; }
+@media (max-width: 600px) {
+    .asaas-automatic-pix-page { margin: 14px auto; padding: 0 10px; }
+    .asaas-automatic-pix-page .panel-body { padding: 18px; }
+    .asaas-pix-heading { align-items: flex-start; flex-wrap: wrap; }
+    .asaas-pix-heading h2 { font-size: 21px; }
+    .asaas-pix-qr-grid { flex-direction: column; align-items: center; gap: 18px; }
+    .asaas-pix-qr-details { width: 100%; }
+    .asaas-pix-enroll-grid { grid-template-columns: 1fr; gap: 8px; }
+    .asaas-pix-actions .btn { width: 100%; white-space: normal; }
+    .asaas-pix-invoice-card { flex-direction: column; align-items: stretch; padding: 14px; }
+    .asaas-pix-form > .btn { width: 100%; white-space: normal; }
+}

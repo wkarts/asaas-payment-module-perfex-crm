@@ -1133,5 +1133,39 @@ monitorTest('controller rejects invalid remote dates before HTTP and preserves a
     monitorAllGets($history);
 });
 
+monitorTest('formatted number and client selection constrain all remote pages without receipts', static function (): void {
+    [$service, $gateway, $db] = monitorFixture([monitorPaymentList([], false, 0)], $history);
+    $db->query("UPDATE tblinvoices SET prefix = 'FAT-', number = 387, number_format = 4, date = '2026-11-01' WHERE id = 42");
+    $targets = $service->targets(['q' => 'FAT-000387/11/2026', 'search_kind' => 'invoice']);
+    monitorCheck(count($targets['data']) === 1 && $targets['data'][0]['id'] === 42 && $history === [], 'Full number lookup must remain local and resolve the native ID.');
+    $empty = $service->payments(['search_kind' => 'invoice', 'target_id' => '42']);
+    parse_str($history[0]['request']->getUri()->getQuery(), $query);
+    monitorCheck($empty['ok'] && $query['externalReference'] === 'hash-42', 'Selected invoice must filter the remote query by its exact stored reference.');
+    monitorCheck($gateway->nativeCalls === [], 'Selection and browsing must not register receipts.');
+    monitorAllGets($history);
+
+    [$service, $gateway, $db] = monitorFixture([monitorResponse(monitorCustomer()), monitorPaymentList([], false, 0)], $history);
+    $targets = $service->targets(['q' => 'Cliente', 'search_kind' => 'client']);
+    monitorCheck($targets['data'][0]['id'] === 7, 'Customer names must resolve to explicit CRM choices.');
+    $service->payments(['search_kind' => 'client', 'target_id' => '7', 'page' => 2, 'status' => 'RECEIVED']);
+    parse_str($history[1]['request']->getUri()->getQuery(), $query);
+    monitorCheck($query['customer'] === 'cus_fixture' && $query['status'] === 'RECEIVED' && $query['offset'] === '50', 'Customer and status filters must persist on a later provider page.');
+    monitorCheck(count($history) === 2 && $gateway->nativeCalls === [], 'Filter must prove customer identity via GET and perform no mutation.');
+    monitorAllGets($history);
+});
+
+monitorTest('selected identity cannot silently fall back to an unfiltered account query', static function (): void {
+    [$service, $gateway] = monitorFixture([], $history);
+    foreach ([['search_kind' => 'client', 'target_id' => '1 OR 1=1'], ['search_kind' => 'invoice', 'target_id' => '99999']] as $filters) {
+        $rejected = false;
+        try { $service->payments($filters); } catch (InvalidArgumentException) { $rejected = true; }
+        monitorCheck($rejected && $history === [], 'An invalid selection must fail before querying all provider payments.');
+    }
+    [$service, $gateway] = monitorFixture([monitorResponse(monitorCustomer(['externalReference' => '8']))], $history);
+    $rejected = false;
+    try { $service->payments(['search_kind' => 'client', 'target_id' => '7']); } catch (InvalidArgumentException) { $rejected = true; }
+    monitorCheck($rejected && count($history) === 1 && $gateway->nativeCalls === [], 'A customer from another reference/environment must never become the selected filter.');
+});
+
 echo sprintf("Monitor reconciliation: %d scenarios, %d assertions, %d failures.\n", $GLOBALS['monitor_scenarios'], $GLOBALS['monitor_assertions'], $GLOBALS['monitor_failures']);
 exit($GLOBALS['monitor_failures'] > 0 ? 1 : 0);
